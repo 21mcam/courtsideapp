@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: lint, build, migrations, smoke test
+    runs-on: ubuntu-latest
+
+    # Disposable Postgres for the migration replay + privilege smoke
+    # test. Matches Supabase's major version. The service container's
+    # health check is what GitHub Actions uses to decide when steps
+    # may run; we also do an explicit pg_isready guard later for log
+    # clarity.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: ci_postgres_password
+          POSTGRES_DB: courtside_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d courtside_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+
+    # psql defaults — used by the migration replay and ALTER ROLE
+    # steps. The `postgres` superuser is the role that runs DDL; the
+    # `app_runtime` role gets created by migration 011.
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: ci_postgres_password
+      PGDATABASE: courtside_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # Install + lint + build run before any DB work so we fail fast
+      # on JS/JSX issues. The Postgres service container starts in
+      # parallel during these steps, so the wait below usually finds
+      # it already healthy.
+      - name: Install backend deps
+        run: npm ci
+
+      - name: Install client deps
+        run: npm --prefix client ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build client
+        run: npm --prefix client run build
+
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 -U postgres -d courtside_test -q; then
+              echo "Postgres is ready"
+              exit 0
+            fi
+            echo "waiting for Postgres ($i/30)..."
+            sleep 1
+          done
+          echo "Postgres did not become ready in time" >&2
+          exit 1
+
+      # Apply migrations 001-011 in order. ON_ERROR_STOP=1 means any
+      # SQL error aborts the loop — silent partial application would
+      # be worse than a loud failure.
+      - name: Apply migrations 001-011
+        run: |
+          for f in db/migrations/*.sql; do
+            echo "::group::applying $f"
+            psql -v ON_ERROR_STOP=1 -f "$f"
+            echo "::endgroup::"
+          done
+
+      # Migration 011 creates app_runtime with LOGIN but no password.
+      # The smoke test connects as that role; CI sets a fixed-but-
+      # disposable password here.
+      - name: Set app_runtime password
+        run: psql -v ON_ERROR_STOP=1 -c "ALTER ROLE app_runtime PASSWORD 'ci_password';"
+
+      # The load-bearing test. Connects as app_runtime and asserts:
+      #   - guard: connected role is non-superuser, non-BYPASSRLS
+      #   - SELECT FROM tenants errors with 42501 (REVOKE in 011)
+      #   - SELECT FROM tenant_lookup succeeds (GRANT in 011)
+      #   - nextval on the credit-ledger sequence succeeds
+      #     (GRANT USAGE ON ALL SEQUENCES in 011)
+      - name: Run privilege smoke test
+        env:
+          DATABASE_URL: postgres://app_runtime:ci_password@localhost:5432/courtside_test
+        run: npm test
