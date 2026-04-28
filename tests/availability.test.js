@@ -227,6 +227,11 @@ test('booking carved out of middle → split into two ranges', { skip }, async (
 });
 
 test('facility-wide blackout covering whole day → 0 slots', { skip }, async () => {
+  // Use a DIFFERENT Monday than other tests — facility-wide blackouts
+  // persist across tests in the shared tenant, and we don't want
+  // this one to bleed into the unrelated-blackout / split-shifts /
+  // offering-blackout tests that all key off MONDAY_EST.
+  const ISOLATED_MONDAY = '2027-01-11';
   const resource_id = await makeResource();
   const offering_id = await makeOffering({ duration_minutes: 60 });
   await linkOfferingResource(offering_id, resource_id);
@@ -235,11 +240,15 @@ test('facility-wide blackout covering whole day → 0 slots', { skip }, async ()
   await makeBlackout({
     resource_id: null,
     offering_id: null,
-    starts_at: '2027-01-04T00:00:00Z',
-    ends_at: '2027-01-05T00:00:00Z',
+    starts_at: '2027-01-11T00:00:00Z',
+    ends_at: '2027-01-12T00:00:00Z',
   });
 
-  const res = await fetchAvailability({ resource_id, offering_id, date: MONDAY_EST });
+  const res = await fetchAvailability({
+    resource_id,
+    offering_id,
+    date: ISOLATED_MONDAY,
+  });
   const body = await res.json();
   assert.equal(body.slots.length, 0);
 });
