@@ -92,6 +92,12 @@ async function runGenerator({ db, tenant, schedule, fromIso, toIso, durationMin,
     );
     const { start_ts, end_ts } = tsRes.rows[0];
 
+    // Postgres aborts the entire transaction on any statement error,
+    // so a per-row catch + continue would poison the outer tx and
+    // every subsequent query would fail. Wrap each INSERT in a
+    // SAVEPOINT subtransaction; ROLLBACK TO undoes the failed row
+    // without aborting the outer tx.
+    await db.query('SAVEPOINT generate_one');
     try {
       const insertRes = await db.query(
         `INSERT INTO class_instances (
@@ -114,16 +120,17 @@ async function runGenerator({ db, tenant, schedule, fromIso, toIso, durationMin,
           capacity,
         ],
       );
+      await db.query('RELEASE SAVEPOINT generate_one');
       if (insertRes.rows.length === 1) {
         generated += 1;
       } else {
         skipped += 1;
       }
     } catch (err) {
+      await db.query('ROLLBACK TO SAVEPOINT generate_one');
       // GiST exclusion (resource overlap) or cross-table booking
       // overlap trigger raise here. Don't let one conflict kill the
-      // whole batch — log and continue. Admin can resolve manually
-      // and re-run the generator.
+      // whole batch — admin can resolve manually and re-run.
       if (err.code === '23P01') {
         conflicted += 1;
         continue;
