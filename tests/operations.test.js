@@ -101,7 +101,11 @@ after(async () => {
 });
 
 function adminFetch(path, init = {}) {
-  return fetch(`${baseUrl}${path}?tenant=${TENANT}`, {
+  // Paths may already contain a query string (e.g. `?resource_id=`).
+  // Use `&` as the separator in that case so `tenant=` ends up as a
+  // distinct query param, not a value on a prior one.
+  const sep = path.includes('?') ? '&' : '?';
+  return fetch(`${baseUrl}${path}${sep}tenant=${TENANT}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
