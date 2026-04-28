@@ -8,13 +8,6 @@ on:
 permissions:
   contents: read
 
-# Opt JavaScript-based actions (actions/checkout, actions/setup-node)
-# into Node 24 now, ahead of GitHub's June 2026 forced cutover. Clears
-# the "Node.js 20 actions are deprecated" annotation on every run and
-# is a no-op once Node 24 becomes the default.
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
 jobs:
   test:
     name: lint, build, migrations, smoke test
@@ -51,10 +44,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
