@@ -50,6 +50,13 @@ export async function withTenantContext(req, res, next) {
     try {
       await client.query(commit ? 'COMMIT' : 'ROLLBACK');
     } catch (err) {
+      // TODO (pre-Phase-3, before bookings/payments): a COMMIT failure
+      // here currently logs and lets the prepared success response
+      // flush. Rare in practice (DB connection drop mid-commit), but
+      // for credits/bookings we want commit failure to surface as a
+      // 500 so the client doesn't think a write succeeded when it
+      // didn't. Path: capture res.json/send body before flush,
+      // override status to 500 on COMMIT failure.
       console.error(commit ? 'COMMIT failed:' : 'ROLLBACK failed:', err);
     } finally {
       client.release();
