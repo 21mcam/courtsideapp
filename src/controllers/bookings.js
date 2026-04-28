@@ -267,6 +267,161 @@ export async function createMemberBooking(req, res, next) {
   }
 }
 
+// POST /api/bookings/:id/cancel — member self-cancel (or admin
+// override). Honors booking_policies' three-field cancellation
+// model:
+//   * hours_before >= free_cancel_hours_before        → 100% refund
+//   * partial_refund_hours_before <= hours_before
+//     < free_cancel_hours_before                      → partial_refund_percent
+//   * hours_before < partial_refund_hours_before      → 0% refund
+//   * If partial_refund_* are NULL, only the full / none tiers apply.
+//
+// allow_member_self_cancel = false blocks members but admins still
+// can. The booking status MUST be 'confirmed' — completed/no_show/
+// already-cancelled bookings can't be re-cancelled.
+//
+// Refund is floor(credit_cost_charged * refund_percent / 100).
+// If > 0 and the booking has a member, apply_credit_change is
+// called with reason='booking_refund'. UPDATE booking + refund
+// happen in the same withTenantContext transaction.
+export async function cancelMemberBooking(req, res, next) {
+  try {
+    if (!req.user?.user_id) {
+      return res.status(401).json({ error: 'authentication required' });
+    }
+    const { tenant, db, user } = req;
+    const id = req.params.id;
+
+    // Look up the booking. RLS scopes by tenant; an id from another
+    // tenant simply returns no rows.
+    const bookingRes = await db.query(
+      `SELECT id, member_id, offering_id, resource_id,
+              start_time, end_time, status,
+              credit_cost_charged, payment_status,
+              cancelled_at
+         FROM bookings
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenant.id, id],
+    );
+    if (bookingRes.rows.length === 0) {
+      return res.status(404).json({ error: 'booking not found' });
+    }
+    const booking = bookingRes.rows[0];
+
+    // Auth: own member booking, or admin.
+    const isAdmin = !!user.admin_id;
+    const isOwnMemberBooking =
+      booking.member_id && booking.member_id === user.member_id;
+    if (!isAdmin && !isOwnMemberBooking) {
+      return res
+        .status(403)
+        .json({ error: 'cannot cancel a booking that does not belong to you' });
+    }
+
+    // Status gate.
+    if (booking.status !== 'confirmed') {
+      return res.status(409).json({
+        error: `booking is ${booking.status}; only confirmed bookings can be cancelled`,
+      });
+    }
+
+    // Pull tenant booking policy. If no row exists (older tenants),
+    // use schema defaults.
+    const policyRes = await db.query(
+      `SELECT free_cancel_hours_before, partial_refund_hours_before,
+              partial_refund_percent, allow_member_self_cancel
+         FROM booking_policies
+        WHERE tenant_id = $1`,
+      [tenant.id],
+    );
+    const policy = policyRes.rows[0] ?? {
+      free_cancel_hours_before: 24,
+      partial_refund_hours_before: null,
+      partial_refund_percent: null,
+      allow_member_self_cancel: true,
+    };
+
+    if (!isAdmin && isOwnMemberBooking && !policy.allow_member_self_cancel) {
+      return res
+        .status(403)
+        .json({ error: 'self-cancellation is disabled by tenant policy' });
+    }
+
+    // Compute refund tier from time-until-start.
+    const startMs = new Date(booking.start_time).getTime();
+    const nowMs = Date.now();
+    const hoursBefore = (startMs - nowMs) / (60 * 60 * 1000);
+
+    let refundPercent = 0;
+    if (hoursBefore >= policy.free_cancel_hours_before) {
+      refundPercent = 100;
+    } else if (
+      policy.partial_refund_hours_before != null &&
+      policy.partial_refund_percent != null &&
+      hoursBefore >= policy.partial_refund_hours_before
+    ) {
+      refundPercent = policy.partial_refund_percent;
+    }
+
+    const refundCredits = Math.floor(
+      (booking.credit_cost_charged * refundPercent) / 100,
+    );
+
+    // Mark cancelled. The schema's lifecycle CHECKs require
+    // cancelled_at when status='cancelled'.
+    await db.query(
+      `UPDATE bookings
+          SET status = 'cancelled',
+              cancelled_at = now(),
+              cancelled_by_type = $1,
+              cancelled_by_user_id = $2,
+              cancellation_reason = $3
+        WHERE tenant_id = $4 AND id = $5`,
+      [
+        isAdmin ? 'admin' : 'member',
+        user.user_id,
+        typeof req.body?.cancellation_reason === 'string'
+          ? req.body.cancellation_reason
+          : null,
+        tenant.id,
+        id,
+      ],
+    );
+
+    // Refund if applicable. Only meaningful for member bookings with
+    // a positive credit_cost_charged.
+    let refund_entry_id = null;
+    let balance_after = null;
+    if (refundCredits > 0 && booking.member_id) {
+      const refundRes = await db.query(
+        `SELECT entry_id, balance_after FROM apply_credit_change(
+           $1, $2, $3, 'booking_refund', NULL, $4, $5, NULL
+         )`,
+        [
+          tenant.id,
+          booking.member_id,
+          refundCredits,
+          user.user_id,
+          booking.id,
+        ],
+      );
+      refund_entry_id = refundRes.rows[0].entry_id;
+      balance_after = refundRes.rows[0].balance_after;
+    }
+
+    res.json({
+      booking_id: id,
+      status: 'cancelled',
+      refund_credits: refundCredits,
+      refund_percent: refundPercent,
+      balance_after,
+      refund_entry_id,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /api/bookings/me — list the authenticated member's bookings.
 // Useful for "my bookings" UI and for tests to verify state.
 export async function listMyBookings(req, res, next) {
