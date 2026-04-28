@@ -13,19 +13,19 @@
 // populates req.tenant. This middleware then opens a tx with that
 // tenant's ID as the GUC.
 //
-// COMMIT/ROLLBACK semantics:
-//   * res.on('finish') with statusCode < 400  → COMMIT
-//   * res.on('finish') with statusCode >= 400 → ROLLBACK (server errors
-//     and client errors don't persist partial work)
-//   * res.on('close') if response wasn't finished → ROLLBACK (client
-//     dropped, error before send, etc.)
-//
-// KNOWN LIMITATION: 'finish' fires AFTER the response is flushed. If
-// COMMIT fails (rare — typically only on connection loss), the client
-// already has a success response with possibly-uncommitted data. For
-// Phase 0–2 this is acceptable. Reliability-critical flows (booking
-// confirmations, payment webhooks) will use the outbox pattern (TBD,
-// see CLAUDE.md).
+// COMMIT/ROLLBACK timing — the careful bit:
+//   * We override res.end to await the COMMIT/ROLLBACK BEFORE the
+//     response actually flushes to the client. This means the next
+//     request's read will see the prior request's writes, both in
+//     real browser usage AND in-process tests. The earlier
+//     res.on('finish') pattern committed AFTER flush, which only
+//     worked in production because network latency hid the race.
+//   * res.end stays synchronous from the caller's perspective (it
+//     still returns res for chaining); the async commit+flush runs
+//     on the next tick. Express handlers don't await res.send, so
+//     this is invisible to them.
+//   * The connection's release() runs after both commit and flush
+//     have been initiated.
 
 import { pool } from './pool.js';
 
@@ -56,11 +56,30 @@ export async function withTenantContext(req, res, next) {
     }
   };
 
-  res.on('finish', () => {
-    finalize(res.statusCode < 400);
-  });
+  // Override res.end so the COMMIT/ROLLBACK lands before bytes hit
+  // the wire. Without this, an await fetch() in tests can return
+  // BEFORE the prior request's commit flushes, causing a read of
+  // the next request to miss writes.
+  const origEnd = res.end.bind(res);
+  res.end = function patchedEnd(...args) {
+    if (finalized) return origEnd(...args);
+    const shouldCommit = res.statusCode < 400;
+    // Run finalize async, then call origEnd. We return res sync so
+    // Express's chaining contract is preserved. The actual flush is
+    // delayed by one DB roundtrip — typically <5ms locally.
+    (async () => {
+      await finalize(shouldCommit);
+      origEnd(...args);
+    })();
+    return res;
+  };
+
+  // Defensive: if the connection drops without res.end firing
+  // (mid-response error, abrupt close), still ROLLBACK.
   res.on('close', () => {
-    finalize(false);
+    if (!finalized) {
+      void finalize(false);
+    }
   });
 
   try {
