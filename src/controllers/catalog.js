@@ -199,6 +199,97 @@ export async function listOfferingResources(req, res, next) {
   }
 }
 
+// ============================================================
+// plans
+// ============================================================
+
+const planCreateSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    description: z.string().max(2000).optional(),
+    monthly_price_cents: z.number().int().nonnegative(),
+    credits_per_week: z.number().int().nonnegative(),
+    // null/undefined = all categories allowed; non-empty array =
+    // whitelist. Empty array is rejected at schema CHECK level
+    // (cardinality > 0); we add an app-level guard for clarity too.
+    allowed_categories: z
+      .array(z.string().regex(CATEGORY_REGEX))
+      .min(1, 'allowed_categories must be null/omitted or contain at least one category')
+      .optional()
+      .nullable(),
+    stripe_price_id: z.string().optional().nullable(),
+    display_order: z.number().int().nonnegative().optional(),
+  });
+
+export async function listPlans(req, res, next) {
+  try {
+    const result = await req.db.query(
+      `SELECT id, name, description, monthly_price_cents, credits_per_week,
+              allowed_categories, stripe_price_id, active, display_order,
+              created_at, updated_at
+         FROM plans
+        WHERE tenant_id = $1
+        ORDER BY display_order ASC, name ASC`,
+      [req.tenant.id],
+    );
+    res.json({ plans: result.rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createPlan(req, res, next) {
+  try {
+    const parsed = planCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const d = parsed.data;
+
+    try {
+      const result = await req.db.query(
+        `INSERT INTO plans (
+           tenant_id, name, description, monthly_price_cents,
+           credits_per_week, allowed_categories, stripe_price_id,
+           display_order
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id, name, description, monthly_price_cents,
+                   credits_per_week, allowed_categories, stripe_price_id,
+                   active, display_order, created_at, updated_at`,
+        [
+          req.tenant.id,
+          d.name,
+          d.description ?? null,
+          d.monthly_price_cents,
+          d.credits_per_week,
+          d.allowed_categories ?? null,
+          d.stripe_price_id ?? null,
+          d.display_order ?? 0,
+        ],
+      );
+      res.status(201).json({ plan: result.rows[0] });
+    } catch (err) {
+      if (err.code === '23505') {
+        // Either the partial unique index plans_active_name_unique
+        // (case-insensitive name + active = true) or the global
+        // unique index on stripe_price_id.
+        return res.status(409).json({ error: 'plan name or stripe_price_id already in use' });
+      }
+      if (err.code === '23514') {
+        // Domain category_key, allowed_categories cardinality, or
+        // any other CHECK.
+        return res.status(400).json({ error: 'invalid plan: schema CHECK failed' });
+      }
+      throw err;
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function linkResourceToOffering(req, res, next) {
   try {
     const offering_id = req.params.id;
