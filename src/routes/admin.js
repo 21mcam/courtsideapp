@@ -15,6 +15,7 @@ import {
   listAdmins,
   createManualMember,
   adjustMemberCredits,
+  listAllBookings,
 } from '../controllers/admin.js';
 import {
   listResources,
@@ -73,5 +74,10 @@ router.put('/booking-policies', upsertBookingPolicies);
 router.get('/blackouts', listBlackouts);
 router.post('/blackouts', createBlackout);
 router.delete('/blackouts/:id', deleteBlackout);
+
+// Bookings calendar (Phase 3 slice 6) — admin overview of all
+// bookings across the tenant with filter + cancel + mark-no-show
+// (mutations live on /api/bookings/:id/cancel and /:id/mark-no-show).
+router.get('/bookings', listAllBookings);
 
 export default router;

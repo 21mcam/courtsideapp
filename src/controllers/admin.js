@@ -127,6 +127,102 @@ export async function adjustMemberCredits(req, res, next) {
   }
 }
 
+// GET /api/admin/bookings — admin booking calendar feed.
+//
+// Query filters:
+//   from   ISO datetime (inclusive). Defaults to 30 days ago.
+//   to     ISO datetime (exclusive). Defaults to 60 days from now.
+//   status repeated query param (?status=confirmed&status=no_show).
+//          Defaults to all statuses.
+//
+// Returns rows joined with offering name, resource name, and (when
+// applicable) member name + email. Customer fields are returned as
+// stored on the booking row — not yet populated since walk-in flow
+// ships in phase 5.
+//
+// Capped at 500 rows. The admin UI defaults to a 7-day window so
+// that's plenty; bigger ranges should paginate (deferred).
+const listBookingsQuerySchema = z.object({
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  status: z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .transform((v) => (v == null ? undefined : Array.isArray(v) ? v : [v])),
+});
+
+const VALID_STATUSES = new Set([
+  'pending_payment',
+  'confirmed',
+  'completed',
+  'no_show',
+  'cancelled',
+]);
+
+export async function listAllBookings(req, res, next) {
+  try {
+    const parsed = listBookingsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid query', details: parsed.error.flatten() });
+    }
+    const { from, to, status } = parsed.data;
+
+    if (status && status.some((s) => !VALID_STATUSES.has(s))) {
+      return res.status(400).json({ error: 'invalid status filter value' });
+    }
+
+    const fromTs = from
+      ? new Date(from)
+      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const toTs = to
+      ? new Date(to)
+      : new Date(Date.now() + 60 * 24 * 60 * 60 * 1000);
+    if (fromTs >= toTs) {
+      return res.status(400).json({ error: 'from must be before to' });
+    }
+
+    // Filter by start_time falling in [from, to). Status filter is
+    // optional. Status array empty (after parse) means "all".
+    const params = [req.tenant.id, fromTs, toTs];
+    let statusClause = '';
+    if (status && status.length > 0) {
+      params.push(status);
+      statusClause = `AND b.status = ANY($${params.length}::text[])`;
+    }
+
+    const result = await req.db.query(
+      `SELECT b.id, b.status, b.start_time, b.end_time,
+              b.offering_id, b.resource_id, b.member_id,
+              b.credit_cost_charged, b.payment_status,
+              b.amount_due_cents, b.amount_paid_cents,
+              b.cancelled_at, b.cancelled_by_type,
+              b.no_show_marked_at, b.created_at,
+              o.name AS offering_name,
+              r.name AS resource_name,
+              m.first_name AS member_first_name,
+              m.last_name  AS member_last_name,
+              m.email      AS member_email,
+              b.customer_first_name, b.customer_last_name, b.customer_email
+         FROM bookings b
+         JOIN offerings o ON o.tenant_id = b.tenant_id AND o.id = b.offering_id
+         JOIN resources r ON r.tenant_id = b.tenant_id AND r.id = b.resource_id
+    LEFT JOIN members   m ON m.tenant_id = b.tenant_id AND m.id = b.member_id
+        WHERE b.tenant_id = $1
+          AND b.start_time >= $2
+          AND b.start_time <  $3
+          ${statusClause}
+        ORDER BY b.start_time ASC
+        LIMIT 500`,
+      params,
+    );
+    res.json({ bookings: result.rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function listAdmins(req, res, next) {
   try {
     // Join to users so we can show name/email on the admin roster.
