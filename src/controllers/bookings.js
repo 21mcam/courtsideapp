@@ -9,6 +9,9 @@
 //      allow_member_booking = true.
 //   2. Resolve the offering↔resource link: must exist, active.
 //   3. Compute end_time from start_time + offering.duration_minutes.
+//   3a. Enforce booking_policies advance-window:
+//        min_advance_booking_minutes ≤ (start - now) ≤
+//        max_advance_booking_days × 1440 minutes.
 //   4. SELECT FOR UPDATE on the resource row. Serializes concurrent
 //      booking attempts on the same resource — the second waiter
 //      sees the first attempt's INSERT before re-checking.
@@ -103,6 +106,38 @@ export async function createMemberBooking(req, res, next) {
     // 3. Compute window
     const start = new Date(start_time);
     const end = new Date(start.getTime() + offering.duration_minutes * 60 * 1000);
+
+    // 3a. Advance-booking window policy. Tenants set the floor and
+    //     ceiling on how far out members can book. Pulled from
+    //     booking_policies; if the row is missing we use the schema
+    //     defaults (0 min / 30 days) so old tenants keep working.
+    //
+    //     Admin-initiated bookings (when this endpoint is later wired
+    //     to an admin-on-behalf-of-member path) bypass — admins may
+    //     legitimately book outside member windows. For now this
+    //     endpoint is member-only, so the gate applies unconditionally.
+    const policyRes = await db.query(
+      `SELECT min_advance_booking_minutes, max_advance_booking_days
+         FROM booking_policies WHERE tenant_id = $1`,
+      [tenant.id],
+    );
+    const advancePolicy = policyRes.rows[0] ?? {
+      min_advance_booking_minutes: 0,
+      max_advance_booking_days: 30,
+    };
+    const minutesAhead = (start.getTime() - Date.now()) / 60000;
+    if (minutesAhead < advancePolicy.min_advance_booking_minutes) {
+      return res.status(409).json({
+        error: `bookings must be made at least ${advancePolicy.min_advance_booking_minutes} minutes in advance`,
+      });
+    }
+    // Compare in minutes for both bounds — avoids day-vs-DST surprises.
+    const maxMinutesAhead = advancePolicy.max_advance_booking_days * 1440;
+    if (minutesAhead > maxMinutesAhead) {
+      return res.status(409).json({
+        error: `bookings cannot be made more than ${advancePolicy.max_advance_booking_days} days in advance`,
+      });
+    }
 
     // 4. Lock the resource row to serialize concurrent attempts on it.
     //    If the resource doesn't exist (or RLS hides it), this returns
