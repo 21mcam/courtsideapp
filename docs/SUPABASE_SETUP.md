@@ -100,6 +100,28 @@ postgresql://app_runtime.{ref}:HEX_PASSWORD@aws-X-{region}.pooler.supabase.com:6
 Put this in `.env` as `DATABASE_URL=...`. **Never** put it in
 `.env.example` (that file is committed).
 
+### Common mistakes (we hit all three of these in Phase 0)
+
+1. **Wrong file.** `.env.example` is the committed template and only
+   ever has placeholders. Your real `DATABASE_URL` goes in `.env`,
+   which is gitignored.
+2. **Square brackets around the password.** Supabase's URI template
+   shows `:[YOUR-PASSWORD]@`. The brackets are placeholder syntax,
+   NOT URL syntax. Drop them. `:eb1a4279…@` not `:[eb1a4279…]@`. The
+   bracket form is for IPv6 hosts and breaks pg's URL parser.
+3. **Doubled `DATABASE_URL=` prefix.** If you paste an assignment line
+   like `DATABASE_URL=postgres://…` into a file that already has
+   `DATABASE_URL=` waiting for a value, you end up with
+   `DATABASE_URL=DATABASE_URL=postgres://…`. dotenv parses the second
+   `DATABASE_URL=` as part of the value, pg's URL parser then
+   fails weirdly (e.g. "ENOTFOUND base", from finding "base" inside
+   "data**base**"). One `DATABASE_URL=` only.
+4. **Wrong user.** The connection string Supabase shows uses
+   `postgres.{ref}` as the user. **Replace it with
+   `app_runtime.{ref}`.** Connecting as `postgres` makes the entire
+   privilege boundary in migration 011 dead code (postgres has
+   BYPASSRLS, owns the tables, can read everything).
+
 ## 5. (Optional) Seed a test tenant
 
 For local dev / "Hello, tenant" demos:
