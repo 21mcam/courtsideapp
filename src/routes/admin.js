@@ -37,6 +37,11 @@ import {
   createBlackout,
   deleteBlackout,
 } from '../controllers/operations.js';
+import {
+  createClassInstance,
+  listClassInstances,
+  cancelClassInstance,
+} from '../controllers/classes.js';
 
 const router = express.Router();
 
@@ -79,5 +84,11 @@ router.delete('/blackouts/:id', deleteBlackout);
 // bookings across the tenant with filter + cancel + mark-no-show
 // (mutations live on /api/bookings/:id/cancel and /:id/mark-no-show).
 router.get('/bookings', listAllBookings);
+
+// Class instances (Phase 4 slice 1) — one-off creation, list, and
+// cancel-with-cascade. Schedules + recurrence land in slice 2.
+router.get('/class-instances', listClassInstances);
+router.post('/class-instances', createClassInstance);
+router.post('/class-instances/:id/cancel', cancelClassInstance);
 
 export default router;
