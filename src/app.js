@@ -26,6 +26,8 @@ import meRouter from './routes/me.js';
 import adminRouter from './routes/admin.js';
 import availabilityRouter from './routes/availability.js';
 import bookingsRouter from './routes/bookings.js';
+import classInstancesRouter from './routes/classInstances.js';
+import classBookingsRouter from './routes/classBookings.js';
 import platformRouter from './routes/platform.js';
 import { resolveTenant } from './middleware/resolveTenant.js';
 
@@ -62,6 +64,8 @@ app.use('/api/me', meRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/availability', availabilityRouter);
 app.use('/api/bookings', bookingsRouter);
+app.use('/api/class-instances', classInstancesRouter);
+app.use('/api/class-bookings', classBookingsRouter);
 app.use('/api/tenant', tenantRouter);
 
 // 6. /api/* fallthrough.
