@@ -61,6 +61,7 @@ export default function AdminHome() {
       <Header />
       <main className="max-w-4xl mx-auto p-6 space-y-8">
         <WizardCallout />
+        <BookingsCallout />
         <TenantCard tenant={me.tenant} />
 
         <ListSection
@@ -258,6 +259,25 @@ function WizardCallout() {
         className="rounded bg-amber-900 text-white px-4 py-2 hover:bg-amber-800"
       >
         Start setup wizard
+      </Link>
+    </div>
+  );
+}
+
+function BookingsCallout() {
+  return (
+    <div className="bg-sky-50 border border-sky-200 rounded p-4 flex items-center justify-between">
+      <div>
+        <div className="font-semibold text-sky-900">Bookings</div>
+        <div className="text-sm text-sky-800">
+          View, cancel, or mark no-show on bookings across the facility.
+        </div>
+      </div>
+      <Link
+        to="/admin/bookings"
+        className="rounded bg-sky-700 text-white px-4 py-2 hover:bg-sky-800"
+      >
+        Open calendar
       </Link>
     </div>
   );

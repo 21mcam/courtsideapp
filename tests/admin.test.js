@@ -28,6 +28,7 @@ let baseUrl;
 let privilegedPool;
 let adminToken;
 let memberToken;
+let tenant_id;
 
 before(async () => {
   if (!process.env.DATABASE_URL_PRIVILEGED) return;
@@ -46,7 +47,7 @@ before(async () => {
     `SELECT id FROM tenants WHERE subdomain = $1`,
     [TENANT],
   );
-  const tenant_id = tenantResult.rows[0].id;
+  tenant_id = tenantResult.rows[0].id;
 
   // Create an admin user (no member row) directly via privileged pool.
   const adminEmail = `admin-${randomUUID()}@example.com`;
@@ -155,7 +156,8 @@ test('member is denied access to /api/admin/members (requireAdmin)', { skip }, a
 // ============================================================
 
 function adminFetch(path, init = {}) {
-  return fetch(`${baseUrl}${path}?tenant=${TENANT}`, {
+  const sep = path.includes('?') ? '&' : '?';
+  return fetch(`${baseUrl}${path}${sep}tenant=${TENANT}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -285,4 +287,106 @@ test('listMembers now exposes current_credits (LEFT JOIN with credit_balances)',
       `member ${m.id} should have a numeric current_credits`,
     );
   }
+});
+
+// ============================================================
+// admin bookings calendar — Phase 3 slice 6
+// ============================================================
+
+test('GET /api/admin/bookings rejects member tokens (requireAdmin)', { skip }, async () => {
+  const res = await fetch(`${baseUrl}/api/admin/bookings?tenant=${TENANT}`, {
+    headers: { Authorization: `Bearer ${memberToken}` },
+  });
+  assert.equal(res.status, 403);
+});
+
+test('GET /api/admin/bookings returns rows joined with offering + resource + member', { skip }, async () => {
+  // Build a fixture booking inline. We don't reuse the bookings test
+  // file's fixtures because each suite owns its own tenant.
+  const resourceId = (
+    await privilegedPool.query(
+      `INSERT INTO resources (tenant_id, name) VALUES ($1, 'Calendar Cage') RETURNING id`,
+      [tenant_id],
+    )
+  ).rows[0].id;
+  const offeringId = (
+    await privilegedPool.query(
+      `INSERT INTO offerings
+         (tenant_id, name, category, duration_minutes, credit_cost,
+          dollar_price, allow_member_booking, allow_public_booking)
+       VALUES ($1, 'calendar-cage-30', 'cage-time', 60, 1, 1000, true, true)
+       RETURNING id`,
+      [tenant_id],
+    )
+  ).rows[0].id;
+  await privilegedPool.query(
+    `INSERT INTO offering_resources (tenant_id, offering_id, resource_id)
+     VALUES ($1, $2, $3)`,
+    [tenant_id, offeringId, resourceId],
+  );
+  const memberId = (
+    await privilegedPool.query(
+      `INSERT INTO members (tenant_id, email, first_name, last_name)
+       VALUES ($1, $2, 'Calendar', 'Booker') RETURNING id`,
+      [tenant_id, `calendar-${randomUUID()}@example.com`],
+    )
+  ).rows[0].id;
+
+  // Future booking 2 hours from now (so the date window default
+  // [today, today+60d) covers it).
+  const start = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
+  const bookingId = (
+    await privilegedPool.query(
+      `INSERT INTO bookings (
+         tenant_id, offering_id, resource_id, member_id,
+         start_time, end_time, status,
+         amount_due_cents, credit_cost_charged, payment_status
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6, 'confirmed', 0, 1, 'not_required'
+       )
+       RETURNING id`,
+      [tenant_id, offeringId, resourceId, memberId, start, end],
+    )
+  ).rows[0].id;
+
+  try {
+    const res = await adminFetch('/api/admin/bookings');
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    const row = body.bookings.find((b) => b.id === bookingId);
+    assert.ok(row, 'fixture booking should appear in admin list');
+    assert.equal(row.offering_name, 'calendar-cage-30');
+    assert.equal(row.resource_name, 'Calendar Cage');
+    assert.equal(row.member_first_name, 'Calendar');
+    assert.equal(row.member_last_name, 'Booker');
+    assert.equal(row.status, 'confirmed');
+  } finally {
+    // Cleanup so this booking doesn't leak.
+    await privilegedPool.query(`DELETE FROM bookings WHERE id = $1`, [bookingId]);
+    await privilegedPool.query(`DELETE FROM members WHERE id = $1`, [memberId]);
+    await privilegedPool.query(`DELETE FROM offerings WHERE id = $1`, [offeringId]);
+    await privilegedPool.query(`DELETE FROM resources WHERE id = $1`, [resourceId]);
+  }
+});
+
+test('GET /api/admin/bookings status filter narrows results', { skip }, async () => {
+  // Pass a status the fixture booking doesn't match → expect 0 rows
+  // (or at least: no rows with status != 'cancelled').
+  const res = await adminFetch('/api/admin/bookings?status=cancelled');
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  for (const b of body.bookings) {
+    assert.equal(b.status, 'cancelled', 'filter should exclude non-cancelled');
+  }
+});
+
+test('GET /api/admin/bookings rejects from >= to with 400', { skip }, async () => {
+  const now = new Date().toISOString();
+  const res = await adminFetch(
+    `/api/admin/bookings?from=${encodeURIComponent(now)}&to=${encodeURIComponent(now)}`,
+  );
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.match(body.error, /from must be before to/i);
 });
