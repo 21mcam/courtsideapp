@@ -211,6 +211,64 @@ function memberFetch(token, path, init = {}) {
 // tests
 // ============================================================
 
+test('GET /api/bookings/offerings returns active member-bookable rentals with their resources', { skip }, async () => {
+  const m = await newMember();
+  const res = await memberFetch(m.token, '/api/bookings/offerings');
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.ok(Array.isArray(body.offerings));
+  // Fixture has exactly one offering ('30-min cage') linked to one
+  // active resource ('Cage 1').
+  const offering = body.offerings.find((o) => o.id === offering_id);
+  assert.ok(offering, 'fixture offering should be present');
+  assert.equal(offering.name, '30-min cage');
+  assert.equal(offering.duration_minutes, OFFERING_DURATION_MIN);
+  assert.equal(offering.credit_cost, OFFERING_CREDITS);
+  assert.ok(Array.isArray(offering.resources));
+  const resource = offering.resources.find((r) => r.id === resource_id);
+  assert.ok(resource, 'resource should be embedded on offering');
+  assert.equal(resource.name, 'Cage 1');
+});
+
+test('GET /api/bookings/offerings excludes inactive offerings and inactive links', { skip }, async () => {
+  // Insert an inactive offering and a member-disabled offering.
+  const inactiveId = (
+    await privilegedPool.query(
+      `INSERT INTO offerings
+         (tenant_id, name, category, duration_minutes, credit_cost,
+          dollar_price, allow_member_booking, allow_public_booking, active)
+       VALUES ($1, 'inactive-offering', 'cage-time', 30, 1, 1000, true, true, false)
+       RETURNING id`,
+      [tenant_id],
+    )
+  ).rows[0].id;
+  const memberDisabledId = (
+    await privilegedPool.query(
+      `INSERT INTO offerings
+         (tenant_id, name, category, duration_minutes, credit_cost,
+          dollar_price, allow_member_booking, allow_public_booking)
+       VALUES ($1, 'public-only', 'cage-time', 30, 1, 1000, false, true)
+       RETURNING id`,
+      [tenant_id],
+    )
+  ).rows[0].id;
+  try {
+    const m = await newMember();
+    const res = await memberFetch(m.token, '/api/bookings/offerings');
+    const body = await res.json();
+    const ids = body.offerings.map((o) => o.id);
+    assert.ok(!ids.includes(inactiveId), 'inactive offering must be hidden');
+    assert.ok(
+      !ids.includes(memberDisabledId),
+      'public-only offering must be hidden from member catalog',
+    );
+  } finally {
+    await privilegedPool.query(`DELETE FROM offerings WHERE id = ANY($1::uuid[])`, [
+      [inactiveId, memberDisabledId],
+    ]);
+  }
+});
+
 test('happy path: member books a valid slot, balance debited', { skip }, async () => {
   const m = await newMember();
   await grantCredits(m.member_id, 5); // 5 credits, plenty for a 3-credit offering
