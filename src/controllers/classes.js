@@ -168,6 +168,54 @@ export async function listClassInstances(req, res, next) {
   }
 }
 
+// GET /api/admin/class-instances/:id/roster — list every class_booking
+// for the instance, with member name + email when present, customer
+// fields when not, and the current status. Used by the admin roster
+// view to know who's coming and to fire cancel / mark-no-show.
+export async function getClassInstanceRoster(req, res, next) {
+  try {
+    const { tenant, db } = req;
+    const id = req.params.id;
+
+    // Confirm the instance exists in this tenant before returning a
+    // roster — distinguish 404 (no such instance) from 200 with an
+    // empty roster (instance exists but nobody's signed up).
+    const ciRes = await db.query(
+      `SELECT ci.id, ci.start_time, ci.end_time, ci.capacity,
+              ci.cancelled_at, ci.cancellation_reason,
+              o.name AS offering_name,
+              r.name AS resource_name
+         FROM class_instances ci
+         JOIN offerings o ON o.tenant_id = ci.tenant_id AND o.id = ci.offering_id
+         JOIN resources r ON r.tenant_id = ci.tenant_id AND r.id = ci.resource_id
+        WHERE ci.tenant_id = $1 AND ci.id = $2`,
+      [tenant.id, id],
+    );
+    if (ciRes.rows.length === 0) {
+      return res.status(404).json({ error: 'class instance not found' });
+    }
+    const instance = ciRes.rows[0];
+
+    const rosterRes = await db.query(
+      `SELECT cb.id, cb.member_id, cb.status, cb.credit_cost_charged,
+              cb.created_at, cb.cancelled_at, cb.cancelled_by_type,
+              cb.no_show_marked_at,
+              cb.customer_first_name, cb.customer_last_name, cb.customer_email,
+              m.first_name AS member_first_name,
+              m.last_name  AS member_last_name,
+              m.email      AS member_email
+         FROM class_bookings cb
+    LEFT JOIN members m ON m.tenant_id = cb.tenant_id AND m.id = cb.member_id
+        WHERE cb.tenant_id = $1 AND cb.class_instance_id = $2
+        ORDER BY cb.created_at ASC`,
+      [tenant.id, id],
+    );
+    res.json({ instance, roster: rosterRes.rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Cancel an instance. Cascades to its class_bookings: any non-cancelled
 // roster row gets cancelled_at + cancelled_by_type='admin', and member
 // bookings get a credit refund via apply_credit_change.

@@ -5,7 +5,9 @@
 //   /login   → login form (single, role-detected)
 //   /wizard  → admin-only setup wizard (Phase 2 slice 5)
 //   /book    → member booking flow (Phase 3 slice 5)
+//   /classes → member class browser + booking (Phase 4 slice 4)
 //   /admin/bookings → admin booking calendar (Phase 3 slice 6)
+//   /admin/classes  → admin schedules + instances + roster (Phase 4 slice 4)
 //
 // Wrapping AuthProvider so any page can read tenant + me state.
 
@@ -17,6 +19,8 @@ import AdminHome from './pages/AdminHome.jsx';
 import Wizard from './pages/Wizard.jsx';
 import BookingPage from './pages/BookingPage.jsx';
 import AdminBookings from './pages/AdminBookings.jsx';
+import ClassesPage from './pages/ClassesPage.jsx';
+import AdminClasses from './pages/AdminClasses.jsx';
 
 export default function App() {
   return (
@@ -43,7 +47,9 @@ function Shell() {
       <Route path="/login" element={<RouteLogin />} />
       <Route path="/wizard" element={<RouteAdminOnly><Wizard /></RouteAdminOnly>} />
       <Route path="/admin/bookings" element={<RouteAdminOnly><AdminBookings /></RouteAdminOnly>} />
+      <Route path="/admin/classes" element={<RouteAdminOnly><AdminClasses /></RouteAdminOnly>} />
       <Route path="/book" element={<RouteAuthed><BookingPage /></RouteAuthed>} />
+      <Route path="/classes" element={<RouteAuthed><ClassesPage /></RouteAuthed>} />
       <Route path="/" element={<RouteHome />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
