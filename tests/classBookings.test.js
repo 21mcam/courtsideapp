@@ -218,7 +218,13 @@ test('GET /api/class-instances returns future, non-cancelled, member-bookable in
   const ci = await newInstance({ start_time: '2027-11-08T15:00:00.000Z' });
   try {
     const m = await newMember();
-    const res = await memberFetch(m.token, '/api/class-instances');
+    // Wide `to` so the fixture 2027/2028 dates aren't filtered out by
+    // the default `now + 60d` window. Tests pick fixed fixture dates
+    // outside the default window deliberately to avoid clock-drift.
+    const res = await memberFetch(
+      m.token,
+      '/api/class-instances?to=2030-01-01T00:00:00Z',
+    );
     assert.equal(res.status, 200);
     const body = await res.json();
     const row = body.class_instances.find((c) => c.id === ci.id);
@@ -240,7 +246,13 @@ test('GET /api/class-instances hides cancelled instances', { skip }, async () =>
   );
   try {
     const m = await newMember();
-    const res = await memberFetch(m.token, '/api/class-instances');
+    // Wide `to` so the fixture 2027/2028 dates aren't filtered out by
+    // the default `now + 60d` window. Tests pick fixed fixture dates
+    // outside the default window deliberately to avoid clock-drift.
+    const res = await memberFetch(
+      m.token,
+      '/api/class-instances?to=2030-01-01T00:00:00Z',
+    );
     const body = await res.json();
     assert.ok(
       !body.class_instances.find((c) => c.id === ci.id),
@@ -282,7 +294,10 @@ test('book a class: 201, balance debited, spot taken', { skip }, async () => {
     assert.equal(meBody.class_bookings[0].offering_name, 'Hitting Clinic');
 
     // Spots remaining decremented in /api/class-instances
-    const listRes = await memberFetch(m.token, '/api/class-instances');
+    const listRes = await memberFetch(
+      m.token,
+      '/api/class-instances?to=2030-01-01T00:00:00Z',
+    );
     const listBody = await listRes.json();
     const row = listBody.class_instances.find((c) => c.id === ci.id);
     assert.equal(row.spots_remaining, CLASS_CAPACITY - 1);
