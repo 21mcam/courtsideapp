@@ -37,6 +37,21 @@ export async function me(req, res, next) {
       [req.tenant.id, user_id],
     );
 
+    // Pull credits if the user has a member record. Surfaced in the
+    // payload so the member dashboard can show "X credits available"
+    // without a second roundtrip. Admin-only users get null here.
+    let credits = null;
+    if (memberResult.rows[0]) {
+      const balRes = await req.db.query(
+        `SELECT current_credits FROM credit_balances
+          WHERE tenant_id = $1 AND member_id = $2`,
+        [req.tenant.id, memberResult.rows[0].id],
+      );
+      credits = {
+        current_credits: balRes.rows[0]?.current_credits ?? 0,
+      };
+    }
+
     res.json({
       user: userResult.rows[0],
       tenant: {
@@ -48,6 +63,7 @@ export async function me(req, res, next) {
         admin: adminResult.rows[0] ?? null,
         member: memberResult.rows[0] ?? null,
       },
+      credits,
     });
   } catch (err) {
     next(err);

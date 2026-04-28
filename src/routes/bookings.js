@@ -18,6 +18,7 @@ import {
   cancelMemberBooking,
   markBookingNoShow,
   listMyBookings,
+  listBookableOfferings,
 } from '../controllers/bookings.js';
 
 const router = express.Router();
@@ -26,6 +27,7 @@ router.use(requireAuth, withTenantContext);
 
 router.post('/', createMemberBooking);
 router.get('/me', listMyBookings);
+router.get('/offerings', listBookableOfferings);
 router.post('/:id/cancel', cancelMemberBooking);
 router.post('/:id/mark-no-show', markBookingNoShow);
 

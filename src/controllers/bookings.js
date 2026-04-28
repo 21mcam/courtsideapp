@@ -545,6 +545,49 @@ export async function markBookingNoShow(req, res, next) {
   }
 }
 
+// GET /api/bookings/offerings — member-facing offering catalog.
+//
+// Returns active rental offerings (capacity = 1) that allow member
+// booking, plus the list of active resources each is offered on.
+// The booking UI uses this to populate the offering picker.
+//
+// Plan-allowed-categories filtering is intentionally NOT applied —
+// see createMemberBooking comment. When subscriptions ship in
+// Phase 5 we'll filter here too.
+export async function listBookableOfferings(req, res, next) {
+  try {
+    const result = await req.db.query(
+      `SELECT o.id, o.name, o.category, o.duration_minutes,
+              o.credit_cost, o.dollar_price, o.display_order,
+              COALESCE(
+                (
+                  SELECT json_agg(json_build_object(
+                    'id', r.id, 'name', r.name, 'display_order', r.display_order
+                  ) ORDER BY r.display_order, r.name)
+                    FROM offering_resources orx
+                    JOIN resources r
+                      ON r.tenant_id = orx.tenant_id AND r.id = orx.resource_id
+                   WHERE orx.tenant_id = o.tenant_id
+                     AND orx.offering_id = o.id
+                     AND orx.active
+                     AND r.active
+                ),
+                '[]'::json
+              ) AS resources
+         FROM offerings o
+        WHERE o.tenant_id = $1
+          AND o.active
+          AND o.allow_member_booking
+          AND o.capacity = 1
+        ORDER BY o.display_order ASC, o.name ASC`,
+      [req.tenant.id],
+    );
+    res.json({ offerings: result.rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /api/bookings/me — list the authenticated member's bookings.
 // Useful for "my bookings" UI and for tests to verify state.
 export async function listMyBookings(req, res, next) {

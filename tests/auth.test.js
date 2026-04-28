@@ -170,6 +170,10 @@ test('happy path: register-member → login → /api/me', { skip }, async () => 
   assert.equal(meBody.memberships.admin, null, 'should have no admin membership');
   assert.ok(meBody.memberships.member, 'should have member membership');
   assert.equal(meBody.memberships.member.id, regBody.member_id);
+  // Members should get a credits payload (current_credits = 0 for a
+  // fresh registration with no admin grants yet).
+  assert.ok(meBody.credits, '/api/me should include credits for members');
+  assert.equal(meBody.credits.current_credits, 0);
 });
 
 test('app-layer block: tenant A token against tenant B → 403, NO DB connection', { skip }, async () => {
@@ -259,6 +263,8 @@ test('admin-only user can log in; JWT carries admin_id and role=admin', { skip }
   assert.ok(meBody.memberships.admin, 'admin row should be present');
   assert.equal(meBody.memberships.admin.role, 'owner');
   assert.equal(meBody.memberships.member, null);
+  // Admin-only users don't have a credits payload — only members do.
+  assert.equal(meBody.credits, null, 'admin-only users should not get credits');
 });
 
 test('admin+member user gets role=admin precedence; JWT carries both ids', { skip }, async () => {

@@ -4,6 +4,7 @@
 //   /        → role-based home (Admin or Member)
 //   /login   → login form (single, role-detected)
 //   /wizard  → admin-only setup wizard (Phase 2 slice 5)
+//   /book    → member booking flow (Phase 3 slice 5)
 //
 // Wrapping AuthProvider so any page can read tenant + me state.
 
@@ -13,6 +14,7 @@ import LoginPage from './pages/LoginPage.jsx';
 import MemberHome from './pages/MemberHome.jsx';
 import AdminHome from './pages/AdminHome.jsx';
 import Wizard from './pages/Wizard.jsx';
+import BookingPage from './pages/BookingPage.jsx';
 
 export default function App() {
   return (
@@ -38,6 +40,7 @@ function Shell() {
     <Routes>
       <Route path="/login" element={<RouteLogin />} />
       <Route path="/wizard" element={<RouteAdminOnly><Wizard /></RouteAdminOnly>} />
+      <Route path="/book" element={<RouteAuthed><BookingPage /></RouteAuthed>} />
       <Route path="/" element={<RouteHome />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -60,6 +63,12 @@ function RouteAdminOnly({ children }) {
   const { me } = useAuth();
   if (!me) return <Navigate to="/login" replace />;
   if (!me.memberships.admin) return <Navigate to="/" replace />;
+  return children;
+}
+
+function RouteAuthed({ children }) {
+  const { me } = useAuth();
+  if (!me) return <Navigate to="/login" replace />;
   return children;
 }
 
