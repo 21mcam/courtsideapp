@@ -114,17 +114,23 @@ before(async () => {
   // Booking policy used by the cancel tests below. Set explicit
   // values so refund-tier assertions are deterministic regardless
   // of schema defaults.
+  // Permissive max_advance_booking_days so existing 2027-dated tests
+  // aren't rejected by the advance-window policy. Specific tests
+  // below temporarily tighten it to assert the gate works.
   await privilegedPool.query(
     `INSERT INTO booking_policies (
        tenant_id, free_cancel_hours_before,
        partial_refund_hours_before, partial_refund_percent,
-       allow_member_self_cancel
-     ) VALUES ($1, 24, 6, 50, true)
+       allow_member_self_cancel,
+       min_advance_booking_minutes, max_advance_booking_days
+     ) VALUES ($1, 24, 6, 50, true, 0, 730)
      ON CONFLICT (tenant_id) DO UPDATE SET
        free_cancel_hours_before    = EXCLUDED.free_cancel_hours_before,
        partial_refund_hours_before = EXCLUDED.partial_refund_hours_before,
        partial_refund_percent      = EXCLUDED.partial_refund_percent,
-       allow_member_self_cancel    = EXCLUDED.allow_member_self_cancel`,
+       allow_member_self_cancel    = EXCLUDED.allow_member_self_cancel,
+       min_advance_booking_minutes = EXCLUDED.min_advance_booking_minutes,
+       max_advance_booking_days    = EXCLUDED.max_advance_booking_days`,
     [tenant_id],
   );
 
@@ -553,6 +559,116 @@ test('member cannot cancel another member\'s booking → 403', { skip }, async (
     [booking.id],
   );
   assert.equal(check.rows[0].status, 'confirmed');
+});
+
+// ============================================================
+// advance-booking window policy
+// ============================================================
+
+// booking_policies.min_advance_booking_minutes / max_advance_booking_days
+// gate booking creation. The shared tenant fixture is permissive (0
+// min, 730 days); each test below tightens the policy, runs, then
+// restores. Tests pick unique slot dates so they don't collide with
+// other booking-creation tests.
+
+async function setAdvanceWindow(minMin, maxDays) {
+  await privilegedPool.query(
+    `UPDATE booking_policies
+        SET min_advance_booking_minutes = $1,
+            max_advance_booking_days    = $2
+      WHERE tenant_id = $3`,
+    [minMin, maxDays, tenant_id],
+  );
+}
+
+test('advance window: booking too soon (< min_advance) → 409', { skip }, async () => {
+  await setAdvanceWindow(60, 730); // require 60 min lead time
+  try {
+    const m = await newMember();
+    await grantCredits(m.member_id, 5);
+
+    // Slot 30 min from now — under the 60-min floor.
+    const start = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const res = await memberFetch(m.token, '/api/bookings', {
+      method: 'POST',
+      body: JSON.stringify({ offering_id, resource_id, start_time: start }),
+    });
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.match(body.error, /at least 60 minutes/i);
+
+    // No booking row created — request rejected before INSERT.
+    const dbCheck = await privilegedPool.query(
+      `SELECT 1 FROM bookings WHERE member_id = $1`,
+      [m.member_id],
+    );
+    assert.equal(dbCheck.rows.length, 0);
+  } finally {
+    await setAdvanceWindow(0, 730);
+  }
+});
+
+test('advance window: booking too far out (> max_advance_days) → 409', { skip }, async () => {
+  await setAdvanceWindow(0, 7); // only 7 days out
+  try {
+    const m = await newMember();
+    await grantCredits(m.member_id, 5);
+
+    // 2027-02-01 is hundreds of days out — exceeds 7.
+    const res = await memberFetch(m.token, '/api/bookings', {
+      method: 'POST',
+      body: JSON.stringify({
+        offering_id,
+        resource_id,
+        start_time: '2027-02-01T19:00:00.000Z',
+      }),
+    });
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.match(body.error, /more than 7 days/i);
+  } finally {
+    await setAdvanceWindow(0, 730);
+  }
+});
+
+test('advance window: slot inside the policy window → 201', { skip }, async () => {
+  await setAdvanceWindow(0, 14); // 14-day window
+  try {
+    const m = await newMember();
+    await grantCredits(m.member_id, 5);
+
+    // 5 days from now at noon UTC (well inside operating hours for
+    // most days; we'll pick a Monday slot at 14:00 EST = 19:00 UTC
+    // when DOW happens to land on Monday). Actually, simpler: just
+    // use a fixed Monday 5-7 days out from a known reference.
+    //
+    // currentDate context: 2026-04-28 (Tuesday). Closest Monday
+    // in window: 2026-05-04 (6 days out, Monday).
+    const res = await memberFetch(m.token, '/api/bookings', {
+      method: 'POST',
+      body: JSON.stringify({
+        offering_id,
+        resource_id,
+        start_time: '2026-05-04T19:00:00.000Z', // 14:00 EST
+      }),
+    });
+    assert.equal(res.status, 201);
+    const body = await res.json();
+    assert.equal(body.booking.status, 'confirmed');
+
+    // Cleanup so this booking doesn't leak into other tests.
+    await privilegedPool.query(
+      `DELETE FROM credit_ledger_entries WHERE booking_id = $1`,
+      [body.booking.id],
+    );
+    await privilegedPool.query(
+      `UPDATE bookings SET status = 'cancelled', cancelled_at = now()
+        WHERE id = $1`,
+      [body.booking.id],
+    );
+  } finally {
+    await setAdvanceWindow(0, 730);
+  }
 });
 
 // ============================================================
