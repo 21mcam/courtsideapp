@@ -111,6 +111,23 @@ before(async () => {
     });
   });
 
+  // Booking policy used by the cancel tests below. Set explicit
+  // values so refund-tier assertions are deterministic regardless
+  // of schema defaults.
+  await privilegedPool.query(
+    `INSERT INTO booking_policies (
+       tenant_id, free_cancel_hours_before,
+       partial_refund_hours_before, partial_refund_percent,
+       allow_member_self_cancel
+     ) VALUES ($1, 24, 6, 50, true)
+     ON CONFLICT (tenant_id) DO UPDATE SET
+       free_cancel_hours_before    = EXCLUDED.free_cancel_hours_before,
+       partial_refund_hours_before = EXCLUDED.partial_refund_hours_before,
+       partial_refund_percent      = EXCLUDED.partial_refund_percent,
+       allow_member_self_cancel    = EXCLUDED.allow_member_self_cancel`,
+    [tenant_id],
+  );
+
   const adminLogin = await fetch(`${baseUrl}/api/auth/login?tenant=${TENANT}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -361,6 +378,181 @@ test('slot inside a facility-wide blackout → 409', { skip }, async () => {
   assert.equal(res.status, 409);
   const body = await res.json();
   assert.match(body.error, /blacked out/i);
+});
+
+// ============================================================
+// cancel flow
+// ============================================================
+
+// Inserts a synthetic confirmed booking via the privileged pool —
+// bypasses the real op_hours / availability gates so the cancel
+// tests can put bookings at arbitrary distances from `now` without
+// fighting the booking-creation flow's window checks. The cancel
+// path itself doesn't care about op_hours, only about start_time
+// vs now and policy thresholds.
+async function syntheticBooking({ member_id, hoursFromNow, credits = OFFERING_CREDITS }) {
+  const start = new Date(Date.now() + hoursFromNow * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + OFFERING_DURATION_MIN * 60 * 1000);
+  const r = await privilegedPool.query(
+    `INSERT INTO bookings (
+       tenant_id, offering_id, resource_id, member_id,
+       start_time, end_time, status,
+       amount_due_cents, credit_cost_charged, payment_status
+     ) VALUES (
+       $1, $2, $3, $4, $5, $6, 'confirmed', 0, $7, 'not_required'
+     )
+     RETURNING id, start_time, end_time, credit_cost_charged`,
+    [tenant_id, offering_id, resource_id, member_id, start, end, credits],
+  );
+  return r.rows[0];
+}
+
+test('cancel ≥24h before start: 100% refund', { skip }, async () => {
+  const m = await newMember();
+  // Member starts at 0 credits — refund will push them up.
+  const booking = await syntheticBooking({
+    member_id: m.member_id,
+    hoursFromNow: 48,
+  });
+
+  const res = await memberFetch(m.token, `/api/bookings/${booking.id}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({ cancellation_reason: 'changed plans' }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.refund_percent, 100);
+  assert.equal(body.refund_credits, OFFERING_CREDITS);
+  assert.equal(body.balance_after, OFFERING_CREDITS);
+  assert.ok(body.refund_entry_id);
+
+  // Booking row is now cancelled with audit fields populated.
+  const updated = await privilegedPool.query(
+    `SELECT status, cancelled_at, cancelled_by_type, cancelled_by_user_id,
+            cancellation_reason
+       FROM bookings WHERE id = $1`,
+    [booking.id],
+  );
+  assert.equal(updated.rows[0].status, 'cancelled');
+  assert.ok(updated.rows[0].cancelled_at);
+  assert.equal(updated.rows[0].cancelled_by_type, 'member');
+  assert.equal(updated.rows[0].cancelled_by_user_id, m.user_id);
+  assert.equal(updated.rows[0].cancellation_reason, 'changed plans');
+
+  // Ledger has a booking_refund row referencing this booking.
+  const ledger = await privilegedPool.query(
+    `SELECT amount, reason, booking_id FROM credit_ledger_entries
+      WHERE member_id = $1 AND booking_id = $2`,
+    [m.member_id, booking.id],
+  );
+  assert.equal(ledger.rows.length, 1);
+  assert.equal(ledger.rows[0].reason, 'booking_refund');
+  assert.equal(ledger.rows[0].amount, OFFERING_CREDITS);
+});
+
+test('cancel between partial and free windows: partial refund (50%)', { skip }, async () => {
+  const m = await newMember();
+  // 12h is < 24 (free) but ≥ 6 (partial). Policy says 50%.
+  const booking = await syntheticBooking({
+    member_id: m.member_id,
+    hoursFromNow: 12,
+  });
+
+  const res = await memberFetch(m.token, `/api/bookings/${booking.id}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.refund_percent, 50);
+  // floor(3 * 50 / 100) = 1
+  assert.equal(body.refund_credits, 1);
+  assert.equal(body.balance_after, 1);
+});
+
+test('cancel inside no-refund window: cancel succeeds, refund = 0', { skip }, async () => {
+  const m = await newMember();
+  // 1h is < 6 (partial threshold) — no refund.
+  const booking = await syntheticBooking({
+    member_id: m.member_id,
+    hoursFromNow: 1,
+  });
+
+  const res = await memberFetch(m.token, `/api/bookings/${booking.id}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.refund_percent, 0);
+  assert.equal(body.refund_credits, 0);
+  // No apply_credit_change call when refund == 0; balance_after is null.
+  assert.equal(body.balance_after, null);
+
+  // Booking still cancelled.
+  const updated = await privilegedPool.query(
+    `SELECT status FROM bookings WHERE id = $1`,
+    [booking.id],
+  );
+  assert.equal(updated.rows[0].status, 'cancelled');
+
+  // No ledger entry for this booking.
+  const ledger = await privilegedPool.query(
+    `SELECT 1 FROM credit_ledger_entries WHERE booking_id = $1`,
+    [booking.id],
+  );
+  assert.equal(ledger.rows.length, 0);
+});
+
+test('cancel an already-cancelled booking → 409', { skip }, async () => {
+  const m = await newMember();
+  const booking = await syntheticBooking({
+    member_id: m.member_id,
+    hoursFromNow: 48,
+  });
+
+  // First cancel — succeeds.
+  const first = await memberFetch(m.token, `/api/bookings/${booking.id}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  assert.equal(first.status, 200);
+
+  // Second cancel — booking is now 'cancelled', not 'confirmed'.
+  const second = await memberFetch(m.token, `/api/bookings/${booking.id}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  assert.equal(second.status, 409);
+  const body = await second.json();
+  assert.match(body.error, /cancelled.*confirmed/i);
+});
+
+test('member cannot cancel another member\'s booking → 403', { skip }, async () => {
+  const owner = await newMember();
+  const stranger = await newMember();
+
+  const booking = await syntheticBooking({
+    member_id: owner.member_id,
+    hoursFromNow: 48,
+  });
+
+  const res = await memberFetch(
+    stranger.token,
+    `/api/bookings/${booking.id}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
+  assert.equal(res.status, 403);
+
+  // Booking remains confirmed.
+  const check = await privilegedPool.query(
+    `SELECT status FROM bookings WHERE id = $1`,
+    [booking.id],
+  );
+  assert.equal(check.rows[0].status, 'confirmed');
 });
 
 test('two bookings by same member at non-overlapping slots → both succeed, balance reflects both', { skip }, async () => {
