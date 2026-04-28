@@ -147,7 +147,47 @@ ON CONFLICT (subdomain) DO NOTHING;
 After this, hitting `http://momentum.localhost:5173` in dev (or your
 prod equivalent) should render the tenant page.
 
-## 6. Sanity check
+## 6. (Optional) Bootstrap an admin user
+
+Until tenant signup is built (a later Phase 1 slice), admins are
+created manually via SQL. Pick a password locally with `openssl rand
+-hex 16`, hash it offline (or use `bcrypt-cli`), and paste this in
+the Supabase SQL editor — substituting `your-tenant-subdomain`,
+`admin@example.com`, the bcrypt hash, and the names.
+
+A simpler workflow that avoids offline hashing: register the user as
+a member via `POST /api/auth/register-member` (so the API hashes the
+password), then run only the `tenant_admins` insert below. The user
+ends up with both roles, which is the "owner who's also a member"
+case the schema explicitly supports.
+
+```sql
+-- Option A: full manual (offline bcrypt hash needed)
+INSERT INTO users (tenant_id, email, password_hash, first_name, last_name)
+SELECT id, 'admin@example.com', '$2a$10$...bcrypt-hash...', 'Admin', 'User'
+  FROM tenants WHERE subdomain = 'your-tenant-subdomain';
+
+INSERT INTO tenant_admins (tenant_id, user_id, role)
+SELECT u.tenant_id, u.id, 'owner'
+  FROM users u
+  JOIN tenants t ON t.id = u.tenant_id
+ WHERE t.subdomain = 'your-tenant-subdomain'
+   AND u.email = 'admin@example.com';
+
+-- Option B: register-member first via API, then upgrade with one row
+INSERT INTO tenant_admins (tenant_id, user_id, role)
+SELECT u.tenant_id, u.id, 'owner'
+  FROM users u
+  JOIN tenants t ON t.id = u.tenant_id
+ WHERE t.subdomain = 'your-tenant-subdomain'
+   AND u.email = 'admin@example.com';
+```
+
+Roles are `'admin'` or `'owner'` per the schema's CHECK constraint.
+After this, log in via `POST /api/auth/login` — the response will
+carry `role: 'admin'` (admin takes precedence when both roles exist).
+
+## 7. Sanity check
 
 From the repo root:
 
