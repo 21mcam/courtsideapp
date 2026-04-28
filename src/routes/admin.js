@@ -10,7 +10,12 @@ import express from 'express';
 
 import { withTenantContext } from '../db/withTenantContext.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
-import { listMembers, listAdmins } from '../controllers/admin.js';
+import {
+  listMembers,
+  listAdmins,
+  createManualMember,
+  adjustMemberCredits,
+} from '../controllers/admin.js';
 import {
   listResources,
   createResource,
@@ -26,8 +31,13 @@ const router = express.Router();
 
 router.use(requireAuth, requireAdmin, withTenantContext);
 
-// User management (Phase 1 slice 4)
+// User management
+//   - listMembers: Phase 1 slice 4 (now extended with current_credits
+//     in Phase 2 slice 4)
+//   - createManualMember + adjustMemberCredits: Phase 2 slice 4
 router.get('/members', listMembers);
+router.post('/members', createManualMember);
+router.post('/members/:id/credit-adjustments', adjustMemberCredits);
 router.get('/admins', listAdmins);
 
 // Catalog (Phase 2 slice 2)

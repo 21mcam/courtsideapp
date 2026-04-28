@@ -149,3 +149,140 @@ test('member is denied access to /api/admin/members (requireAdmin)', { skip }, a
   const body = await res.json();
   assert.match(body.error, /admin/);
 });
+
+// ============================================================
+// Phase 2 slice 4: manual member create + credit adjustments
+// ============================================================
+
+function adminFetch(path, init = {}) {
+  return fetch(`${baseUrl}${path}?tenant=${TENANT}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${adminToken}`,
+      ...(init.headers ?? {}),
+    },
+  });
+}
+
+test('admin creates a manual member (user_id null, current_credits 0)', { skip }, async () => {
+  const email = `manual-${randomUUID()}@example.com`;
+  const res = await adminFetch('/api/admin/members', {
+    method: 'POST',
+    body: JSON.stringify({
+      email,
+      first_name: 'Manual',
+      last_name: 'Member',
+    }),
+  });
+  assert.equal(res.status, 201);
+  const { member } = await res.json();
+  assert.equal(member.email, email);
+  assert.equal(member.user_id, null, 'manual member should have user_id null');
+  assert.equal(member.current_credits, 0);
+
+  // Confirm visible in list
+  const listRes = await adminFetch('/api/admin/members');
+  const { members } = await listRes.json();
+  assert.ok(members.some((m) => m.id === member.id));
+});
+
+test('admin grants credits via credit-adjustments; balance reflects', { skip }, async () => {
+  // Create a fresh member for this test
+  const email = `credit-${randomUUID()}@example.com`;
+  const createRes = await adminFetch('/api/admin/members', {
+    method: 'POST',
+    body: JSON.stringify({
+      email,
+      first_name: 'Credit',
+      last_name: 'Recipient',
+    }),
+  });
+  const { member } = await createRes.json();
+
+  const adjustRes = await adminFetch(
+    `/api/admin/members/${member.id}/credit-adjustments`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ amount: 5, note: 'welcome bonus' }),
+    },
+  );
+  assert.equal(adjustRes.status, 201);
+  const { entry_id, balance_after } = await adjustRes.json();
+  assert.ok(entry_id);
+  assert.equal(balance_after, 5);
+
+  // List reflects updated balance
+  const listRes = await adminFetch('/api/admin/members');
+  const { members } = await listRes.json();
+  const found = members.find((m) => m.id === member.id);
+  assert.equal(found.current_credits, 5);
+});
+
+test('admin deducting more than balance returns 400 (insufficient credits)', { skip }, async () => {
+  // Create member with 3 credits
+  const email = `insufficient-${randomUUID()}@example.com`;
+  const { member } = await (
+    await adminFetch('/api/admin/members', {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        first_name: 'Insufficient',
+        last_name: 'Credits',
+      }),
+    })
+  ).json();
+  await adminFetch(`/api/admin/members/${member.id}/credit-adjustments`, {
+    method: 'POST',
+    body: JSON.stringify({ amount: 3 }),
+  });
+
+  // Try to deduct 10 (only 3 available)
+  const res = await adminFetch(
+    `/api/admin/members/${member.id}/credit-adjustments`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ amount: -10 }),
+    },
+  );
+  assert.equal(res.status, 400, 'apply_credit_change should reject insufficient credits as 400');
+  const body = await res.json();
+  assert.match(body.error, /insufficient credits/i);
+});
+
+test('member token gets 403 on credit-adjustments (requireAdmin)', { skip }, async () => {
+  // Use existing member from before() — adminFetch but with member token
+  const memberFetch = (path, init = {}) =>
+    fetch(`${baseUrl}${path}?tenant=${TENANT}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${memberToken}`,
+        ...(init.headers ?? {}),
+      },
+    });
+
+  const res = await memberFetch(
+    `/api/admin/members/${randomUUID()}/credit-adjustments`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ amount: 100 }),
+    },
+  );
+  assert.equal(res.status, 403);
+});
+
+test('listMembers now exposes current_credits (LEFT JOIN with credit_balances)', { skip }, async () => {
+  const listRes = await adminFetch('/api/admin/members');
+  assert.equal(listRes.status, 200);
+  const { members } = await listRes.json();
+  // Every row must have a current_credits field, default 0 for
+  // members without a balance row.
+  for (const m of members) {
+    assert.equal(
+      typeof m.current_credits,
+      'number',
+      `member ${m.id} should have a numeric current_credits`,
+    );
+  }
+});
