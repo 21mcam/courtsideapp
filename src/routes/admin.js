@@ -32,6 +32,9 @@ import {
   deleteOperatingHours,
   getBookingPolicies,
   upsertBookingPolicies,
+  listBlackouts,
+  createBlackout,
+  deleteBlackout,
 } from '../controllers/operations.js';
 
 const router = express.Router();
@@ -65,5 +68,10 @@ router.post('/operating-hours', createOperatingHours);
 router.delete('/operating-hours/:id', deleteOperatingHours);
 router.get('/booking-policies', getBookingPolicies);
 router.put('/booking-policies', upsertBookingPolicies);
+
+// Blackouts (Phase 3 prep)
+router.get('/blackouts', listBlackouts);
+router.post('/blackouts', createBlackout);
+router.delete('/blackouts/:id', deleteBlackout);
 
 export default router;
