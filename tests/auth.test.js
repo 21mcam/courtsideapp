@@ -34,7 +34,6 @@ const skip = !process.env.DATABASE_URL_PRIVILEGED
 let server;
 let baseUrl;
 let privilegedPool;
-let tenantA_id;
 let tenantB_id;
 
 before(async () => {
@@ -58,7 +57,6 @@ before(async () => {
     [TENANT_A, TENANT_B],
   );
   for (const row of tenantsResult.rows) {
-    if (row.subdomain === TENANT_A) tenantA_id = row.id;
     if (row.subdomain === TENANT_B) tenantB_id = row.id;
   }
 
@@ -154,13 +152,17 @@ test('app-layer block: tenant A token against tenant B → 403, NO DB connection
   assert.equal(regRes.status, 201);
   const { token } = await regRes.json();
 
-  // Spy: every pool.connect during the cross-tenant request would
-  // mean withTenantContext started a transaction, which means
-  // requireAuth let it through.
+  // Spy on pool.connect to count checkouts during the cross-tenant
+  // request. Expected: exactly 1 — resolveTenant's tenant_lookup
+  // query is unavoidable (we need to know which tenant the request
+  // is FOR before requireAuth can compare it to the JWT). What we
+  // want to prove: withTenantContext does NOT additionally check out
+  // a client (which would mean a transaction was opened). So the
+  // assertion is "exactly 1 connect, not 2."
   const origConnect = pool.connect.bind(pool);
-  let connectCalled = false;
+  let connectCount = 0;
   pool.connect = (...args) => {
-    connectCalled = true;
+    connectCount++;
     return origConnect(...args);
   };
 
@@ -170,9 +172,9 @@ test('app-layer block: tenant A token against tenant B → 403, NO DB connection
     });
     assert.equal(res.status, 403, 'cross-tenant token must be rejected with 403');
     assert.equal(
-      connectCalled,
-      false,
-      'pool.connect must NOT be called — requireAuth blocks before withTenantContext',
+      connectCount,
+      1,
+      'pool.connect should fire exactly once (resolveTenant). A second connect would mean withTenantContext opened a transaction, which means requireAuth failed to block.',
     );
   } finally {
     pool.connect = origConnect;
