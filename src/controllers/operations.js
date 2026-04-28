@@ -1,9 +1,9 @@
-// Admin endpoints for operating_hours and booking_policies.
+// Admin endpoints for operating_hours, booking_policies, and
+// blackouts.
 //
-// These two tables are catalog-adjacent: the wizard doesn't touch
-// them yet, but Phase 3's availability engine + cancel flow does.
-// Phase 3 prep slice ships the API; the wizard / admin UI integration
-// follows when Phase 3's booking surface needs it.
+// All three are operational rules the availability engine in Phase 3
+// will consume. Phase 3 prep slice ships the API; wizard / admin UI
+// integration follows when Phase 3's booking surface needs it.
 //
 // operating_hours is per-resource, per-day-of-week, open→close in
 // LOCAL time (DST-stable). Multi-row per (resource, day) allowed —
@@ -243,6 +243,131 @@ export async function upsertBookingPolicies(req, res, next) {
       }
       throw err;
     }
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
+// blackouts
+// ============================================================
+//
+// Three valid shapes:
+//   - resource_id set, offering_id null → blackout that resource
+//   - offering_id set, resource_id null → blackout that offering
+//   - both null → facility-wide
+//
+// Both set is rejected by both an app-layer pre-check (cleaner error)
+// and the schema's CHECK (NOT (resource_id IS NOT NULL AND
+// offering_id IS NOT NULL)) (defense in depth).
+
+const blackoutCreateSchema = z
+  .object({
+    starts_at: z.string().datetime({ message: 'starts_at must be ISO 8601' }),
+    ends_at: z.string().datetime({ message: 'ends_at must be ISO 8601' }),
+    resource_id: z.string().uuid().nullable().optional(),
+    offering_id: z.string().uuid().nullable().optional(),
+    reason: z.string().max(500).optional(),
+  })
+  .refine((d) => new Date(d.ends_at) > new Date(d.starts_at), {
+    message: 'ends_at must be after starts_at',
+  })
+  .refine((d) => !(d.resource_id && d.offering_id), {
+    message: 'cannot set both resource_id and offering_id; pick one or neither',
+  });
+
+export async function listBlackouts(req, res, next) {
+  try {
+    // Optional filters: ?resource_id= or ?offering_id=. If neither,
+    // returns all blackouts in the tenant (facility-wide + resource +
+    // offering — no filtering by target).
+    const { resource_id, offering_id } = req.query;
+    const where = ['tenant_id = $1'];
+    const params = [req.tenant.id];
+    if (typeof resource_id === 'string') {
+      where.push(`resource_id = $${params.length + 1}`);
+      params.push(resource_id);
+    }
+    if (typeof offering_id === 'string') {
+      where.push(`offering_id = $${params.length + 1}`);
+      params.push(offering_id);
+    }
+    const result = await req.db.query(
+      `SELECT id, resource_id, offering_id, starts_at, ends_at, reason,
+              created_by, created_at, updated_at
+         FROM blackouts
+        WHERE ${where.join(' AND ')}
+        ORDER BY starts_at ASC`,
+      params,
+    );
+    res.json({ blackouts: result.rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createBlackout(req, res, next) {
+  try {
+    const parsed = blackoutCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const { starts_at, ends_at, resource_id, offering_id, reason } = parsed.data;
+    const created_by = req.user?.user_id ?? null;
+
+    try {
+      const result = await req.db.query(
+        `INSERT INTO blackouts
+           (tenant_id, resource_id, offering_id, starts_at, ends_at,
+            reason, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, resource_id, offering_id, starts_at, ends_at,
+                   reason, created_by, created_at, updated_at`,
+        [
+          req.tenant.id,
+          resource_id ?? null,
+          offering_id ?? null,
+          starts_at,
+          ends_at,
+          reason ?? null,
+          created_by,
+        ],
+      );
+      res.status(201).json({ blackout: result.rows[0] });
+    } catch (err) {
+      if (err.code === '23503') {
+        // FK violation — composite (tenant_id, resource_id) or
+        // (tenant_id, offering_id) doesn't resolve in this tenant.
+        return res
+          .status(400)
+          .json({ error: 'resource or offering not found in this tenant' });
+      }
+      if (err.code === '23514') {
+        return res
+          .status(400)
+          .json({ error: 'invalid blackout: schema CHECK failed' });
+      }
+      throw err;
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteBlackout(req, res, next) {
+  try {
+    const result = await req.db.query(
+      `DELETE FROM blackouts
+        WHERE tenant_id = $1 AND id = $2
+        RETURNING id`,
+      [req.tenant.id, req.params.id],
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'blackout not found' });
+    }
+    res.json({ ok: true, deleted_id: result.rows[0].id });
   } catch (err) {
     next(err);
   }
