@@ -30,14 +30,16 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
-function signToken({ tenant_id, user_id, member_id, role }) {
+function signToken({ tenant_id, user_id, member_id, admin_id, role }) {
   const secret = process.env.JWT_SECRET;
   if (!secret || secret === 'CHANGE_ME') {
     throw new Error('JWT_SECRET is not configured');
   }
-  return jwt.sign({ tenant_id, user_id, member_id, role }, secret, {
-    expiresIn: TOKEN_EXPIRY,
-  });
+  return jwt.sign(
+    { tenant_id, user_id, member_id, admin_id, role },
+    secret,
+    { expiresIn: TOKEN_EXPIRY },
+  );
 }
 
 export async function registerMember(req, res, next) {
@@ -82,6 +84,7 @@ export async function registerMember(req, res, next) {
       tenant_id: req.tenant.id,
       user_id,
       member_id,
+      admin_id: null,
       role: 'member',
     });
 
@@ -121,28 +124,42 @@ export async function login(req, res, next) {
       return res.status(401).json({ error: 'invalid credentials' });
     }
 
-    // Slice 1 is member-only. If this user has no member row in this
-    // tenant, refuse to issue a token. Admin login is a separate
-    // path added later.
+    // Resolve roles for this user in this tenant. A user may have
+    // both rows (facility owner who's also a member of their own
+    // facility) — that's expected per the "one user, many roles"
+    // model. The JWT carries both ids; `role` is a primary signal
+    // for routes that only need a coarse check, with admin taking
+    // precedence over member when both are present.
     const memberResult = await req.db.query(
       `SELECT id FROM members WHERE tenant_id = $1 AND user_id = $2`,
       [req.tenant.id, user_id],
     );
-    const member_id = memberResult.rows[0]?.id;
-    if (!member_id) {
+    const adminResult = await req.db.query(
+      `SELECT id FROM tenant_admins WHERE tenant_id = $1 AND user_id = $2`,
+      [req.tenant.id, user_id],
+    );
+    const member_id = memberResult.rows[0]?.id ?? null;
+    const admin_id = adminResult.rows[0]?.id ?? null;
+
+    if (!member_id && !admin_id) {
+      // Authenticated but has no role attached in this tenant.
+      // Possible if a user was created and then both role rows were
+      // deleted; valid login but no domain identity.
       return res
         .status(403)
-        .json({ error: 'no member account for this user in this tenant' });
+        .json({ error: 'no role for this user in this tenant' });
     }
 
+    const role = admin_id ? 'admin' : 'member';
     const token = signToken({
       tenant_id: req.tenant.id,
       user_id,
       member_id,
-      role: 'member',
+      admin_id,
+      role,
     });
 
-    res.json({ token, user_id, member_id });
+    res.json({ token, user_id, member_id, admin_id, role });
   } catch (err) {
     next(err);
   }

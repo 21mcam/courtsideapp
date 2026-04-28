@@ -21,6 +21,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import 'dotenv/config';
+import bcrypt from 'bcryptjs';
 import pg from 'pg';
 import { app } from '../src/app.js';
 import { pool } from '../src/db/pool.js';
@@ -34,7 +35,43 @@ const skip = !process.env.DATABASE_URL_PRIVILEGED
 let server;
 let baseUrl;
 let privilegedPool;
+let tenantA_id;
 let tenantB_id;
+
+// Test helper — creates an admin user (and optionally a member) in
+// the given tenant via the privileged pool (which bypasses RLS as
+// table owner). Used by admin tests. Returns the user_id.
+async function createUserWithRoles(
+  tenant_id,
+  { email, password, first_name, last_name, admin_role = null, also_member = false },
+) {
+  const password_hash = await bcrypt.hash(password, 10);
+  const userResult = await privilegedPool.query(
+    `INSERT INTO users (tenant_id, email, password_hash, first_name, last_name)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id`,
+    [tenant_id, email, password_hash, first_name, last_name],
+  );
+  const user_id = userResult.rows[0].id;
+
+  if (admin_role) {
+    await privilegedPool.query(
+      `INSERT INTO tenant_admins (tenant_id, user_id, role)
+       VALUES ($1, $2, $3)`,
+      [tenant_id, user_id, admin_role],
+    );
+  }
+
+  if (also_member) {
+    await privilegedPool.query(
+      `INSERT INTO members (tenant_id, user_id, email, first_name, last_name)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [tenant_id, user_id, email, first_name, last_name],
+    );
+  }
+
+  return user_id;
+}
 
 before(async () => {
   if (!process.env.DATABASE_URL_PRIVILEGED) return;
@@ -57,6 +94,7 @@ before(async () => {
     [TENANT_A, TENANT_B],
   );
   for (const row of tenantsResult.rows) {
+    if (row.subdomain === TENANT_A) tenantA_id = row.id;
     if (row.subdomain === TENANT_B) tenantB_id = row.id;
   }
 
@@ -179,6 +217,83 @@ test('app-layer block: tenant A token against tenant B → 403, NO DB connection
   } finally {
     pool.connect = origConnect;
   }
+});
+
+test('admin-only user can log in; JWT carries admin_id and role=admin', { skip }, async () => {
+  // Admin-only user: tenant_admins row, no members row. This is the
+  // bootstrap shape that tenant signup will eventually create
+  // automatically; for now we set it up via the privileged pool.
+  const email = `admin-only-${randomUUID()}@example.com`;
+  const password = 'correcthorsebatterystaple';
+
+  const adminUserId = await createUserWithRoles(tenantA_id, {
+    email,
+    password,
+    first_name: 'Admin',
+    last_name: 'Solo',
+    admin_role: 'owner',
+    also_member: false,
+  });
+
+  // Slice 1's login refused users without a member row. Slice 2
+  // accepts admins.
+  const loginRes = await fetch(`${baseUrl}/api/auth/login?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  assert.equal(loginRes.status, 200, 'admin-only login should succeed');
+  const loginBody = await loginRes.json();
+  assert.equal(loginBody.user_id, adminUserId);
+  assert.equal(loginBody.member_id, null, 'admin-only user has no member_id');
+  assert.ok(loginBody.admin_id, 'admin-only user should get admin_id');
+  assert.equal(loginBody.role, 'admin');
+
+  // /api/me reflects: admin populated, member null
+  const meRes = await fetch(`${baseUrl}/api/me?tenant=${TENANT_A}`, {
+    headers: { Authorization: `Bearer ${loginBody.token}` },
+  });
+  assert.equal(meRes.status, 200);
+  const meBody = await meRes.json();
+  assert.equal(meBody.user.email, email);
+  assert.ok(meBody.memberships.admin, 'admin row should be present');
+  assert.equal(meBody.memberships.admin.role, 'owner');
+  assert.equal(meBody.memberships.member, null);
+});
+
+test('admin+member user gets role=admin precedence; JWT carries both ids', { skip }, async () => {
+  const email = `admin-and-member-${randomUUID()}@example.com`;
+  const password = 'correcthorsebatterystaple';
+
+  await createUserWithRoles(tenantA_id, {
+    email,
+    password,
+    first_name: 'Owner',
+    last_name: 'Member',
+    admin_role: 'admin',
+    also_member: true,
+  });
+
+  const loginRes = await fetch(`${baseUrl}/api/auth/login?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  assert.equal(loginRes.status, 200);
+  const loginBody = await loginRes.json();
+  assert.ok(loginBody.member_id, 'member_id should be set');
+  assert.ok(loginBody.admin_id, 'admin_id should be set');
+  assert.equal(loginBody.role, 'admin', 'admin takes precedence when both roles exist');
+
+  // /api/me reflects: both populated
+  const meRes = await fetch(`${baseUrl}/api/me?tenant=${TENANT_A}`, {
+    headers: { Authorization: `Bearer ${loginBody.token}` },
+  });
+  assert.equal(meRes.status, 200);
+  const meBody = await meRes.json();
+  assert.ok(meBody.memberships.admin);
+  assert.ok(meBody.memberships.member);
+  assert.equal(meBody.memberships.admin.role, 'admin');
 });
 
 test('DB-layer block: tenant B GUC, tenant A user invisible via RLS', { skip }, async () => {
