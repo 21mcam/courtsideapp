@@ -612,9 +612,12 @@ test('admin marks a past confirmed booking as no_show → 200, audit fields popu
 
 test('member cannot mark no_show → 403', { skip }, async () => {
   const m = await newMember();
+  // Past hoursFromNow values are spaced > duration apart to avoid
+  // exclusion-constraint collisions on the shared resource. Each
+  // test below picks a unique negative offset.
   const booking = await syntheticBooking({
     member_id: m.member_id,
-    hoursFromNow: -2,
+    hoursFromNow: -4,
   });
 
   const res = await memberFetch(
@@ -658,7 +661,7 @@ test('cannot mark no_show on an already-cancelled booking → 409', { skip }, as
   const m = await newMember();
   const booking = await syntheticBooking({
     member_id: m.member_id,
-    hoursFromNow: -3,
+    hoursFromNow: -6,
   });
 
   // Cancel it first directly via privileged pool.
@@ -686,7 +689,7 @@ test('cannot mark no_show on an already-no_show booking → 409', { skip }, asyn
   const m = await newMember();
   const booking = await syntheticBooking({
     member_id: m.member_id,
-    hoursFromNow: -4,
+    hoursFromNow: -8,
   });
 
   // First call succeeds.
