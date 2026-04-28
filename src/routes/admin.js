@@ -18,6 +18,8 @@ import {
   createOffering,
   listOfferingResources,
   linkResourceToOffering,
+  listPlans,
+  createPlan,
 } from '../controllers/catalog.js';
 
 const router = express.Router();
@@ -35,5 +37,9 @@ router.get('/offerings', listOfferings);
 router.post('/offerings', createOffering);
 router.get('/offerings/:id/resources', listOfferingResources);
 router.post('/offerings/:id/resources', linkResourceToOffering);
+
+// Plans (Phase 2 slice 3)
+router.get('/plans', listPlans);
+router.post('/plans', createPlan);
 
 export default router;

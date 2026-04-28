@@ -241,6 +241,85 @@ test('member token cannot POST /resources (requireAdmin)', { skip }, async () =>
   assert.equal(res.status, 403, 'requireAdmin must reject member tokens');
 });
 
+// ============================================================
+// plans (slice 3)
+// ============================================================
+
+test('admin can create a plan with monthly price + weekly credits', { skip }, async () => {
+  const createRes = await adminFetch('/api/admin/plans', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: `Pro ${randomUUID().slice(0, 8)}`,
+      description: 'All categories, 20 credits/week',
+      monthly_price_cents: 26900,
+      credits_per_week: 20,
+    }),
+  });
+  assert.equal(createRes.status, 201);
+  const { plan } = await createRes.json();
+  assert.equal(plan.monthly_price_cents, 26900);
+  assert.equal(plan.credits_per_week, 20);
+  assert.equal(plan.allowed_categories, null, 'null = all categories allowed');
+  assert.equal(plan.active, true);
+
+  const listRes = await adminFetch('/api/admin/plans');
+  const { plans } = await listRes.json();
+  assert.ok(plans.some((p) => p.id === plan.id));
+});
+
+test('plan with allowed_categories whitelist is accepted', { skip }, async () => {
+  const createRes = await adminFetch('/api/admin/plans', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: `Class Pack ${randomUUID().slice(0, 8)}`,
+      monthly_price_cents: 9900,
+      credits_per_week: 4,
+      allowed_categories: ['classes'],
+    }),
+  });
+  assert.equal(createRes.status, 201);
+  const { plan } = await createRes.json();
+  assert.deepEqual(plan.allowed_categories, ['classes']);
+});
+
+test('plan with empty allowed_categories array rejected (zod 400)', { skip }, async () => {
+  const createRes = await adminFetch('/api/admin/plans', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: `Empty ${randomUUID().slice(0, 8)}`,
+      monthly_price_cents: 1000,
+      credits_per_week: 1,
+      allowed_categories: [],
+    }),
+  });
+  assert.equal(createRes.status, 400);
+});
+
+test('duplicate active plan name returns 409 (case-insensitive)', { skip }, async () => {
+  const name = `Dupe Plan ${randomUUID().slice(0, 8)}`;
+  const first = await adminFetch('/api/admin/plans', {
+    method: 'POST',
+    body: JSON.stringify({
+      name,
+      monthly_price_cents: 1000,
+      credits_per_week: 1,
+    }),
+  });
+  assert.equal(first.status, 201);
+
+  const dupe = await adminFetch('/api/admin/plans', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: name.toUpperCase(), // partial unique index uses lower(name)
+      monthly_price_cents: 2000,
+      credits_per_week: 5,
+    }),
+  });
+  assert.equal(dupe.status, 409);
+});
+
+// ============================================================
+
 test('linking a non-existent resource returns 400 (FK violation translated)', { skip }, async () => {
   const offeringRes = await adminFetch('/api/admin/offerings', {
     method: 'POST',
