@@ -1,17 +1,17 @@
-// Member dashboard.
+// Member dashboard — Phase 4 update.
 //
 // Three things the signed-in member cares about:
 //   1. How many credits do I have?
-//   2. What bookings do I have coming up (and which are past)?
+//   2. What bookings (rentals AND classes) do I have coming up?
 //   3. How do I book another session?
 //
-// Cancel button hits POST /api/bookings/:id/cancel and refreshes the
-// list. Refund tier comes from booking_policies + time-until-start
-// — the response surfaces refund_credits and refund_percent so the
-// UI can confirm what happened.
+// Rentals and class bookings are fetched separately (/api/bookings/me
+// and /api/class-bookings/me) and merged into a single normalized list
+// so the upcoming/past split treats them uniformly. The cancel call
+// dispatches to the right endpoint based on `kind`.
 //
-// Past bookings are still listed but get a muted style and no
-// cancel button.
+// Cancel surfaces refund tier per booking_policies. Past + cancelled
+// rows are listed but muted and don't get a cancel button.
 
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -22,21 +22,39 @@ import { bookingStatusBadge, formatSlotLocal } from '../format.js';
 
 export default function MemberHome() {
   const { me, refresh } = useAuth();
-  const [bookings, setBookings] = useState(null);
+  const [items, setItems] = useState(null); // unified list
   const [loadError, setLoadError] = useState(null);
   const [cancelMessage, setCancelMessage] = useState(null);
 
   function load() {
     setLoadError(null);
-    api('/api/bookings/me')
-      .then(async (res) => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || `HTTP ${res.status}`);
-        }
-        return res.json();
+    Promise.all([
+      api('/api/bookings/me').then(handle),
+      api('/api/class-bookings/me').then(handle),
+    ])
+      .then(([rentals, classes]) => {
+        const norm = [
+          ...(rentals.bookings ?? []).map((b) => ({
+            kind: 'rental',
+            id: b.id,
+            offering_name: b.offering_name,
+            resource_name: b.resource_name,
+            start_time: b.start_time,
+            status: b.status,
+            credit_cost_charged: b.credit_cost_charged,
+          })),
+          ...(classes.class_bookings ?? []).map((cb) => ({
+            kind: 'class',
+            id: cb.id,
+            offering_name: cb.offering_name,
+            resource_name: cb.resource_name,
+            start_time: cb.start_time,
+            status: cb.status,
+            credit_cost_charged: cb.credit_cost_charged,
+          })),
+        ];
+        setItems(norm);
       })
-      .then((data) => setBookings(data.bookings ?? []))
       .catch((err) => setLoadError(err.message));
   }
 
@@ -44,31 +62,33 @@ export default function MemberHome() {
     load();
   }, []);
 
-  async function cancel(booking) {
+  async function cancel(item) {
     setCancelMessage(null);
     if (
       !window.confirm(
-        `Cancel ${booking.offering_name} on ${formatSlotLocal(booking.start_time, me.tenant.timezone)}?`,
+        `Cancel ${item.offering_name} on ${formatSlotLocal(item.start_time, me.tenant.timezone)}?`,
       )
     ) {
       return;
     }
+    const path =
+      item.kind === 'class'
+        ? `/api/class-bookings/${item.id}/cancel`
+        : `/api/bookings/${item.id}/cancel`;
     try {
-      const res = await api(`/api/bookings/${booking.id}/cancel`, {
+      const res = await api(path, {
         method: 'POST',
         body: JSON.stringify({}),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(body.error || `HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       const refunded = body.refund_credits ?? 0;
       setCancelMessage(
         refunded > 0
           ? `Cancelled. ${refunded} credit${refunded === 1 ? '' : 's'} refunded (${body.refund_percent}%).`
           : 'Cancelled. No refund per policy.',
       );
-      await refresh(); // pull fresh credit balance
+      await refresh();
       load();
     } catch (err) {
       setCancelMessage(`Cancel failed: ${err.message}`);
@@ -77,16 +97,25 @@ export default function MemberHome() {
 
   const credits = me.credits?.current_credits ?? 0;
 
-  // Split into upcoming vs past so members see the relevant ones first.
+  // Sort merged list by start_time before splitting upcoming/past.
   const now = Date.now();
+  const sorted =
+    items === null
+      ? null
+      : [...items].sort(
+          (a, b) =>
+            new Date(a.start_time).getTime() - new Date(b.start_time).getTime(),
+        );
   const upcoming =
-    bookings?.filter(
+    sorted?.filter(
       (b) => b.status !== 'cancelled' && new Date(b.start_time).getTime() > now,
     ) ?? null;
   const past =
-    bookings?.filter(
+    sorted?.filter(
       (b) => b.status === 'cancelled' || new Date(b.start_time).getTime() <= now,
-    ) ?? null;
+    )
+      // Past list reads more naturally newest-first.
+      .reverse() ?? null;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -97,12 +126,20 @@ export default function MemberHome() {
             <div className="text-sm text-slate-500">Available credits</div>
             <div className="text-3xl font-semibold tabular-nums">{credits}</div>
           </div>
-          <Link
-            to="/book"
-            className="rounded bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800"
-          >
-            Book a session
-          </Link>
+          <div className="flex gap-2">
+            <Link
+              to="/book"
+              className="rounded bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800"
+            >
+              Book a session
+            </Link>
+            <Link
+              to="/classes"
+              className="rounded border border-sky-700 px-4 py-2 text-sm font-medium text-sky-700 hover:bg-sky-50"
+            >
+              Browse classes
+            </Link>
+          </div>
         </section>
 
         {cancelMessage && (
@@ -113,9 +150,9 @@ export default function MemberHome() {
 
         <BookingList
           title="Upcoming"
-          bookings={upcoming}
+          items={upcoming}
           error={loadError}
-          empty="Nothing booked yet — pick a slot above."
+          empty="Nothing booked yet — pick a slot or class above."
           tz={me.tenant.timezone}
           onCancel={cancel}
           showCancel
@@ -123,8 +160,8 @@ export default function MemberHome() {
 
         <BookingList
           title="Past & cancelled"
-          bookings={past}
-          error={null /* shown above already */}
+          items={past}
+          error={null}
           empty="No past bookings."
           tz={me.tenant.timezone}
           muted
@@ -134,9 +171,17 @@ export default function MemberHome() {
   );
 }
 
+async function handle(res) {
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 function BookingList({
   title,
-  bookings,
+  items,
   error,
   empty,
   tz,
@@ -148,22 +193,22 @@ function BookingList({
     <section>
       <h2 className="text-lg font-semibold">
         {title}
-        {bookings !== null && (
+        {items !== null && (
           <span className="ml-2 text-slate-400 text-sm font-normal">
-            ({bookings.length})
+            ({items.length})
           </span>
         )}
       </h2>
       {error && <p className="mt-2 text-sm text-rose-700">{error}</p>}
-      {bookings === null ? (
+      {items === null ? (
         <p className="mt-2 text-sm text-slate-400">loading…</p>
-      ) : bookings.length === 0 ? (
+      ) : items.length === 0 ? (
         <p className="mt-2 text-sm text-slate-500">{empty}</p>
       ) : (
         <ul className="mt-2 divide-y divide-slate-200 rounded border border-slate-200 bg-white">
-          {bookings.map((b) => (
+          {items.map((b) => (
             <li
-              key={b.id}
+              key={`${b.kind}:${b.id}`}
               className={`flex items-center justify-between px-4 py-3 ${muted ? 'opacity-70' : ''}`}
             >
               <div>
@@ -172,6 +217,11 @@ function BookingList({
                   <span className="ml-2 text-sm font-normal text-slate-500">
                     {b.resource_name}
                   </span>
+                  {b.kind === 'class' && (
+                    <span className="ml-2 text-xs rounded bg-violet-100 text-violet-900 px-1.5 py-0.5">
+                      class
+                    </span>
+                  )}
                 </div>
                 <div className="text-sm text-slate-600">
                   {formatSlotLocal(b.start_time, tz)} ·{' '}

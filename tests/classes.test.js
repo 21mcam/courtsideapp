@@ -473,6 +473,70 @@ test('cancel cascades: instance + roster cancelled; members refunded', { skip },
   }
 });
 
+// ============================================================
+// roster
+// ============================================================
+
+test('GET /api/admin/class-instances/:id/roster returns members + customers; 404 for unknown id', { skip }, async () => {
+  // Unknown id
+  const noRes = await adminFetch(
+    `/api/admin/class-instances/${randomUUID()}/roster`,
+  );
+  assert.equal(noRes.status, 404);
+
+  // Build instance + add a roster row directly. Skip the booking
+  // flow (slice 3 covers it) — we just need a class_booking row to
+  // assert the join shape.
+  const r = await adminFetch('/api/admin/class-instances', {
+    method: 'POST',
+    body: JSON.stringify({
+      offering_id: class_offering_id,
+      resource_id,
+      start_time: '2027-12-07T15:00:00.000Z',
+    }),
+  });
+  const ci = (await r.json()).class_instance;
+
+  const memberId = (
+    await privilegedPool.query(
+      `INSERT INTO members (tenant_id, email, first_name, last_name)
+       VALUES ($1, $2, 'Roster', 'Display') RETURNING id`,
+      [tenant_id, `roster-${randomUUID()}@example.com`],
+    )
+  ).rows[0].id;
+  const cbId = (
+    await privilegedPool.query(
+      `INSERT INTO class_bookings (
+         tenant_id, class_instance_id, member_id, status,
+         amount_due_cents, credit_cost_charged, payment_status
+       ) VALUES ($1, $2, $3, 'confirmed', 0, 2, 'not_required')
+       RETURNING id`,
+      [tenant_id, ci.id, memberId],
+    )
+  ).rows[0].id;
+
+  try {
+    const res = await adminFetch(
+      `/api/admin/class-instances/${ci.id}/roster`,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.instance.id, ci.id);
+    assert.equal(body.instance.offering_name, 'Hitting Clinic');
+    assert.equal(body.roster.length, 1);
+    const row = body.roster[0];
+    assert.equal(row.id, cbId);
+    assert.equal(row.member_first_name, 'Roster');
+    assert.equal(row.member_last_name, 'Display');
+    assert.equal(row.status, 'confirmed');
+    assert.equal(row.customer_first_name, null);
+  } finally {
+    await privilegedPool.query(`DELETE FROM class_bookings WHERE id = $1`, [cbId]);
+    await privilegedPool.query(`DELETE FROM class_instances WHERE id = $1`, [ci.id]);
+    await privilegedPool.query(`DELETE FROM members WHERE id = $1`, [memberId]);
+  }
+});
+
 test('cancel an already-cancelled instance returns 409', { skip }, async () => {
   const r = await adminFetch('/api/admin/class-instances', {
     method: 'POST',

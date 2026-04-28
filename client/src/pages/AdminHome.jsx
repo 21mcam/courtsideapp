@@ -62,6 +62,7 @@ export default function AdminHome() {
       <main className="max-w-4xl mx-auto p-6 space-y-8">
         <WizardCallout />
         <BookingsCallout />
+        <ClassesCallout />
         <TenantCard tenant={me.tenant} />
 
         <ListSection
@@ -278,6 +279,25 @@ function BookingsCallout() {
         className="rounded bg-sky-700 text-white px-4 py-2 hover:bg-sky-800"
       >
         Open calendar
+      </Link>
+    </div>
+  );
+}
+
+function ClassesCallout() {
+  return (
+    <div className="bg-violet-50 border border-violet-200 rounded p-4 flex items-center justify-between">
+      <div>
+        <div className="font-semibold text-violet-900">Classes</div>
+        <div className="text-sm text-violet-800">
+          Schedule recurring classes, create one-off instances, and manage rosters.
+        </div>
+      </div>
+      <Link
+        to="/admin/classes"
+        className="rounded bg-violet-700 text-white px-4 py-2 hover:bg-violet-800"
+      >
+        Open classes
       </Link>
     </div>
   );

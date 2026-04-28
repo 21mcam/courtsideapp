@@ -41,6 +41,7 @@ import {
   createClassInstance,
   listClassInstances,
   cancelClassInstance,
+  getClassInstanceRoster,
 } from '../controllers/classes.js';
 import {
   createClassSchedule,
@@ -95,6 +96,7 @@ router.get('/bookings', listAllBookings);
 router.get('/class-instances', listClassInstances);
 router.post('/class-instances', createClassInstance);
 router.post('/class-instances/:id/cancel', cancelClassInstance);
+router.get('/class-instances/:id/roster', getClassInstanceRoster);
 
 // Class schedules + recurrence generator (Phase 4 slice 2).
 // POST creates the schedule and runs an initial generation pass;
