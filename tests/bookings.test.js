@@ -555,6 +555,169 @@ test('member cannot cancel another member\'s booking → 403', { skip }, async (
   assert.equal(check.rows[0].status, 'confirmed');
 });
 
+// ============================================================
+// no-show flow
+// ============================================================
+
+// Admin-only endpoint that flips a confirmed booking whose start_time
+// has already passed into 'no_show'. Members get 403; future bookings
+// get 409; non-confirmed statuses get 409.
+
+test('admin marks a past confirmed booking as no_show → 200, audit fields populated', { skip }, async () => {
+  const m = await newMember();
+  // 2 hours ago — well past start_time.
+  const booking = await syntheticBooking({
+    member_id: m.member_id,
+    hoursFromNow: -2,
+  });
+
+  const res = await fetch(
+    `${baseUrl}/api/bookings/${booking.id}/mark-no-show?tenant=${TENANT}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+    },
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.status, 'no_show');
+  assert.equal(body.booking_id, booking.id);
+  // Policy is the row inserted in `before` — no_show_action default 'none'.
+  assert.equal(body.policy_action, 'none');
+
+  const updated = await privilegedPool.query(
+    `SELECT status, no_show_marked_at, no_show_marked_by FROM bookings WHERE id = $1`,
+    [booking.id],
+  );
+  assert.equal(updated.rows[0].status, 'no_show');
+  assert.ok(updated.rows[0].no_show_marked_at);
+  assert.ok(updated.rows[0].no_show_marked_by);
+
+  // Member's credits are NOT refunded — no_show forfeits them. The
+  // synthetic booking didn't actually debit credits, so member
+  // balance should still be 0.
+  const bal = await privilegedPool.query(
+    `SELECT current_credits FROM credit_balances WHERE member_id = $1`,
+    [m.member_id],
+  );
+  // No credit_balance row may exist if no ledger entries — that's fine,
+  // the point is no refund was issued.
+  if (bal.rows.length > 0) {
+    assert.equal(bal.rows[0].current_credits, 0);
+  }
+});
+
+test('member cannot mark no_show → 403', { skip }, async () => {
+  const m = await newMember();
+  const booking = await syntheticBooking({
+    member_id: m.member_id,
+    hoursFromNow: -2,
+  });
+
+  const res = await memberFetch(
+    m.token,
+    `/api/bookings/${booking.id}/mark-no-show`,
+    { method: 'POST' },
+  );
+  assert.equal(res.status, 403);
+
+  // Booking remains confirmed.
+  const check = await privilegedPool.query(
+    `SELECT status FROM bookings WHERE id = $1`,
+    [booking.id],
+  );
+  assert.equal(check.rows[0].status, 'confirmed');
+});
+
+test('cannot mark no_show on a future booking → 409', { skip }, async () => {
+  const m = await newMember();
+  const booking = await syntheticBooking({
+    member_id: m.member_id,
+    hoursFromNow: 24,
+  });
+
+  const res = await fetch(
+    `${baseUrl}/api/bookings/${booking.id}/mark-no-show?tenant=${TENANT}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+    },
+  );
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.match(body.error, /future/i);
+});
+
+test('cannot mark no_show on an already-cancelled booking → 409', { skip }, async () => {
+  const m = await newMember();
+  const booking = await syntheticBooking({
+    member_id: m.member_id,
+    hoursFromNow: -3,
+  });
+
+  // Cancel it first directly via privileged pool.
+  await privilegedPool.query(
+    `UPDATE bookings SET status = 'cancelled', cancelled_at = now() WHERE id = $1`,
+    [booking.id],
+  );
+
+  const res = await fetch(
+    `${baseUrl}/api/bookings/${booking.id}/mark-no-show?tenant=${TENANT}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+    },
+  );
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.match(body.error, /cancelled.*confirmed/i);
+});
+
+test('cannot mark no_show on an already-no_show booking → 409', { skip }, async () => {
+  const m = await newMember();
+  const booking = await syntheticBooking({
+    member_id: m.member_id,
+    hoursFromNow: -4,
+  });
+
+  // First call succeeds.
+  const first = await fetch(
+    `${baseUrl}/api/bookings/${booking.id}/mark-no-show?tenant=${TENANT}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+    },
+  );
+  assert.equal(first.status, 200);
+
+  // Second call on same booking — now in 'no_show', not 'confirmed'.
+  const second = await fetch(
+    `${baseUrl}/api/bookings/${booking.id}/mark-no-show?tenant=${TENANT}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+    },
+  );
+  assert.equal(second.status, 409);
+  const body = await second.json();
+  assert.match(body.error, /no_show.*confirmed/i);
+});
+
 test('two bookings by same member at non-overlapping slots → both succeed, balance reflects both', { skip }, async () => {
   const m = await newMember();
   await grantCredits(m.member_id, 10);

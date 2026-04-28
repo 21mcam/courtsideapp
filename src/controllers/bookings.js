@@ -422,6 +422,94 @@ export async function cancelMemberBooking(req, res, next) {
   }
 }
 
+// POST /api/bookings/:id/mark-no-show — admin-only. Transitions a
+// confirmed booking whose start_time has passed into 'no_show'
+// state and stamps audit fields.
+//
+// Honors booking_policies.no_show_action:
+//   * 'none' / 'forfeit_credits' — no further system action. Member
+//     keeps the credit debit from booking creation; no refund. (The
+//     two are identical at the system layer; the distinction is a
+//     tenant-facing label.)
+//   * 'charge_fee' — TODO Phase 5 (needs Stripe Connect to charge
+//     the customer a fee). For now the booking is marked no_show
+//     and the policy.no_show_fee_cents is included in the response
+//     so the admin UI can surface it; actual charging happens later.
+//   * 'block_member' — TODO future; needs a member.blocked column.
+//
+// Permission: admin only. Members can't mark themselves as no-show.
+//
+// State gate: booking must currently be 'confirmed'. Future-dated
+// bookings can't be no-show'd — use cancel instead.
+export async function markBookingNoShow(req, res, next) {
+  try {
+    if (!req.user?.admin_id) {
+      return res.status(403).json({ error: 'admin role required' });
+    }
+    const { tenant, db, user } = req;
+    const id = req.params.id;
+
+    const bookingRes = await db.query(
+      `SELECT id, member_id, start_time, status
+         FROM bookings
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenant.id, id],
+    );
+    if (bookingRes.rows.length === 0) {
+      return res.status(404).json({ error: 'booking not found' });
+    }
+    const booking = bookingRes.rows[0];
+
+    if (booking.status !== 'confirmed') {
+      return res.status(409).json({
+        error: `booking is ${booking.status}; only confirmed bookings can be marked no-show`,
+      });
+    }
+
+    // Can't no-show a future booking. The transition is "they didn't
+    // show up at the booked time," which only makes sense after the
+    // booked time has passed. (Strictly, after start_time — the
+    // booking's window is [start, end); no-show is judged at start.)
+    if (new Date(booking.start_time).getTime() > Date.now()) {
+      return res.status(409).json({
+        error: 'cannot mark no-show on a booking whose start_time is in the future',
+      });
+    }
+
+    // Look up policy for the response. Schema defaults if no row.
+    const policyRes = await db.query(
+      `SELECT no_show_action, no_show_fee_cents
+         FROM booking_policies WHERE tenant_id = $1`,
+      [tenant.id],
+    );
+    const policy = policyRes.rows[0] ?? {
+      no_show_action: 'none',
+      no_show_fee_cents: null,
+    };
+
+    await db.query(
+      `UPDATE bookings
+          SET status = 'no_show',
+              no_show_marked_at = now(),
+              no_show_marked_by = $1
+        WHERE tenant_id = $2 AND id = $3`,
+      [user.user_id, tenant.id, id],
+    );
+
+    // For Phase 3 we don't auto-charge fees or auto-block members.
+    // The response surfaces the policy so the admin UI can prompt
+    // for the fee collection / blocking workflow until those land.
+    res.json({
+      booking_id: id,
+      status: 'no_show',
+      policy_action: policy.no_show_action,
+      policy_fee_cents: policy.no_show_fee_cents,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /api/bookings/me — list the authenticated member's bookings.
 // Useful for "my bookings" UI and for tests to verify state.
 export async function listMyBookings(req, res, next) {

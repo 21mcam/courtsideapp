@@ -16,6 +16,7 @@ import { requireAuth } from '../middleware/auth.js';
 import {
   createMemberBooking,
   cancelMemberBooking,
+  markBookingNoShow,
   listMyBookings,
 } from '../controllers/bookings.js';
 
@@ -26,5 +27,6 @@ router.use(requireAuth, withTenantContext);
 router.post('/', createMemberBooking);
 router.get('/me', listMyBookings);
 router.post('/:id/cancel', cancelMemberBooking);
+router.post('/:id/mark-no-show', markBookingNoShow);
 
 export default router;
