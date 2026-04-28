@@ -224,8 +224,13 @@ const planCreateSchema = z
 export async function listPlans(req, res, next) {
   try {
     const result = await req.db.query(
+      // allowed_categories is category_key[] (domain over text). pg's
+      // built-in type parsers don't know about the domain OID, so it
+      // comes back as the literal '{classes}' string. Casting to
+      // text[] gives pg a known type to parse.
       `SELECT id, name, description, monthly_price_cents, credits_per_week,
-              allowed_categories, stripe_price_id, active, display_order,
+              allowed_categories::text[] AS allowed_categories,
+              stripe_price_id, active, display_order,
               created_at, updated_at
          FROM plans
         WHERE tenant_id = $1
@@ -257,8 +262,10 @@ export async function createPlan(req, res, next) {
          )
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id, name, description, monthly_price_cents,
-                   credits_per_week, allowed_categories, stripe_price_id,
-                   active, display_order, created_at, updated_at`,
+                   credits_per_week,
+                   allowed_categories::text[] AS allowed_categories,
+                   stripe_price_id, active, display_order,
+                   created_at, updated_at`,
         [
           req.tenant.id,
           d.name,
