@@ -67,24 +67,29 @@ on:
   reads `main` directly), but a red CI on `main` is a loud signal
   something slipped through review.
 
-## Branch protection (recommended, not configured yet)
+## Branch protection
 
-To turn CI from a "loud signal" into a hard merge gate:
+`main` is protected: PRs are required, the `lint, build, migrations,
+smoke test` status check must pass, branches must be up to date with
+main before merge, and force pushes / deletions are blocked. The
+exact `gh api` call we used (and the configuration tradeoffs) lives
+in [GITHUB_REPO_SETUP.md](GITHUB_REPO_SETUP.md). Update it from
+there if anything changes.
 
-1. GitHub repo → **Settings** → **Branches** → **Branch protection
-   rules** → **Add rule**
-2. Rule applies to `main`
-3. Check **Require a pull request before merging**
-4. Check **Require status checks to pass before merging** → search for
-   `lint, build, migrations, smoke test` (the job name from `ci.yml`)
-5. Check **Require branches to be up to date before merging**
-6. Save
+### ⚠ The required-check name is load-bearing
 
-After this, GitHub refuses to merge a PR with a red CI, and you can't
-push directly to `main` without a PR.
+Branch protection matches the required status check by **literal
+job name** — currently `"lint, build, migrations, smoke test"`,
+defined as `name:` on the job in `ci.yml`. If you rename the job,
+the protection rule keeps waiting for the old name forever and
+merges block. If a rename is necessary, update both:
 
-This is a follow-up step for after Phase 0 — the kickoff explicitly
-deferred branch protection.
+1. The `name:` line in `.github/workflows/ci.yml`
+2. The `contexts` array in branch protection (see
+   [GITHUB_REPO_SETUP.md](GITHUB_REPO_SETUP.md) §5 for the patch
+   command)
+
+The current name is descriptive enough; safest path is don't rename.
 
 ## Adding a new migration
 
