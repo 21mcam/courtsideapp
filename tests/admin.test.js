@@ -156,7 +156,8 @@ test('member is denied access to /api/admin/members (requireAdmin)', { skip }, a
 // ============================================================
 
 function adminFetch(path, init = {}) {
-  return fetch(`${baseUrl}${path}?tenant=${TENANT}`, {
+  const sep = path.includes('?') ? '&' : '?';
+  return fetch(`${baseUrl}${path}${sep}tenant=${TENANT}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
