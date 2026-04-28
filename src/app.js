@@ -23,6 +23,7 @@ import healthRouter from './routes/health.js';
 import tenantRouter from './routes/tenant.js';
 import authRouter from './routes/auth.js';
 import meRouter from './routes/me.js';
+import platformRouter from './routes/platform.js';
 import { resolveTenant } from './middleware/resolveTenant.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -44,18 +45,25 @@ app.use(express.json());
 // 3. Apex routes (no tenant context required).
 app.use('/', healthRouter);
 
-// 4. Tenant-scoped API.
+// 4. Platform / super-admin routes — apex hostname, no tenant
+//    resolution. Mounted BEFORE the /api resolveTenant middleware
+//    so /api/platform/* skips the subdomain lookup. The router
+//    has its own catch-all 404 so unmatched /api/platform paths
+//    don't fall through.
+app.use('/api/platform', platformRouter);
+
+// 5. Tenant-scoped API.
 app.use('/api', resolveTenant);
 app.use('/api/auth', authRouter);
 app.use('/api/me', meRouter);
 app.use('/api/tenant', tenantRouter);
 
-// 5. /api/* fallthrough.
+// 6. /api/* fallthrough.
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'not found' });
 });
 
-// 6. Static frontend + SPA fallback.
+// 7. Static frontend + SPA fallback.
 if (fs.existsSync(path.join(clientDist, 'index.html'))) {
   app.use(express.static(clientDist));
   app.get('*', (_req, res) => {
