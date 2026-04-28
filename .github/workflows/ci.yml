@@ -104,7 +104,12 @@ jobs:
       #   - SELECT FROM tenant_lookup succeeds (GRANT in 011)
       #   - nextval on the credit-ledger sequence succeeds
       #     (GRANT USAGE ON ALL SEQUENCES in 011)
-      - name: Run privilege smoke test
+      - name: Run privilege smoke test + auth tests
         env:
           DATABASE_URL: postgres://app_runtime:ci_password@localhost:5432/courtside_test
+          # Auth tests use this to create/drop throwaway test tenants
+          # (operations that app_runtime can't do because of the REVOKE
+          # on tenants). Disposable to the runner — never leaves CI.
+          DATABASE_URL_PRIVILEGED: postgres://postgres:ci_postgres_password@localhost:5432/courtside_test
+          JWT_SECRET: ci_jwt_secret_disposable
         run: npm test
