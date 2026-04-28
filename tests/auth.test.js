@@ -19,7 +19,7 @@
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import pg from 'pg';
@@ -294,6 +294,177 @@ test('admin+member user gets role=admin precedence; JWT carries both ids', { ski
   assert.ok(meBody.memberships.admin);
   assert.ok(meBody.memberships.member);
   assert.equal(meBody.memberships.admin.role, 'admin');
+});
+
+test('forgot-password (known email) creates exactly one active token', { skip }, async () => {
+  // Register a member to have a known email in the tenant.
+  const email = `forgot-known-${randomUUID()}@example.com`;
+  const password = 'correcthorsebatterystaple';
+  const regRes = await fetch(`${baseUrl}/api/auth/register-member?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email,
+      password,
+      first_name: 'Frank',
+      last_name: 'Forgot',
+    }),
+  });
+  assert.equal(regRes.status, 201);
+  const { user_id } = await regRes.json();
+
+  const res = await fetch(`${baseUrl}/api/auth/forgot-password?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+
+  // Exactly one active token row for this user. Read via privileged
+  // pool (BYPASSRLS — no GUC dance needed).
+  const tokens = await privilegedPool.query(
+    `SELECT id, token_hash, used_at, expires_at FROM password_reset_tokens
+      WHERE tenant_id = $1 AND user_id = $2`,
+    [tenantA_id, user_id],
+  );
+  assert.equal(tokens.rows.length, 1);
+  const row = tokens.rows[0];
+  assert.equal(row.used_at, null, 'token should be active (used_at IS NULL)');
+  assert.ok(row.expires_at > new Date(), 'expires_at should be in the future');
+  assert.ok(row.token_hash.length >= 32, 'token_hash should look like a sha256 hex');
+});
+
+test('forgot-password (unknown email) creates no token', { skip }, async () => {
+  // Pick an email that definitely does not exist.
+  const unknown = `nobody-${randomUUID()}@example.com`;
+
+  const res = await fetch(`${baseUrl}/api/auth/forgot-password?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: unknown }),
+  });
+  // Same 200 as the known-email case — anti-enumeration.
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+
+  // Confirm no token row was created. Joining via users on email
+  // catches both "user doesn't exist" and "user exists but somehow
+  // got a token anyway."
+  const tokens = await privilegedPool.query(
+    `SELECT prt.id FROM password_reset_tokens prt
+       JOIN users u ON u.tenant_id = prt.tenant_id AND u.id = prt.user_id
+      WHERE prt.tenant_id = $1 AND u.email = $2`,
+    [tenantA_id, unknown],
+  );
+  assert.equal(tokens.rows.length, 0);
+});
+
+test('forgot-password called twice: first token is invalidated', { skip }, async () => {
+  const email = `forgot-twice-${randomUUID()}@example.com`;
+  const password = 'correcthorsebatterystaple';
+  const regRes = await fetch(`${baseUrl}/api/auth/register-member?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email,
+      password,
+      first_name: 'Twice',
+      last_name: 'Forgot',
+    }),
+  });
+  assert.equal(regRes.status, 201);
+  const { user_id } = await regRes.json();
+
+  // First forgot-password
+  await fetch(`${baseUrl}/api/auth/forgot-password?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  // Second forgot-password
+  await fetch(`${baseUrl}/api/auth/forgot-password?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+
+  // Should be exactly 2 rows: the first one used_at != null, the
+  // second one active.
+  const tokens = await privilegedPool.query(
+    `SELECT id, used_at FROM password_reset_tokens
+      WHERE tenant_id = $1 AND user_id = $2
+      ORDER BY created_at ASC`,
+    [tenantA_id, user_id],
+  );
+  assert.equal(tokens.rows.length, 2, 'should have two rows');
+  assert.ok(tokens.rows[0].used_at, 'first row should be invalidated (used_at set)');
+  assert.equal(tokens.rows[1].used_at, null, 'second row should be active');
+});
+
+test('reset-password: known token works once; old password fails; new works; reuse blocked', { skip }, async () => {
+  // Register a fresh member.
+  const email = `reset-${randomUUID()}@example.com`;
+  const oldPassword = 'oldpasswordsentinel';
+  const newPassword = 'newpasswordsentinel';
+
+  const regRes = await fetch(`${baseUrl}/api/auth/register-member?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email,
+      password: oldPassword,
+      first_name: 'Reset',
+      last_name: 'Tester',
+    }),
+  });
+  assert.equal(regRes.status, 201);
+  const { user_id } = await regRes.json();
+
+  // Issue a token directly via the privileged pool — gives us the
+  // raw value for use with reset-password without needing to scrape
+  // server logs.
+  const rawToken = randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '');
+  const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+  await privilegedPool.query(
+    `INSERT INTO password_reset_tokens
+       (tenant_id, user_id, token_hash, expires_at)
+     VALUES ($1, $2, $3, now() + interval '1 hour')`,
+    [tenantA_id, user_id, tokenHash],
+  );
+
+  // Reset-password with the raw token
+  const resetRes = await fetch(`${baseUrl}/api/auth/reset-password?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: rawToken, new_password: newPassword }),
+  });
+  assert.equal(resetRes.status, 200);
+  assert.deepEqual(await resetRes.json(), { ok: true });
+
+  // Old password should now fail
+  const oldLogin = await fetch(`${baseUrl}/api/auth/login?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: oldPassword }),
+  });
+  assert.equal(oldLogin.status, 401, 'old password must no longer work');
+
+  // New password should succeed
+  const newLogin = await fetch(`${baseUrl}/api/auth/login?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: newPassword }),
+  });
+  assert.equal(newLogin.status, 200, 'new password should work');
+
+  // Reuse the same token: must fail (used_at is set)
+  const reuseRes = await fetch(`${baseUrl}/api/auth/reset-password?tenant=${TENANT_A}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: rawToken, new_password: 'thirdpasswordattempt' }),
+  });
+  assert.equal(reuseRes.status, 400, 'used token must not be accepted again');
 });
 
 test('DB-layer block: tenant B GUC, tenant A user invisible via RLS', { skip }, async () => {
