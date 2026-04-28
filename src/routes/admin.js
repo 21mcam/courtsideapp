@@ -26,6 +26,13 @@ import {
   listPlans,
   createPlan,
 } from '../controllers/catalog.js';
+import {
+  listOperatingHours,
+  createOperatingHours,
+  deleteOperatingHours,
+  getBookingPolicies,
+  upsertBookingPolicies,
+} from '../controllers/operations.js';
 
 const router = express.Router();
 
@@ -51,5 +58,12 @@ router.post('/offerings/:id/resources', linkResourceToOffering);
 // Plans (Phase 2 slice 3)
 router.get('/plans', listPlans);
 router.post('/plans', createPlan);
+
+// Operating hours + booking policies (Phase 3 prep)
+router.get('/operating-hours', listOperatingHours);
+router.post('/operating-hours', createOperatingHours);
+router.delete('/operating-hours/:id', deleteOperatingHours);
+router.get('/booking-policies', getBookingPolicies);
+router.put('/booking-policies', upsertBookingPolicies);
 
 export default router;
