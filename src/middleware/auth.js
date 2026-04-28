@@ -53,3 +53,14 @@ export function requireAuth(req, res, next) {
   req.user = payload;
   next();
 }
+
+// Gate routes to admin/owner-only callers. Mount AFTER requireAuth.
+// Phase 1 makes no distinction between admin and owner roles for
+// access control — both pass. Finer-grained gates ("only owners can
+// edit billing") come later.
+export function requireAdmin(req, res, next) {
+  if (req.user?.role !== 'admin') {
+    return res.status(403).json({ error: 'admin role required' });
+  }
+  next();
+}
