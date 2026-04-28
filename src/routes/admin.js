@@ -42,6 +42,11 @@ import {
   listClassInstances,
   cancelClassInstance,
 } from '../controllers/classes.js';
+import {
+  createClassSchedule,
+  listClassSchedules,
+  generateClassSchedule,
+} from '../controllers/classSchedules.js';
 
 const router = express.Router();
 
@@ -86,9 +91,16 @@ router.delete('/blackouts/:id', deleteBlackout);
 router.get('/bookings', listAllBookings);
 
 // Class instances (Phase 4 slice 1) — one-off creation, list, and
-// cancel-with-cascade. Schedules + recurrence land in slice 2.
+// cancel-with-cascade.
 router.get('/class-instances', listClassInstances);
 router.post('/class-instances', createClassInstance);
 router.post('/class-instances/:id/cancel', cancelClassInstance);
+
+// Class schedules + recurrence generator (Phase 4 slice 2).
+// POST creates the schedule and runs an initial generation pass;
+// /:id/generate extends the horizon for an existing schedule.
+router.get('/class-schedules', listClassSchedules);
+router.post('/class-schedules', createClassSchedule);
+router.post('/class-schedules/:id/generate', generateClassSchedule);
 
 export default router;
