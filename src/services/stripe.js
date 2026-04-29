@@ -73,38 +73,62 @@ export function __getPricesForAccount(acct) {
     .map(([, v]) => v);
 }
 
-// Slice 4a additions: simulate a Checkout Session "completing" by
-// creating a subscription on the connected account + setting the
-// session to status 'complete'. Tests use this to drive the
-// post-checkout webhook flow.
+// Slice 4a additions: simulate a Checkout Session "completing".
+// Behavior depends on mode:
+//   * subscription → spawn a fake subscription on the connected
+//     account; session.subscription points at it.
+//   * payment → mint a payment_intent id; session.payment_intent
+//     points at it. amount_total is already on the session row.
+// Tests use this to drive the post-checkout webhook flow.
 export function __completeCheckoutSession(acct, sessionId, opts = {}) {
   const session = _fakeCheckoutSessions.get(`${acct}:${sessionId}`);
   if (!session) {
     throw new Error(`fake stripe: no checkout session ${sessionId} on ${acct}`);
   }
-  // Spawn a fake subscription
-  const subId = `sub_test_${Math.random().toString(36).slice(2, 10)}`;
-  const now = Math.floor(Date.now() / 1000);
-  const subscription = {
-    id: subId,
-    customer: session.customer,
-    status: 'active',
-    current_period_start: now,
-    current_period_end: now + 30 * 24 * 60 * 60,
-    cancel_at_period_end: false,
-    items: { data: [{ price: { id: session.line_items[0]?.price } }] },
-    metadata: { ...session.metadata, ...(opts.metadata ?? {}) },
-  };
-  _fakeSubscriptions.set(`${acct}:${subId}`, subscription);
   session.status = 'complete';
-  session.subscription = subId;
-  return { session, subscription };
+
+  if (session.mode === 'subscription') {
+    const subId = `sub_test_${Math.random().toString(36).slice(2, 10)}`;
+    const now = Math.floor(Date.now() / 1000);
+    const subscription = {
+      id: subId,
+      customer: session.customer,
+      status: 'active',
+      current_period_start: now,
+      current_period_end: now + 30 * 24 * 60 * 60,
+      cancel_at_period_end: false,
+      items: { data: [{ price: { id: session.line_items[0]?.price } }] },
+      metadata: { ...session.metadata, ...(opts.metadata ?? {}) },
+    };
+    _fakeSubscriptions.set(`${acct}:${subId}`, subscription);
+    session.subscription = subId;
+    return { session, subscription };
+  }
+
+  // mode === 'payment' (walk-in / one-off booking)
+  const piId = `pi_test_${Math.random().toString(36).slice(2, 10)}`;
+  session.payment_intent = piId;
+  session.payment_status = 'paid';
+  return { session, payment_intent: piId };
 }
 
 export function __getSubscriptionsForAccount(acct) {
   return Array.from(_fakeSubscriptions.entries())
     .filter(([k]) => k.startsWith(`${acct}:`))
     .map(([, v]) => v);
+}
+
+// Helper: sum up unit_amount * quantity across line_items. Stripe
+// Checkout sessions in mode='payment' expose amount_total once the
+// session completes; we precompute it here for the fake.
+function computeAmountTotal(lineItems) {
+  let total = 0;
+  for (const li of lineItems) {
+    const unit = li.price_data?.unit_amount ?? 0;
+    const qty = li.quantity ?? 1;
+    total += unit * qty;
+  }
+  return total;
 }
 
 // Helper: pull stripeAccount from the per-call options. Connect calls
@@ -232,30 +256,37 @@ function testFake() {
       sessions: {
         async create(params, opts) {
           const acct = acctFromOptions(opts);
-          if (params?.mode !== 'subscription') {
+          if (params?.mode !== 'subscription' && params?.mode !== 'payment') {
             const err = new Error(
-              `fake stripe: only mode='subscription' faked, got ${params?.mode}`,
+              `fake stripe: only mode='subscription' | 'payment' faked, got ${params?.mode}`,
             );
             err.statusCode = 400;
             throw err;
           }
-          if (!params?.customer) {
-            const err = new Error('fake stripe: customer required');
-            err.statusCode = 400;
-            throw err;
-          }
-          if (!_fakeCustomers.has(`${acct}:${params.customer}`)) {
-            const err = new Error(`fake stripe: unknown customer ${params.customer}`);
-            err.statusCode = 404;
-            throw err;
+          // subscription mode requires a customer; payment mode allows
+          // a fresh email-only checkout (Stripe creates a customer on
+          // demand). Walk-in flow uses email-only.
+          if (params.mode === 'subscription') {
+            if (!params?.customer) {
+              const err = new Error('fake stripe: customer required for subscription mode');
+              err.statusCode = 400;
+              throw err;
+            }
+            if (!_fakeCustomers.has(`${acct}:${params.customer}`)) {
+              const err = new Error(`fake stripe: unknown customer ${params.customer}`);
+              err.statusCode = 404;
+              throw err;
+            }
           }
           const id = `cs_test_${Math.random().toString(36).slice(2, 10)}`;
           const row = {
             id,
             mode: params.mode,
             status: 'open',
-            customer: params.customer,
+            customer: params.customer ?? null,
+            customer_email: params.customer_email ?? null,
             line_items: params.line_items ?? [],
+            amount_total: computeAmountTotal(params.line_items ?? []),
             success_url: params.success_url,
             cancel_url: params.cancel_url,
             metadata: params.metadata ?? {},
