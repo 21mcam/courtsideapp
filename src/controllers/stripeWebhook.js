@@ -200,9 +200,12 @@ async function handleCheckoutSessionCompleted(event, accountId) {
     console.warn('checkout.session.completed: no data.object payload');
     return;
   }
+  if (session.mode === 'payment') {
+    // Walk-in / one-off booking payment (slice 7).
+    return handleCustomerBookingPaid(session, accountId);
+  }
   if (session.mode !== 'subscription') {
-    // mode='payment' is for one-off PaymentIntents (slice 7); not
-    // relevant here.
+    // Other modes (setup, etc.) we don't currently use.
     return;
   }
   if (!session.subscription) {
@@ -345,6 +348,70 @@ async function handleCheckoutSessionCompleted(event, accountId) {
   } finally {
     client.release();
   }
+}
+
+// checkout.session.completed (mode='payment') — Phase 5 slice 7.
+//
+// Walk-in customer paid for their booking on Stripe-hosted Checkout.
+// Flip the booking from 'pending_payment' to 'confirmed' + 'paid',
+// stamp the payment_intent id and amount_paid_cents.
+//
+// Status guard: WHERE status = 'pending_payment' means a booking
+// that was cancelled in the meantime (admin override, hold expiry
+// janitor) won't get re-confirmed. If we paid an expired booking,
+// we'll need to refund — slice 6 / future hardening.
+async function handleCustomerBookingPaid(session, accountId) {
+  const md = session.metadata ?? {};
+  const tenantIdFromMd = md.courtside_tenant_id;
+  const bookingId = md.courtside_booking_id;
+  if (!tenantIdFromMd || !bookingId) {
+    console.warn(
+      'checkout.session.completed (payment): missing courtside metadata; skipping',
+    );
+    return;
+  }
+
+  const tenantIdFromAcct = await resolveTenantFromAccount(
+    accountId,
+    'checkout.session.completed (payment)',
+  );
+  if (!tenantIdFromAcct) return;
+  if (tenantIdFromAcct !== tenantIdFromMd) {
+    console.error(
+      `checkout.session.completed (payment): tenant mismatch ` +
+        `(account=${tenantIdFromAcct}, metadata=${tenantIdFromMd})`,
+    );
+    return;
+  }
+
+  await withTenantContextById(tenantIdFromAcct, async (client) => {
+    const r = await client.query(
+      `UPDATE bookings
+          SET status = 'confirmed',
+              payment_status = 'paid',
+              amount_paid_cents = $1,
+              stripe_payment_intent_id = $2
+        WHERE tenant_id = $3
+          AND id = $4
+          AND status = 'pending_payment'
+        RETURNING id`,
+      [
+        session.amount_total ?? 0,
+        session.payment_intent ?? null,
+        tenantIdFromAcct,
+        bookingId,
+      ],
+    );
+    if (r.rows.length === 0) {
+      // Booking moved out of pending_payment between our INSERT and
+      // the payment landing. Most likely: admin cancelled, or hold
+      // expired and a janitor closed it. Slice 6 / hardening will
+      // add a refund flow for this edge.
+      console.warn(
+        `checkout.session.completed (payment): booking ${bookingId} not in pending_payment state; payment held without confirmation`,
+      );
+    }
+  });
 }
 
 // customer.subscription.updated — Phase 5 slice 4b.
