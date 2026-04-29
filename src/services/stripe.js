@@ -203,6 +203,31 @@ function testFake() {
         return row;
       },
     },
+    billingPortal: {
+      sessions: {
+        async create(params, opts) {
+          const acct = acctFromOptions(opts);
+          if (!params?.customer) {
+            const err = new Error('fake stripe: customer required for portal session');
+            err.statusCode = 400;
+            throw err;
+          }
+          if (!_fakeCustomers.has(`${acct}:${params.customer}`)) {
+            const err = new Error(`fake stripe: unknown customer ${params.customer}`);
+            err.statusCode = 404;
+            throw err;
+          }
+          const id = `bps_test_${Math.random().toString(36).slice(2, 10)}`;
+          return {
+            id,
+            customer: params.customer,
+            return_url: params.return_url,
+            url: `https://stripe.example/billing-portal/${id}`,
+            stripe_account: acct,
+          };
+        },
+      },
+    },
     checkout: {
       sessions: {
         async create(params, opts) {
