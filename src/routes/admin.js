@@ -48,6 +48,10 @@ import {
   listClassSchedules,
   generateClassSchedule,
 } from '../controllers/classSchedules.js';
+import {
+  startOnboarding,
+  getConnection,
+} from '../controllers/stripeConnect.js';
 
 const router = express.Router();
 
@@ -104,5 +108,11 @@ router.get('/class-instances/:id/roster', getClassInstanceRoster);
 router.get('/class-schedules', listClassSchedules);
 router.post('/class-schedules', createClassSchedule);
 router.post('/class-schedules/:id/generate', generateClassSchedule);
+
+// Stripe Connect onboarding (Phase 5 slice 1) — admin starts the
+// hosted onboarding flow + reads back current connection state.
+// Webhook-driven state sync lands in slice 2.
+router.post('/stripe/onboarding', startOnboarding);
+router.get('/stripe/connection', getConnection);
 
 export default router;
