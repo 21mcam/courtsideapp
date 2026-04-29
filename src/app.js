@@ -29,6 +29,7 @@ import bookingsRouter from './routes/bookings.js';
 import classInstancesRouter from './routes/classInstances.js';
 import classBookingsRouter from './routes/classBookings.js';
 import platformRouter from './routes/platform.js';
+import stripeWebhookRouter from './routes/stripeWebhook.js';
 import { resolveTenant } from './middleware/resolveTenant.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -40,9 +41,11 @@ if (process.env.NODE_ENV === 'production') {
   app.set('trust proxy', 1);
 }
 
-// 1. Stripe webhook (Phase 5 placeholder).
+// 1. Stripe webhook (Phase 5 slice 2).
 //    Mount BEFORE express.json with express.raw so the signature can
-//    be verified against the exact bytes Stripe sent.
+//    be verified against the exact bytes Stripe sent. The router
+//    applies express.raw itself.
+app.use('/webhooks/stripe', stripeWebhookRouter);
 
 // 2. JSON body parsing for everything below.
 app.use(express.json());

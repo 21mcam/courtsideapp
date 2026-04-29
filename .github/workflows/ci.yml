@@ -81,10 +81,10 @@ jobs:
           echo "Postgres did not become ready in time" >&2
           exit 1
 
-      # Apply migrations 001-011 in order. ON_ERROR_STOP=1 means any
-      # SQL error aborts the loop — silent partial application would
-      # be worse than a loud failure.
-      - name: Apply migrations 001-011
+      # Apply all migrations in order. ON_ERROR_STOP=1 means any SQL
+      # error aborts the loop — silent partial application would be
+      # worse than a loud failure.
+      - name: Apply migrations
         run: |
           for f in db/migrations/*.sql; do
             echo "::group::applying $f"

@@ -52,6 +52,12 @@ export function __setAccountState(id, patch) {
 
 function testFake() {
   return {
+    // webhooks.constructEvent is purely local HMAC math — no API
+    // call. Use the real Stripe SDK static method here so signing +
+    // verifying behave identically to production. Tests sign with
+    // Stripe.webhooks.generateTestHeaderString and the controller
+    // verifies through this same code path.
+    webhooks: Stripe.webhooks,
     accounts: {
       async create(params) {
         const id = `acct_test_${Math.random().toString(36).slice(2, 10)}`;
