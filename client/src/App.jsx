@@ -6,6 +6,7 @@
 //   /wizard  → admin-only setup wizard (Phase 2 slice 5)
 //   /book    → member booking flow (Phase 3 slice 5)
 //   /classes → member class browser + booking (Phase 4 slice 4)
+//   /plans   → member subscription chooser (Phase 5 slice 4a)
 //   /admin/bookings → admin booking calendar (Phase 3 slice 6)
 //   /admin/classes  → admin schedules + instances + roster (Phase 4 slice 4)
 //   /admin/stripe   → Stripe Connect onboarding + status (Phase 5 slice 1)
@@ -23,6 +24,7 @@ import AdminBookings from './pages/AdminBookings.jsx';
 import ClassesPage from './pages/ClassesPage.jsx';
 import AdminClasses from './pages/AdminClasses.jsx';
 import AdminStripe from './pages/AdminStripe.jsx';
+import MemberPlans from './pages/MemberPlans.jsx';
 
 export default function App() {
   return (
@@ -53,6 +55,7 @@ function Shell() {
       <Route path="/admin/stripe" element={<RouteAdminOnly><AdminStripe /></RouteAdminOnly>} />
       <Route path="/book" element={<RouteAuthed><BookingPage /></RouteAuthed>} />
       <Route path="/classes" element={<RouteAuthed><ClassesPage /></RouteAuthed>} />
+      <Route path="/plans" element={<RouteAuthed><MemberPlans /></RouteAuthed>} />
       <Route path="/" element={<RouteHome />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

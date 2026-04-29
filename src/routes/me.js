@@ -12,9 +12,19 @@ import express from 'express';
 import { withTenantContext } from '../db/withTenantContext.js';
 import { requireAuth } from '../middleware/auth.js';
 import { me } from '../controllers/me.js';
+import {
+  getMySubscription,
+  startSubscriptionCheckout,
+  listAvailablePlans,
+} from '../controllers/memberSubscriptions.js';
 
 const router = express.Router();
 
-router.get('/', requireAuth, withTenantContext, me);
+router.use(requireAuth, withTenantContext);
+
+router.get('/', me);
+router.get('/plans', listAvailablePlans);
+router.get('/subscriptions', getMySubscription);
+router.post('/subscriptions/checkout', startSubscriptionCheckout);
 
 export default router;

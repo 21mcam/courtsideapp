@@ -23,6 +23,7 @@ import { bookingStatusBadge, formatSlotLocal } from '../format.js';
 export default function MemberHome() {
   const { me, refresh } = useAuth();
   const [items, setItems] = useState(null); // unified list
+  const [subscription, setSubscription] = useState(undefined);
   const [loadError, setLoadError] = useState(null);
   const [cancelMessage, setCancelMessage] = useState(null);
 
@@ -31,8 +32,10 @@ export default function MemberHome() {
     Promise.all([
       api('/api/bookings/me').then(handle),
       api('/api/class-bookings/me').then(handle),
+      api('/api/me/subscriptions').then(handle),
     ])
-      .then(([rentals, classes]) => {
+      .then(([rentals, classes, sub]) => {
+        setSubscription(sub.subscription ?? null);
         const norm = [
           ...(rentals.bookings ?? []).map((b) => ({
             kind: 'rental',
@@ -125,6 +128,15 @@ export default function MemberHome() {
           <div>
             <div className="text-sm text-slate-500">Available credits</div>
             <div className="text-3xl font-semibold tabular-nums">{credits}</div>
+            {subscription && (
+              <div className="mt-1 text-xs text-slate-500">
+                Subscribed to{' '}
+                <span className="font-medium text-slate-700">
+                  {subscription.plan_name ?? '—'}
+                </span>{' '}
+                · {subscription.status}
+              </div>
+            )}
           </div>
           <div className="flex gap-2">
             <Link
@@ -141,6 +153,27 @@ export default function MemberHome() {
             </Link>
           </div>
         </section>
+
+        {/* Subscribe CTA when not yet subscribed. undefined = still
+            loading; null = loaded with no subscription. */}
+        {subscription === null && (
+          <section className="rounded border border-indigo-200 bg-indigo-50 px-5 py-4 flex items-center justify-between">
+            <div>
+              <div className="font-medium text-indigo-900">
+                Want weekly credits?
+              </div>
+              <div className="text-sm text-indigo-800">
+                Subscribe to a plan to get a fresh set of credits each week.
+              </div>
+            </div>
+            <Link
+              to="/plans"
+              className="rounded bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800"
+            >
+              View plans
+            </Link>
+          </section>
+        )}
 
         {cancelMessage && (
           <div className="rounded border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-700">
