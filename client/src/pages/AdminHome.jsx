@@ -63,6 +63,7 @@ export default function AdminHome() {
         <WizardCallout />
         <BookingsCallout />
         <ClassesCallout />
+        <StripeCallout />
         <TenantCard tenant={me.tenant} />
 
         <ListSection
@@ -298,6 +299,25 @@ function ClassesCallout() {
         className="rounded bg-violet-700 text-white px-4 py-2 hover:bg-violet-800"
       >
         Open classes
+      </Link>
+    </div>
+  );
+}
+
+function StripeCallout() {
+  return (
+    <div className="bg-indigo-50 border border-indigo-200 rounded p-4 flex items-center justify-between">
+      <div>
+        <div className="font-semibold text-indigo-900">Payments</div>
+        <div className="text-sm text-indigo-800">
+          Connect your Stripe account to accept member subscriptions and walk-in payments.
+        </div>
+      </div>
+      <Link
+        to="/admin/stripe"
+        className="rounded bg-indigo-700 text-white px-4 py-2 hover:bg-indigo-800"
+      >
+        Open payments
       </Link>
     </div>
   );

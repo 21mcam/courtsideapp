@@ -8,6 +8,7 @@
 //   /classes → member class browser + booking (Phase 4 slice 4)
 //   /admin/bookings → admin booking calendar (Phase 3 slice 6)
 //   /admin/classes  → admin schedules + instances + roster (Phase 4 slice 4)
+//   /admin/stripe   → Stripe Connect onboarding + status (Phase 5 slice 1)
 //
 // Wrapping AuthProvider so any page can read tenant + me state.
 
@@ -21,6 +22,7 @@ import BookingPage from './pages/BookingPage.jsx';
 import AdminBookings from './pages/AdminBookings.jsx';
 import ClassesPage from './pages/ClassesPage.jsx';
 import AdminClasses from './pages/AdminClasses.jsx';
+import AdminStripe from './pages/AdminStripe.jsx';
 
 export default function App() {
   return (
@@ -48,6 +50,7 @@ function Shell() {
       <Route path="/wizard" element={<RouteAdminOnly><Wizard /></RouteAdminOnly>} />
       <Route path="/admin/bookings" element={<RouteAdminOnly><AdminBookings /></RouteAdminOnly>} />
       <Route path="/admin/classes" element={<RouteAdminOnly><AdminClasses /></RouteAdminOnly>} />
+      <Route path="/admin/stripe" element={<RouteAdminOnly><AdminStripe /></RouteAdminOnly>} />
       <Route path="/book" element={<RouteAuthed><BookingPage /></RouteAuthed>} />
       <Route path="/classes" element={<RouteAuthed><ClassesPage /></RouteAuthed>} />
       <Route path="/" element={<RouteHome />} />
