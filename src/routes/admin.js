@@ -51,6 +51,7 @@ import {
 import {
   startOnboarding,
   getConnection,
+  syncPlanToStripe,
 } from '../controllers/stripeConnect.js';
 
 const router = express.Router();
@@ -74,9 +75,10 @@ router.post('/offerings', createOffering);
 router.get('/offerings/:id/resources', listOfferingResources);
 router.post('/offerings/:id/resources', linkResourceToOffering);
 
-// Plans (Phase 2 slice 3)
+// Plans (Phase 2 slice 3 + Phase 5 slice 3 sync)
 router.get('/plans', listPlans);
 router.post('/plans', createPlan);
+router.post('/plans/:id/stripe-sync', syncPlanToStripe);
 
 // Operating hours + booking policies (Phase 3 prep)
 router.get('/operating-hours', listOperatingHours);
