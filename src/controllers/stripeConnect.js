@@ -18,6 +18,141 @@
 import { z } from 'zod';
 import { getStripe } from '../services/stripe.js';
 
+// ============================================================
+// POST /api/admin/plans/:id/stripe-sync — Phase 5 slice 3
+// ============================================================
+//
+// Creates a Stripe Product + recurring Price on the tenant's
+// connected account and stores the resulting price_id back on the
+// plan. Idempotent: if the plan already has a stripe_price_id, this
+// is a no-op (returning the existing id).
+//
+// Why per-tenant Products: each tenant runs Connect Standard, which
+// means they're independent merchants on Stripe. A Price ID created
+// on tenant A's account is meaningless to tenant B. The platform
+// itself never owns plan Products — it just stores the references.
+//
+// Re-pricing: if a tenant changes monthly_price_cents on an
+// already-synced plan, this endpoint does NOT replace the Stripe
+// Price (Stripe immutability — prices can't be edited). For now,
+// document the workflow as: deactivate old plan → create new plan
+// with the new price → re-sync. Phase 5 slice 5+ may add a "rotate
+// price" helper when subscriptions are in flight.
+export async function syncPlanToStripe(req, res, next) {
+  try {
+    const { tenant, db } = req;
+    const planId = req.params.id;
+
+    // Pull plan + connection state in parallel-ish (still one client
+    // because we're inside withTenantContext's transaction).
+    const planRes = await db.query(
+      `SELECT id, name, description, monthly_price_cents, active, stripe_price_id
+         FROM plans WHERE tenant_id = $1 AND id = $2`,
+      [tenant.id, planId],
+    );
+    if (planRes.rows.length === 0) {
+      return res.status(404).json({ error: 'plan not found' });
+    }
+    const plan = planRes.rows[0];
+
+    // Already synced — return existing id without touching Stripe.
+    if (plan.stripe_price_id) {
+      return res.json({ plan, synced: false, reason: 'already synced' });
+    }
+
+    if (plan.monthly_price_cents <= 0) {
+      return res
+        .status(409)
+        .json({ error: 'cannot sync a free plan to Stripe (no recurring price)' });
+    }
+    if (!plan.active) {
+      return res
+        .status(409)
+        .json({ error: 'cannot sync an inactive plan; activate it first' });
+    }
+
+    // Pull connection. Must be present + charges_enabled before we
+    // call Stripe. Otherwise the Price.create would 400 from Stripe
+    // anyway with a less helpful error.
+    const connRes = await db.query(
+      `SELECT stripe_account_id, charges_enabled
+         FROM stripe_connections WHERE tenant_id = $1`,
+      [tenant.id],
+    );
+    if (connRes.rows.length === 0) {
+      return res.status(409).json({
+        error: 'tenant has not connected a Stripe account; finish onboarding first',
+      });
+    }
+    const conn = connRes.rows[0];
+    if (!conn.charges_enabled) {
+      return res.status(409).json({
+        error: 'Stripe account is not yet charges-enabled; finish onboarding first',
+      });
+    }
+
+    const stripe = getStripe();
+    // Connect: every API call below must specify { stripeAccount }.
+    const opts = { stripeAccount: conn.stripe_account_id };
+
+    let priceId;
+    try {
+      const product = await stripe.products.create(
+        {
+          name: plan.name,
+          description: plan.description ?? undefined,
+          metadata: {
+            courtside_plan_id: plan.id,
+            courtside_tenant_id: tenant.id,
+          },
+        },
+        opts,
+      );
+      const price = await stripe.prices.create(
+        {
+          product: product.id,
+          unit_amount: plan.monthly_price_cents,
+          currency: 'usd',
+          recurring: { interval: 'month' },
+          metadata: {
+            courtside_plan_id: plan.id,
+            courtside_tenant_id: tenant.id,
+          },
+        },
+        opts,
+      );
+      priceId = price.id;
+    } catch (err) {
+      // Stripe-side failure (account not ready, validation, etc.).
+      // Surface the message — admin needs to know what to fix.
+      const msg = err?.message ?? 'Stripe API error';
+      const status = err?.statusCode === 400 ? 400 : 502;
+      return res.status(status).json({ error: `stripe error: ${msg}` });
+    }
+
+    // Store the price_id back on the plan. The unique index
+    // plans_stripe_price_unique catches a same-id collision (would
+    // only happen on a buggy/double call); we already short-circuited
+    // above when stripe_price_id was already set, so a 23505 here is
+    // a genuine bug, not a normal case.
+    const updRes = await db.query(
+      `UPDATE plans
+          SET stripe_price_id = $1
+        WHERE tenant_id = $2 AND id = $3
+        RETURNING id, name, description, monthly_price_cents,
+                  credits_per_week,
+                  allowed_categories::text[] AS allowed_categories,
+                  stripe_price_id, active, display_order,
+                  created_at, updated_at`,
+      [priceId, tenant.id, planId],
+    );
+
+    res.json({ plan: updRes.rows[0], synced: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
 const onboardingSchema = z.object({
   return_url: z.string().url(),
   refresh_url: z.string().url(),

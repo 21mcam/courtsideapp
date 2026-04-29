@@ -30,8 +30,18 @@ export default function AdminHome() {
   const [operatingHours, setOperatingHours] = useState(null);
   const [policies, setPolicies] = useState(null);
   const [loadError, setLoadError] = useState(null);
+  const [syncMessage, setSyncMessage] = useState(null);
+  const [syncingPlanId, setSyncingPlanId] = useState(null);
 
   useEffect(() => {
+    load();
+  }, []);
+
+  // Map of resource_id → name, for joining onto operating_hours.
+  const resourceNameById = new Map((resources ?? []).map((r) => [r.id, r.name]));
+
+  function load() {
+    setLoadError(null);
     Promise.all([
       api('/api/admin/members').then(handle),
       api('/api/admin/admins').then(handle),
@@ -51,10 +61,32 @@ export default function AdminHome() {
         setPolicies(bp.booking_policies ?? null);
       })
       .catch((err) => setLoadError(err.message));
-  }, []);
+  }
 
-  // Map of resource_id → name, for joining onto operating_hours.
-  const resourceNameById = new Map((resources ?? []).map((r) => [r.id, r.name]));
+  async function syncPlan(plan) {
+    if (syncingPlanId) return;
+    setSyncMessage(null);
+    setSyncingPlanId(plan.id);
+    try {
+      const res = await api(`/api/admin/plans/${plan.id}/stripe-sync`, {
+        method: 'POST',
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setSyncMessage(
+        body.synced
+          ? `Synced "${plan.name}" to Stripe.`
+          : `"${plan.name}" was already synced.`,
+      );
+      // Refresh just the plans column.
+      const r = await api('/api/admin/plans').then(handle);
+      setPlans(r.plans ?? []);
+    } catch (err) {
+      setSyncMessage(`Sync failed: ${err.message}`);
+    } finally {
+      setSyncingPlanId(null);
+    }
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -64,6 +96,11 @@ export default function AdminHome() {
         <BookingsCallout />
         <ClassesCallout />
         <StripeCallout />
+        {syncMessage && (
+          <div className="rounded border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-700">
+            {syncMessage}
+          </div>
+        )}
         <TenantCard tenant={me.tenant} />
 
         <ListSection
@@ -150,7 +187,20 @@ export default function AdminHome() {
                 p.stripe_price_id ? (
                   <span className="text-xs text-emerald-700">linked</span>
                 ) : (
-                  <span className="text-xs text-slate-400">—</span>
+                  <button
+                    onClick={() => syncPlan(p)}
+                    disabled={syncingPlanId === p.id || !p.active || p.monthly_price_cents === 0}
+                    title={
+                      !p.active
+                        ? 'plan is inactive'
+                        : p.monthly_price_cents === 0
+                          ? 'free plan cannot be synced'
+                          : 'create Stripe Product + Price on your connected account'
+                    }
+                    className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {syncingPlanId === p.id ? 'syncing…' : 'Sync'}
+                  </button>
                 ),
             },
             {
