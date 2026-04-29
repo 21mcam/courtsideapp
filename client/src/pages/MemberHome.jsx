@@ -26,6 +26,24 @@ export default function MemberHome() {
   const [subscription, setSubscription] = useState(undefined);
   const [loadError, setLoadError] = useState(null);
   const [cancelMessage, setCancelMessage] = useState(null);
+  const [portalBusy, setPortalBusy] = useState(false);
+
+  async function openPortal() {
+    if (portalBusy) return;
+    setPortalBusy(true);
+    try {
+      const res = await api('/api/me/subscriptions/portal', {
+        method: 'POST',
+        body: JSON.stringify({ return_url: window.location.origin + '/' }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      window.location.assign(body.url);
+    } catch (err) {
+      setCancelMessage(`Open portal failed: ${err.message}`);
+      setPortalBusy(false);
+    }
+  }
 
   function load() {
     setLoadError(null);
@@ -135,6 +153,18 @@ export default function MemberHome() {
                   {subscription.plan_name ?? '—'}
                 </span>{' '}
                 · {subscription.status}
+                {subscription.cancel_at_period_end && (
+                  <span className="ml-2 text-amber-700">
+                    (ending at period end)
+                  </span>
+                )}
+                <button
+                  onClick={openPortal}
+                  disabled={portalBusy}
+                  className="ml-3 underline hover:text-slate-800 disabled:opacity-50"
+                >
+                  {portalBusy ? 'opening…' : 'Manage'}
+                </button>
               </div>
             )}
           </div>

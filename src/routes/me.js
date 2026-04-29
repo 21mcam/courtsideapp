@@ -16,6 +16,7 @@ import {
   getMySubscription,
   startSubscriptionCheckout,
   listAvailablePlans,
+  createPortalSession,
 } from '../controllers/memberSubscriptions.js';
 
 const router = express.Router();
@@ -26,5 +27,6 @@ router.get('/', me);
 router.get('/plans', listAvailablePlans);
 router.get('/subscriptions', getMySubscription);
 router.post('/subscriptions/checkout', startSubscriptionCheckout);
+router.post('/subscriptions/portal', createPortalSession);
 
 export default router;

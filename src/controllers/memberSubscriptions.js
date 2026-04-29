@@ -90,6 +90,82 @@ export async function getMySubscription(req, res, next) {
   }
 }
 
+// POST /api/me/subscriptions/portal — Phase 5 slice 5.
+//
+// Returns a Stripe Billing Portal session URL. The portal lets the
+// member self-serve: update payment method, view invoices, cancel
+// at period end (or reactivate), see plan details. All actions
+// trigger Stripe webhooks we already handle in slice 4b — so this
+// is just a URL-mint endpoint, no DB writes here.
+const portalSchema = z.object({
+  return_url: z.string().url(),
+});
+
+export async function createPortalSession(req, res, next) {
+  try {
+    if (!req.user?.member_id) {
+      return res
+        .status(403)
+        .json({ error: 'must be signed in as a member' });
+    }
+    const parsed = portalSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const { return_url } = parsed.data;
+    const { tenant, db, user } = req;
+
+    // Need an existing customer. We pull it from the most recent
+    // subscription (active or otherwise) — the connected account
+    // owns customers, so once a member has subscribed once, the
+    // customer persists across plan changes / cancels.
+    const r = await db.query(
+      `SELECT stripe_customer_id FROM subscriptions
+        WHERE tenant_id = $1 AND member_id = $2
+          AND stripe_customer_id IS NOT NULL
+        ORDER BY created_at DESC LIMIT 1`,
+      [tenant.id, user.member_id],
+    );
+    if (r.rows.length === 0) {
+      return res.status(409).json({
+        error: 'no Stripe customer on file; subscribe first to create one',
+      });
+    }
+    const customerId = r.rows[0].stripe_customer_id;
+
+    const connRes = await db.query(
+      `SELECT stripe_account_id, charges_enabled
+         FROM stripe_connections WHERE tenant_id = $1`,
+      [tenant.id],
+    );
+    if (connRes.rows.length === 0 || !connRes.rows[0].charges_enabled) {
+      return res
+        .status(409)
+        .json({ error: 'tenant Stripe connection not ready' });
+    }
+    const conn = connRes.rows[0];
+
+    try {
+      const session = await getStripe().billingPortal.sessions.create(
+        {
+          customer: customerId,
+          return_url,
+        },
+        { stripeAccount: conn.stripe_account_id },
+      );
+      res.status(201).json({ url: session.url });
+    } catch (err) {
+      const msg = err?.message ?? 'Stripe API error';
+      const status = err?.statusCode === 400 ? 400 : 502;
+      return res.status(status).json({ error: `stripe error: ${msg}` });
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
 const checkoutSchema = z.object({
   plan_id: z.string().uuid(),
   success_url: z.string().url(),

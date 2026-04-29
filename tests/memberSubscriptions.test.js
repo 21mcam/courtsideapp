@@ -517,6 +517,65 @@ test('webhook duplicate delivery: idempotent, no second credit grant', { skip },
   assert.equal(subs.rows[0].n, 1);
 });
 
+// ============================================================
+// POST /api/me/subscriptions/portal — Phase 5 slice 5
+// ============================================================
+
+test('portal: 409 when member has no Stripe customer on file', { skip }, async () => {
+  const m = await newMember(); // never subscribed
+  const res = await memberFetch(m.token, '/api/me/subscriptions/portal', {
+    method: 'POST',
+    body: JSON.stringify({ return_url: 'https://app.example/' }),
+  });
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.match(body.error, /no Stripe customer on file/i);
+});
+
+test('portal: 201 returns billing portal URL when member has subscribed', { skip }, async () => {
+  const plan = await newSyncedPlan({ name: `Portal Plan ${randomUUID().slice(0, 6)}` });
+  const m = await newMember();
+
+  // Run the full checkout → webhook flow so the member ends up with
+  // a stripe_customer_id on a subscriptions row.
+  const checkoutRes = await memberFetch(m.token, '/api/me/subscriptions/checkout', {
+    method: 'POST',
+    body: JSON.stringify({
+      plan_id: plan.id,
+      success_url: 'https://app.example/?subscribed=1',
+      cancel_url: 'https://app.example/plans',
+    }),
+  });
+  const { session_id } = await checkoutRes.json();
+  const { session } = stripeFake.__completeCheckoutSession(
+    stripe_account_id,
+    session_id,
+  );
+  await postWebhook({
+    id: `evt_${randomUUID()}`,
+    type: 'checkout.session.completed',
+    account: stripe_account_id,
+    data: {
+      object: {
+        id: session.id,
+        mode: 'subscription',
+        status: 'complete',
+        customer: session.customer,
+        subscription: session.subscription,
+        metadata: session.metadata,
+      },
+    },
+  });
+
+  const res = await memberFetch(m.token, '/api/me/subscriptions/portal', {
+    method: 'POST',
+    body: JSON.stringify({ return_url: 'https://app.example/' }),
+  });
+  assert.equal(res.status, 201);
+  const body = await res.json();
+  assert.match(body.url, /^https:\/\/stripe\.example\/billing-portal\//);
+});
+
 test('webhook with missing courtside metadata is silently dropped', { skip }, async () => {
   const event = {
     id: `evt_test_${randomUUID().slice(0, 8)}`,
