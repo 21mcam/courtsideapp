@@ -41,13 +41,19 @@ export function getStripe() {
 //   * __setAccountState(id, { details_submitted: true, ... })
 //   * Inspect created products/prices via __getProductsForAccount(acct).
 const _fakeAccounts = new Map();
-const _fakeProducts = new Map(); // key: `${acct}:${productId}` → product
-const _fakePrices = new Map();   // key: `${acct}:${priceId}` → price
+const _fakeProducts = new Map();        // `${acct}:${productId}` → product
+const _fakePrices = new Map();          // `${acct}:${priceId}` → price
+const _fakeCustomers = new Map();       // `${acct}:${customerId}` → customer
+const _fakeCheckoutSessions = new Map();// `${acct}:${sessionId}` → session
+const _fakeSubscriptions = new Map();   // `${acct}:${subId}` → subscription
 
 export function __resetStripeFake() {
   _fakeAccounts.clear();
   _fakeProducts.clear();
   _fakePrices.clear();
+  _fakeCustomers.clear();
+  _fakeCheckoutSessions.clear();
+  _fakeSubscriptions.clear();
 }
 
 export function __setAccountState(id, patch) {
@@ -63,6 +69,40 @@ export function __getProductsForAccount(acct) {
 
 export function __getPricesForAccount(acct) {
   return Array.from(_fakePrices.entries())
+    .filter(([k]) => k.startsWith(`${acct}:`))
+    .map(([, v]) => v);
+}
+
+// Slice 4a additions: simulate a Checkout Session "completing" by
+// creating a subscription on the connected account + setting the
+// session to status 'complete'. Tests use this to drive the
+// post-checkout webhook flow.
+export function __completeCheckoutSession(acct, sessionId, opts = {}) {
+  const session = _fakeCheckoutSessions.get(`${acct}:${sessionId}`);
+  if (!session) {
+    throw new Error(`fake stripe: no checkout session ${sessionId} on ${acct}`);
+  }
+  // Spawn a fake subscription
+  const subId = `sub_test_${Math.random().toString(36).slice(2, 10)}`;
+  const now = Math.floor(Date.now() / 1000);
+  const subscription = {
+    id: subId,
+    customer: session.customer,
+    status: 'active',
+    current_period_start: now,
+    current_period_end: now + 30 * 24 * 60 * 60,
+    cancel_at_period_end: false,
+    items: { data: [{ price: { id: session.line_items[0]?.price } }] },
+    metadata: { ...session.metadata, ...(opts.metadata ?? {}) },
+  };
+  _fakeSubscriptions.set(`${acct}:${subId}`, subscription);
+  session.status = 'complete';
+  session.subscription = subId;
+  return { session, subscription };
+}
+
+export function __getSubscriptionsForAccount(acct) {
+  return Array.from(_fakeSubscriptions.entries())
     .filter(([k]) => k.startsWith(`${acct}:`))
     .map(([, v]) => v);
 }
@@ -147,6 +187,59 @@ function testFake() {
         };
         _fakeProducts.set(`${acct}:${id}`, row);
         return row;
+      },
+    },
+    customers: {
+      async create(params, opts) {
+        const acct = acctFromOptions(opts);
+        const id = `cus_test_${Math.random().toString(36).slice(2, 10)}`;
+        const row = {
+          id,
+          email: params?.email ?? null,
+          metadata: params?.metadata ?? {},
+          stripe_account: acct,
+        };
+        _fakeCustomers.set(`${acct}:${id}`, row);
+        return row;
+      },
+    },
+    checkout: {
+      sessions: {
+        async create(params, opts) {
+          const acct = acctFromOptions(opts);
+          if (params?.mode !== 'subscription') {
+            const err = new Error(
+              `fake stripe: only mode='subscription' faked, got ${params?.mode}`,
+            );
+            err.statusCode = 400;
+            throw err;
+          }
+          if (!params?.customer) {
+            const err = new Error('fake stripe: customer required');
+            err.statusCode = 400;
+            throw err;
+          }
+          if (!_fakeCustomers.has(`${acct}:${params.customer}`)) {
+            const err = new Error(`fake stripe: unknown customer ${params.customer}`);
+            err.statusCode = 404;
+            throw err;
+          }
+          const id = `cs_test_${Math.random().toString(36).slice(2, 10)}`;
+          const row = {
+            id,
+            mode: params.mode,
+            status: 'open',
+            customer: params.customer,
+            line_items: params.line_items ?? [],
+            success_url: params.success_url,
+            cancel_url: params.cancel_url,
+            metadata: params.metadata ?? {},
+            url: `https://stripe.example/checkout/${id}`,
+            stripe_account: acct,
+          };
+          _fakeCheckoutSessions.set(`${acct}:${id}`, row);
+          return row;
+        },
       },
     },
     prices: {
