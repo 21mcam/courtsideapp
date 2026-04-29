@@ -2097,6 +2097,30 @@ COMMENT ON FUNCTION lookup_tenant_by_stripe_account(text) IS
   'because the webhook has no GUC set yet. Returns only the tenant_id; '
   'caller sets app.current_tenant_id and proceeds with RLS in effect.';
 
+-- ----------------------------------------------------------
+-- Webhook idempotency log (migration 016).
+--
+-- Stripe redelivers occasionally. Some handlers are structurally
+-- idempotent (account.updated just sets current state); others
+-- aren't (granting credits twice on a duplicate
+-- invoice.payment_succeeded silently inflates balances). The dedup
+-- check happens at the controller boundary: INSERT event_id with
+-- ON CONFLICT DO NOTHING; 0 rows back means duplicate, skip handler.
+--
+-- No tenant_id / no RLS — the runtime writes here BEFORE it knows
+-- which tenant the event belongs to. Default GRANTs from migration
+-- 011 cover app_runtime read+write.
+CREATE TABLE stripe_webhook_events (
+  event_id        text PRIMARY KEY,
+  event_type      text NOT NULL,
+  account_id      text,
+  received_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX stripe_webhook_events_account_idx
+  ON stripe_webhook_events (account_id, received_at DESC)
+  WHERE account_id IS NOT NULL;
+
 -- ============================================================
 -- LAYER 8: CLEANUP — credit_ledger_entries class_booking_id
 -- ============================================================
