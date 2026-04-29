@@ -2058,6 +2058,45 @@ CREATE POLICY stripe_connections_tenant_isolation ON stripe_connections
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
+-- ----------------------------------------------------------
+-- Stripe webhook tenant resolution (migration 015).
+--
+-- Stripe POSTs to /webhooks/stripe from api.stripe.com, NOT from a
+-- tenant subdomain. The handler can't use the resolveTenant +
+-- withTenantContext middleware sandwich; it has to bootstrap tenant
+-- context from the event payload (event.account = the connected
+-- Stripe account id).
+--
+-- stripe_connections has FORCE ROW LEVEL SECURITY, so the runtime
+-- role can't read it without the GUC already set. This is the
+-- chicken-and-egg the webhook has to break.
+--
+-- Pattern matches apply_credit_change: SECURITY DEFINER, owned by
+-- the migration role (postgres / supabase admin) which bypasses
+-- FORCE RLS. Returns ONLY the tenant_id — no other columns leak.
+-- The webhook handler uses that tenant_id to set the GUC and then
+-- proceeds normally with RLS in effect for the actual UPDATE.
+CREATE OR REPLACE FUNCTION lookup_tenant_by_stripe_account(p_account_id text)
+RETURNS uuid
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+STABLE
+AS $$
+  SELECT tenant_id
+    FROM stripe_connections
+   WHERE stripe_account_id = p_account_id
+   LIMIT 1;
+$$;
+
+REVOKE ALL ON FUNCTION lookup_tenant_by_stripe_account(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION lookup_tenant_by_stripe_account(text) TO app_runtime;
+
+COMMENT ON FUNCTION lookup_tenant_by_stripe_account(text) IS
+  'Stripe-webhook tenant resolution. Bypasses RLS via SECURITY DEFINER '
+  'because the webhook has no GUC set yet. Returns only the tenant_id; '
+  'caller sets app.current_tenant_id and proceeds with RLS in effect.';
+
 -- ============================================================
 -- LAYER 8: CLEANUP — credit_ledger_entries class_booking_id
 -- ============================================================
