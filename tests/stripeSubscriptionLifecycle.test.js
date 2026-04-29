@@ -13,7 +13,6 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import 'dotenv/config';
-import bcrypt from 'bcryptjs';
 import pg from 'pg';
 import Stripe from 'stripe';
 
