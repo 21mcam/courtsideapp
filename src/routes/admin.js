@@ -53,6 +53,7 @@ import {
   getConnection,
   syncPlanToStripe,
 } from '../controllers/stripeConnect.js';
+import { runTenantCleanup } from '../controllers/cleanup.js';
 
 const router = express.Router();
 
@@ -116,5 +117,10 @@ router.post('/class-schedules/:id/generate', generateClassSchedule);
 // Webhook-driven state sync lands in slice 2.
 router.post('/stripe/onboarding', startOnboarding);
 router.get('/stripe/connection', getConnection);
+
+// Stale-state cleanup (Phase 5 slice 6). Cancels expired pending
+// bookings + abandoned incomplete subscriptions. Idempotent — safe
+// to run on a schedule (cron / pg_cron / GitHub Actions).
+router.post('/cleanup', runTenantCleanup);
 
 export default router;
