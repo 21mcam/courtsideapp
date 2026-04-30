@@ -128,10 +128,13 @@ function adminFetch(path, init = {}) {
 }
 
 // Insert a synthetic pending_payment booking via privileged pool.
-// hold_expires_at <= start_time is enforced by the schema; we set
-// both to a chosen offset.
-async function syntheticPendingBooking({ holdHoursFromNow }) {
-  const startMs = Date.now() + Math.max(holdHoursFromNow + 1, 1) * 60 * 60 * 1000;
+// hold_expires_at <= start_time is enforced by the schema. Tests
+// pass a unique slotHoursFromNow per call so the GiST exclusion on
+// (resource, time_range) doesn't collide across booking fixtures
+// that share this resource.
+async function syntheticPendingBooking({ holdHoursFromNow, slotHoursFromNow }) {
+  const slot = slotHoursFromNow ?? Math.max(holdHoursFromNow + 1, 1);
+  const startMs = Date.now() + slot * 60 * 60 * 1000;
   const start = new Date(startMs);
   const end = new Date(startMs + 60 * 60 * 1000);
   const hold = new Date(Date.now() + holdHoursFromNow * 60 * 60 * 1000);
@@ -215,8 +218,12 @@ async function syntheticStaleSubscription({ ageHours, status = 'incomplete' }) {
 // ============================================================
 
 test('cleanup cancels pending_payment booking whose hold_expires_at has passed', { skip }, async () => {
-  // Stale: hold expired 30 min ago
-  const stale = await syntheticPendingBooking({ holdHoursFromNow: -0.5 });
+  // Stale: hold expired 30 min ago. Slot is 5h from now to avoid
+  // GiST collision with other test fixtures.
+  const stale = await syntheticPendingBooking({
+    holdHoursFromNow: -0.5,
+    slotHoursFromNow: 5,
+  });
 
   const res = await adminFetch('/api/admin/cleanup', { method: 'POST' });
   assert.equal(res.status, 200);
@@ -235,8 +242,11 @@ test('cleanup cancels pending_payment booking whose hold_expires_at has passed',
 });
 
 test('cleanup leaves still-fresh pending_payment booking alone', { skip }, async () => {
-  // Hold expires 30 min from now
-  const fresh = await syntheticPendingBooking({ holdHoursFromNow: 0.5 });
+  // Hold expires 30 min from now; slot at +10h to avoid collisions.
+  const fresh = await syntheticPendingBooking({
+    holdHoursFromNow: 0.5,
+    slotHoursFromNow: 10,
+  });
 
   await adminFetch('/api/admin/cleanup', { method: 'POST' });
 
@@ -384,7 +394,11 @@ test('non-admin cannot run cleanup (403)', { skip }, async () => {
 // ============================================================
 
 test('cleanup is idempotent: running again returns zero counts', { skip }, async () => {
-  const stale = await syntheticPendingBooking({ holdHoursFromNow: -0.5 });
+  // Slot at +15h, well clear of other fixtures.
+  const stale = await syntheticPendingBooking({
+    holdHoursFromNow: -0.5,
+    slotHoursFromNow: 15,
+  });
 
   const r1 = await adminFetch('/api/admin/cleanup', { method: 'POST' });
   const body1 = await r1.json();
