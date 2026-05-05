@@ -695,19 +695,23 @@ test('advance window: slot inside the policy window → 201', { skip }, async ()
     const m = await newMember();
     await grantCredits(m.member_id, 5);
 
-    // 5 days from now at noon UTC (well inside operating hours for
-    // most days; we'll pick a Monday slot at 14:00 EST = 19:00 UTC
-    // when DOW happens to land on Monday). Actually, simpler: just
-    // use a fixed Monday 5-7 days out from a known reference.
-    //
-    // currentDate context: 2026-04-28 (Tuesday). Closest Monday
-    // in window: 2026-05-04 (6 days out, Monday).
+    // Pick the next Monday 7-13 days out at 18:00 UTC. 18:00 UTC =
+    // 14:00 EDT (summer) or 13:00 EST (winter); both inside the
+    // 09:00-17:00 local op-hours fixture. Computed relative to
+    // `now()` to dodge the time-bomb pattern (an earlier hard-coded
+    // 2026-05-04 went stale).
+    const nextMonday = new Date();
+    nextMonday.setUTCHours(18, 0, 0, 0);
+    nextMonday.setUTCDate(nextMonday.getUTCDate() + 7); // at least 7 days out
+    while (nextMonday.getUTCDay() !== 1) {
+      nextMonday.setUTCDate(nextMonday.getUTCDate() + 1);
+    }
     const res = await memberFetch(m.token, '/api/bookings', {
       method: 'POST',
       body: JSON.stringify({
         offering_id,
         resource_id,
-        start_time: '2026-05-04T19:00:00.000Z', // 14:00 EST
+        start_time: nextMonday.toISOString(),
       }),
     });
     assert.equal(res.status, 201);

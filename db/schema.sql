@@ -611,7 +611,7 @@ CREATE TABLE credit_ledger_entries (
   reason          text NOT NULL
                   CHECK (reason IN ('weekly_reset', 'admin_adjustment', 'signup_bonus',
                                     'booking_spend', 'booking_refund', 'plan_change',
-                                    'manual')),
+                                    'manual', 'migration')),
   note            text,
   granted_by      uuid,         -- user_id of admin (if any). No FK so historical entries
                                 -- survive admin user deletion.
