@@ -119,17 +119,14 @@ README.md                    this file
 shared/                      common helpers (DB connection, logging, error)
 ```
 
-## Source schema (TBD — fill in once inventoried)
+## Source schema inventory
 
-This section will list every Momentum source table + how each
-column maps to Courtside. Done as the first work in `01_snapshot_source.js`.
+See **`SOURCE_SCHEMA.md`** in this directory. That's the
+table-by-table contract between Momentum and Courtside. **Fill it
+in before writing any extraction code** — it's the artifact that
+makes `01_snapshot_source.js` and the `mapMomentumSubStatus()`
+switch in `02_transform.js` mechanical to write.
 
-```
-momentum_users    → users + members (linked)
-momentum_subs     → subscriptions + subscription_plan_periods
-momentum_credits  → credit_balances + ONE credit_ledger_entries row
-                    per member with reason='migration'
-setmore_bookings  → bookings (status='completed' for past,
-                    'confirmed' for future)
-... TBD ...
-```
+If you find an edge case mid-migration, capture it in
+SOURCE_SCHEMA.md before fixing it in code. Doc is the source of
+truth.
