@@ -19,3 +19,7 @@ coverage/
 
 files/
 files.zip
+
+# migration working data — member PII (emails, phones, bookings);
+# never commit
+scripts/migration/out/

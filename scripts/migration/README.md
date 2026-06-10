@@ -26,10 +26,50 @@ losing audit history.
 | Step | Script | What | When |
 |------|--------|------|------|
 | 1 | `01_snapshot_source.js` | Dumps Momentum DB to JSON files in `out/source/` | Run at the cutover starting line |
-| 2 | `02_transform.js` | Reads `out/source/*` and writes Courtside-shaped JSON to `out/transformed/` | Reads-only; can rerun |
-| 3 | `03_load.js` | Inserts into the live Courtside DB inside one transaction per logical group | Idempotent via UPSERT keys; rerun-safe until verify passes |
-| 4 | `04_stripe_backfill.js` | Updates existing Stripe Customers + Subscriptions on Momentum's connected account with `courtside_*` metadata | Idempotent; safe to rerun |
-| 5 | `05_verify.js` | Compares row counts + invariants between source and target | Read-only |
+| 2 | `02_transform.js` | Reads `out/source/*` and writes Courtside-shaped JSON to `out/transformed/`; rows it can't legally map go to `rejects.json` | Reads-only; can rerun |
+| 3 | `03_load.js` | Inserts into the live Courtside DB inside one transaction per logical group, resolving `source_*_id` refs as it loads | Idempotent (deterministic ids + natural-key adoption); bad booking/hours rows skip into `out/load_report/` |
+| 4 | `04_stripe_backfill.js` | Updates existing Stripe Customers + Subscriptions on Momentum's connected account with `courtside_*` metadata | Idempotent; safe to rerun; exits 1 if ANY row failed |
+| 5 | `05_verify.js` | Compares row counts (`EXPECT_*` env, required) + invariants | Read-only; missing `EXPECT_*` is a FAIL, not a skip |
+
+## ID strategy, idempotency, and review reports
+
+Every row the migration creates gets a **deterministic UUIDv5** from
+`(tenant_id, table, Momentum source id)` — see `shared/ids.js`. Same
+source row → same Courtside UUID on every run. That's what makes
+reruns safe for tables with no natural key (bookings, subscriptions
+with NULL stripe ids, inactive plans).
+
+Transformers never resolve cross-references; they carry Momentum ids
+through as `source_*_id` fields. `03_load.js` builds source→Courtside
+maps as it inserts (`RETURNING id`) and resolves later phases through
+them. Where a row may already exist — wizard-created plans/resources/
+offerings, a hand-created member — the loader **adopts** the existing
+row by natural key (email / name) and updates it, rather than
+inserting a duplicate. The transformed catalog JSON must carry
+`source_id` on any plan/resource/offering that subscriptions or
+bookings reference, or those rows can't resolve.
+
+Per-row failure policy:
+
+- **users/members, plans, catalog, subscriptions, credits** — small,
+  must-be-complete datasets. Any unresolvable row fails the whole
+  phase with a list (the transaction rolls back). Fix, rerun.
+- **bookings, operating hours** — bulky, dirty (Setmore) datasets.
+  Bad rows are skipped via per-row SAVEPOINT and written to
+  `out/load_report/*.json`. The reports are part of the cutover gate:
+  `bookings_skipped.json` must be empty or consciously accepted
+  before DNS flips. An empty report file is always written, so "no
+  file" can never be mistaken for "nothing skipped".
+- **transform-level rejects** (unmappable money shapes, missing
+  walk-in contact info, garbage dates, unknown subscription statuses)
+  throw per row; the driver collects them into
+  `out/transformed/rejects.json` for manual review. We do not
+  fabricate emails or rewrite money to force a row in.
+
+Rerunning after go-live: the credit phase refuses to overwrite any
+member who already has operational (non-`migration`) ledger activity
+— those members are listed in
+`out/load_report/credit_balances_skipped_live.json` instead.
 
 ## Cutover timeline (target Sunday 6am ET)
 
@@ -43,6 +83,11 @@ T+10m  02_transform.js
 T+15m  03_load.js (production Courtside DB)
 T+20m  04_stripe_backfill.js (Stripe live API)
 T+25m  05_verify.js — abort if it reports failures
+       (export EXPECT_MEMBERS / EXPECT_ACTIVE_SUBS /
+        EXPECT_TOTAL_CREDITS / EXPECT_BOOKINGS_FUTURE from the source
+        counts FIRST — unset values fail the gate by design.
+        Also review out/load_report/*.json and
+        out/transformed/rejects.json.)
 T+30m  Update Stripe Connect webhook URL on Momentum's account:
          from: <Momentum old endpoint>
          to:   https://app.courtside.example/webhooks/stripe
@@ -68,9 +113,14 @@ SELECT count(*) FROM subscriptions
 -- Compare to: stripe subscriptions list --connect-account=acct_momentum
 -- --status=active | length
 
--- Ledger invariant: balance = latest ledger row balance_after
+-- Ledger invariant: balance = latest ledger row balance_after.
+-- IS DISTINCT FROM, not <>: a member with a balance but NO ledger row
+-- yields NULL from the subquery, and `x <> NULL` filters the row out
+-- — the exact broken case would pass silently. Zero balances are the
+-- one legal no-ledger-row case (the ledger CHECK rejects amount = 0).
 SELECT count(*) AS bad_invariant FROM credit_balances cb
-  WHERE cb.current_credits <> (
+  WHERE cb.current_credits <> 0
+    AND cb.current_credits IS DISTINCT FROM (
     SELECT balance_after FROM credit_ledger_entries
      WHERE tenant_id = cb.tenant_id AND member_id = cb.member_id
      ORDER BY entry_number DESC LIMIT 1
@@ -112,11 +162,12 @@ Before running anything, confirm you have:
 ```
 README.md                    this file
 01_snapshot_source.js        skeleton — fill in once Momentum's source schema is known
-02_transform.js              skeleton — pure functions, source row → Courtside row
-03_load.js                   transactional load against Courtside DB via privileged pool
-04_stripe_backfill.js        adds courtside_* metadata to existing Stripe objects
-05_verify.js                 reads counts + invariants from Courtside DB (and Momentum source for compare)
-shared/                      common helpers (DB connection, logging, error)
+02_transform.js              pure transformers (driver still skeleton) — source row → Courtside row + source_*_id refs
+03_load.js                   transactional load against Courtside DB via privileged pool; resolves refs, writes out/load_report/
+04_stripe_backfill.js        adds courtside_* metadata to existing Stripe objects; exits 1 on any per-row failure
+05_verify.js                 counts (EXPECT_* env, required) + invariants from Courtside DB
+shared/                      common helpers (DB connection, logging, deterministic ids)
+out/load_report/             skip/review reports written by 03_load (gitignored)
 ```
 
 ## Source schema inventory
