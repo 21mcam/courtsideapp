@@ -29,10 +29,24 @@
 --
 -- Apply: psql -v ON_ERROR_STOP=1 -f 018_stripe_webhook_events_rls.sql
 -- Depends on: 016 (table exists), 011 (app_runtime role + grants).
+--
+-- Portability note: `anon` and `authenticated` are Supabase-provisioned
+-- roles. They exist on the live DB but NOT in a plain Postgres (e.g. the
+-- CI migration-replay container), so the REVOKE is guarded — it runs
+-- where the roles exist and is a harmless no-op where they don't.
 
 ALTER TABLE stripe_webhook_events ENABLE ROW LEVEL SECURITY;
 
-REVOKE ALL ON stripe_webhook_events FROM anon, authenticated;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    REVOKE ALL ON stripe_webhook_events FROM anon;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    REVOKE ALL ON stripe_webhook_events FROM authenticated;
+  END IF;
+END
+$$;
 
 CREATE POLICY stripe_webhook_events_runtime_all ON stripe_webhook_events
   FOR ALL TO app_runtime
