@@ -87,11 +87,24 @@ if (fs.existsSync(path.join(clientDist, 'index.html'))) {
 }
 
 // Error handler — last.
+//
+// Fail closed: stack traces are only included when NODE_ENV is
+// explicitly 'development'. The previous check (=== 'production')
+// leaked stacks whenever NODE_ENV was unset or misspelled on the
+// deploy target — which is exactly the kind of misconfiguration
+// that happens in production.
 app.use((err, _req, res, _next) => {
   console.error('unhandled error:', err);
-  if (process.env.NODE_ENV === 'production') {
-    res.status(500).json({ error: 'internal server error' });
-  } else {
+
+  // Malformed request JSON (body-parser SyntaxError) is a client
+  // error, not a server fault — respond 400 without internals.
+  if (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && err.status === 400)) {
+    return res.status(400).json({ error: 'invalid JSON body' });
+  }
+
+  if (process.env.NODE_ENV === 'development') {
     res.status(500).json({ error: err.message, stack: err.stack });
+  } else {
+    res.status(500).json({ error: 'internal server error' });
   }
 });
