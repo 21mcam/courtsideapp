@@ -255,7 +255,11 @@ function StepOffering({ state, update, onNext, onBack }) {
           category,
           duration_minutes: Number(duration),
           credit_cost: Number(creditCost),
-          dollar_price: Number(dollarPrice) * 100, // cents on the wire
+          // cents on the wire — Math.round, because float math on
+          // prices like 19.99 yields 1998.9999999999998 and the API's
+          // integer check rejects it with an opaque 400. (The plan
+          // step below already did this.)
+          dollar_price: Math.round(Number(dollarPrice) * 100),
           allow_member_booking: true,
           allow_public_booking: true,
         }),
@@ -472,7 +476,7 @@ function StepDone({ state, onReset }) {
       <h2 className="text-lg font-semibold">All set 🎯</h2>
       <p className="mt-2 text-slate-600">
         You created the first piece of your facility's catalog. Members
-        will see this when the booking flow launches.
+        can book it as soon as the resource has operating hours.
       </p>
       <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
         <dt className="text-slate-500">Resource</dt>
@@ -483,8 +487,8 @@ function StepDone({ state, onReset }) {
         <dd>{state.planName ?? '—'}</dd>
       </dl>
       <p className="mt-6 text-sm text-slate-500">
-        Next up (after Phase 3 ships): set operating hours and cancellation
-        policy, then turn on bookings.
+        Next up: give your new resource operating hours and review the
+        cancellation policy — then it's bookable.
       </p>
       <div className="mt-8 flex gap-3">
         <Link
