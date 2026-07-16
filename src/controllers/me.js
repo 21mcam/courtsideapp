@@ -58,6 +58,7 @@ export async function me(req, res, next) {
         id: req.tenant.id,
         subdomain: req.tenant.subdomain,
         name: req.tenant.name,
+        timezone: req.tenant.timezone,
       },
       memberships: {
         admin: adminResult.rows[0] ?? null,

@@ -396,7 +396,7 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick }) {
       {/* Time gutter */}
       <div className="w-16 shrink-0 border-r border-slate-200 relative" style={{ height: totalHeight + 30 }}>
         <div className="h-[30px] border-b border-slate-200 text-[10px] uppercase text-slate-400 flex items-center justify-end pr-2">
-          {tz.split('/')[1] ? tz.split('/')[1].slice(0, 3) : 'UTC'}
+          {tz?.split('/')[1] ? tz.split('/')[1].slice(0, 3) : 'UTC'}
         </div>
         {hourLines.map((m) => (
           <div
