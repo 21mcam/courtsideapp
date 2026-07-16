@@ -33,17 +33,36 @@ function withTenantQuery(path) {
   return `${path}${sep}tenant=${encodeURIComponent(tenantHint)}`;
 }
 
-export function api(path, options = {}) {
+// Hosting-edge hiccup mitigation: idle instances occasionally answer
+// a whole page-load burst with 503s that succeed on immediate retry.
+// GETs are idempotent, so retry them once after a short pause when
+// the response is 5xx (or the fetch itself fails). Mutations are
+// never retried — a timed-out POST may have committed server-side.
+const RETRY_DELAY_MS = 500;
+
+export async function api(path, options = {}) {
   const url = withTenantQuery(path);
   const token = localStorage.getItem(TOKEN_KEY);
-  return fetch(url, {
+  const init = {
     ...options,
     headers: {
       'Content-Type': 'application/json',
       ...(options.headers ?? {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-  });
+  };
+
+  const isGet = (options.method ?? 'GET').toUpperCase() === 'GET';
+  try {
+    const res = await fetch(url, init);
+    if (!isGet || res.status < 500) return res;
+  } catch (err) {
+    // Aborted requests were cancelled on purpose — never retry those.
+    if (!isGet || err.name === 'AbortError') throw err;
+  }
+  await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+  if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError');
+  return fetch(url, init);
 }
 
 export function setToken(token) {
