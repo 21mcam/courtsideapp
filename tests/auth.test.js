@@ -167,6 +167,12 @@ test('happy path: register-member → login → /api/me', { skip }, async () => 
   assert.equal(meBody.user.first_name, 'Alice');
   assert.equal(meBody.user.last_name, 'Tester');
   assert.equal(meBody.tenant.subdomain, TENANT_A);
+  // The client reads me.tenant.timezone to render every booking time in
+  // the tenant's zone (and AdminCalendar splits it for the gutter label).
+  // Omitting it silently fell back to the *viewer's* zone and crashed the
+  // calendar, so /api/me must carry it.
+  assert.equal(meBody.tenant.timezone, 'America/New_York',
+    '/api/me must include the tenant timezone');
   assert.equal(meBody.memberships.admin, null, 'should have no admin membership');
   assert.ok(meBody.memberships.member, 'should have member membership');
   assert.equal(meBody.memberships.member.id, regBody.member_id);
