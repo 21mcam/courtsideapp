@@ -18,6 +18,7 @@ import { Link } from 'react-router-dom';
 import Header from '../components/Header.jsx';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
+import { zonedTimeToUtc } from '../lib/tz.js';
 import {
   bookingStatusBadge,
   dayOfWeekLabel,
@@ -442,6 +443,7 @@ function InstancesSection({ instances, classOfferings, activeResources, tz, onCh
         <OneoffForm
           classOfferings={classOfferings}
           activeResources={activeResources}
+          tz={tz}
           onSubmitted={(msg) => {
             setShowForm(false);
             onChanged(msg);
@@ -675,7 +677,7 @@ function RosterPanel({ instanceId, onChanged }) {
 // One-off instance form
 // ============================================================
 
-function OneoffForm({ classOfferings, activeResources, onSubmitted }) {
+function OneoffForm({ classOfferings, activeResources, tz, onSubmitted }) {
   const [offering_id, setOfferingId] = useState('');
   const [resource_id, setResourceId] = useState('');
   const [start_time, setStartTime] = useState('');
@@ -688,9 +690,17 @@ function OneoffForm({ classOfferings, activeResources, onSubmitted }) {
     setSubmitting(true);
     setError(null);
     try {
-      // start_time as datetime-local is "YYYY-MM-DDTHH:MM" in the
-      // browser's local zone. Convert to ISO for the API.
-      const isoStart = new Date(start_time).toISOString();
+      // start_time from <input type=datetime-local> is a bare
+      // "YYYY-MM-DDTHH:MM" wall-clock value. The page banner promises
+      // tenant time, so interpret it in the TENANT's zone — new
+      // Date(start_time) would use the browser zone and silently
+      // shift the instance for any remote admin (a Tokyo browser
+      // typing 6:00 PM used to create a 5:00 AM class).
+      const isoStart = zonedTimeToUtc(
+        start_time.slice(0, 10),
+        start_time.slice(11, 16),
+        tz,
+      ).toISOString();
       const res = await api('/api/admin/class-instances', {
         method: 'POST',
         body: JSON.stringify({
@@ -749,7 +759,7 @@ function OneoffForm({ classOfferings, activeResources, onSubmitted }) {
             ))}
           </select>
         </Field>
-        <Field label="Start time (your local zone)">
+        <Field label={`Start time (${tz})`}>
           <input
             required
             type="datetime-local"
