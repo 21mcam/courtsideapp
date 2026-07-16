@@ -5,6 +5,7 @@
 //   /login   → login form (single, role-detected)
 //   /wizard  → admin-only setup wizard (Phase 2 slice 5)
 //   /book    → member booking flow (Phase 3 slice 5)
+//   /walk-in → PUBLIC walk-in booking, no login (Phase 5 slice 7 UI)
 //   /classes → member class browser + booking (Phase 4 slice 4)
 //   /plans   → member subscription chooser (Phase 5 slice 4a)
 //   /admin/bookings → admin booking calendar (Phase 3 slice 6)
@@ -27,6 +28,8 @@ import AdminClasses from './pages/AdminClasses.jsx';
 import AdminStripe from './pages/AdminStripe.jsx';
 import AdminCalendar from './pages/AdminCalendar.jsx';
 import MemberPlans from './pages/MemberPlans.jsx';
+import WalkInPage from './pages/WalkInPage.jsx';
+import WalkInSuccessPage from './pages/WalkInSuccessPage.jsx';
 
 export default function App() {
   return (
@@ -59,6 +62,9 @@ function Shell() {
       <Route path="/book" element={<RouteAuthed><BookingPage /></RouteAuthed>} />
       <Route path="/classes" element={<RouteAuthed><ClassesPage /></RouteAuthed>} />
       <Route path="/plans" element={<RouteAuthed><MemberPlans /></RouteAuthed>} />
+      {/* Public — no auth wrapper. Walk-ins book without an account. */}
+      <Route path="/walk-in" element={<WalkInPage />} />
+      <Route path="/walk-in/success" element={<WalkInSuccessPage />} />
       <Route path="/" element={<RouteHome />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

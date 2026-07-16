@@ -3,7 +3,7 @@
 // hand the token to AuthProvider.login().
 
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 
@@ -62,6 +62,12 @@ export default function LoginPage() {
             {busy ? 'signing in…' : 'Sign in'}
           </button>
         </form>
+        <p className="mt-6 text-center text-sm text-slate-500">
+          Just visiting?{' '}
+          <Link to="/walk-in" className="text-sky-700 hover:underline">
+            Book a session without an account
+          </Link>
+        </p>
       </div>
     </main>
   );

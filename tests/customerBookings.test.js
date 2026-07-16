@@ -225,6 +225,61 @@ function bookingBody(start_time, opts = {}) {
 }
 
 // ============================================================
+// public offerings list
+// ============================================================
+
+test('GET /api/customers/offerings lists only public, priced rentals', { skip }, async () => {
+  const res = await publicFetch('/api/customers/offerings');
+  assert.equal(res.status, 200);
+  const { offerings } = await res.json();
+  const names = offerings.map((o) => o.name);
+  assert.ok(names.includes('Public Cage 60min'));
+  assert.ok(!names.includes('Members-only Cage'), 'private offering leaked');
+  assert.ok(!names.includes('Classy'), 'class offering leaked');
+
+  const pub = offerings.find((o) => o.name === 'Public Cage 60min');
+  assert.equal(pub.dollar_price, DOLLAR_PRICE);
+  assert.equal(pub.duration_minutes, DURATION_MIN);
+  assert.ok(!('credit_cost' in pub), 'credit_cost must not be exposed publicly');
+  assert.deepEqual(
+    pub.resources.map((r) => r.name),
+    ['Walk-in Cage'],
+  );
+});
+
+test('GET /api/customers/offerings hides unpriced and inactive offerings', { skip }, async () => {
+  const ids = {};
+  for (const [key, name, price, active] of [
+    ['free', 'Free Public Cage', 0, true],
+    ['inactive', 'Retired Public Cage', 1000, false],
+  ]) {
+    ids[key] = (
+      await privilegedPool.query(
+        `INSERT INTO offerings
+           (tenant_id, name, category, duration_minutes, credit_cost,
+            dollar_price, capacity, allow_member_booking, allow_public_booking, active)
+         VALUES ($1, $2, 'cage-time', 30, 1, $3, 1, true, true, $4)
+         RETURNING id`,
+        [tenant_id, name, price, active],
+      )
+    ).rows[0].id;
+  }
+  try {
+    const res = await publicFetch('/api/customers/offerings');
+    assert.equal(res.status, 200);
+    const { offerings } = await res.json();
+    const names = offerings.map((o) => o.name);
+    assert.ok(!names.includes('Free Public Cage'), 'zero-price offering leaked');
+    assert.ok(!names.includes('Retired Public Cage'), 'inactive offering leaked');
+  } finally {
+    await privilegedPool.query(
+      `DELETE FROM offerings WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+      [tenant_id, [ids.free, ids.inactive]],
+    );
+  }
+});
+
+// ============================================================
 // gates
 // ============================================================
 

@@ -329,3 +329,45 @@ export async function createCustomerBooking(req, res, next) {
     next(err);
   }
 }
+
+// ---------- GET /api/customers/offerings ----------
+//
+// Public counterpart of listBookableOfferings (bookings.js): the
+// offerings a walk-in can see and book, with the resources each runs
+// on. Filters mirror the createCustomerBooking gates so nothing shown
+// here fails at booking time: active, public, rental, priced.
+// Credit cost is intentionally not exposed — walk-ins see dollars.
+export async function listPublicOfferings(req, res, next) {
+  try {
+    const result = await req.db.query(
+      `SELECT o.id, o.name, o.category, o.duration_minutes,
+              o.dollar_price, o.display_order,
+              COALESCE(
+                (
+                  SELECT json_agg(json_build_object(
+                    'id', r.id, 'name', r.name, 'display_order', r.display_order
+                  ) ORDER BY r.display_order, r.name)
+                    FROM offering_resources orx
+                    JOIN resources r
+                      ON r.tenant_id = orx.tenant_id AND r.id = orx.resource_id
+                   WHERE orx.tenant_id = o.tenant_id
+                     AND orx.offering_id = o.id
+                     AND orx.active
+                     AND r.active
+                ),
+                '[]'::json
+              ) AS resources
+         FROM offerings o
+        WHERE o.tenant_id = $1
+          AND o.active
+          AND o.allow_public_booking
+          AND o.capacity = 1
+          AND o.dollar_price > 0
+        ORDER BY o.display_order ASC, o.name ASC`,
+      [req.tenant.id],
+    );
+    res.json({ offerings: result.rows });
+  } catch (err) {
+    next(err);
+  }
+}

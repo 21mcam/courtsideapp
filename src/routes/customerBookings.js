@@ -7,12 +7,16 @@
 import express from 'express';
 
 import { withTenantContext } from '../db/withTenantContext.js';
-import { createCustomerBooking } from '../controllers/customerBookings.js';
+import {
+  createCustomerBooking,
+  listPublicOfferings,
+} from '../controllers/customerBookings.js';
 
 const router = express.Router();
 
 router.use(withTenantContext);
 
+router.get('/offerings', listPublicOfferings);
 router.post('/bookings', createCustomerBooking);
 
 export default router;
