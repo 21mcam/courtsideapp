@@ -20,7 +20,7 @@ process.env.STRIPE_TEST_MODE = '1';
 process.env.STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY ?? 'sk_test_unused';
 
 const { app } = await import('../src/app.js');
-const { __resetStripeFake, __setAccountState } = await import('../src/services/stripe.js');
+const { __resetStripeFake, __setAccountState, __getAccount } = await import('../src/services/stripe.js');
 
 const TENANT = 'verify-stripe-onboarding';
 const TZ = 'America/New_York';
@@ -34,6 +34,7 @@ let baseUrl;
 let privilegedPool;
 let tenant_id;
 let adminToken;
+let adminEmail;
 
 before(async () => {
   if (!process.env.DATABASE_URL_PRIVILEGED) return;
@@ -53,7 +54,7 @@ before(async () => {
     )
   ).rows[0].id;
 
-  const adminEmail = `admin-${randomUUID()}@example.com`;
+  adminEmail = `admin-${randomUUID()}@example.com`;
   const adminPassword = 'correcthorsebatterystaple';
   const u = await privilegedPool.query(
     `INSERT INTO users (tenant_id, email, password_hash, first_name, last_name)
@@ -143,6 +144,13 @@ test('first onboarding call creates a Stripe account + DB row + returns hosted U
   assert.equal(r.rows[0].stripe_account_id, body.stripe_account_id);
   assert.equal(r.rows[0].details_submitted, false);
   assert.equal(r.rows[0].charges_enabled, false);
+
+  // Regression (PR #40 class, server-side): the JWT carries only IDs,
+  // so the old `req.user.email` pre-fill was always undefined and the
+  // Stripe account was silently created without an email. The handler
+  // must look the admin's email up and pass it through.
+  const account = __getAccount(body.stripe_account_id);
+  assert.equal(account.email, adminEmail, 'Stripe account must be pre-filled with the admin email');
 });
 
 test('subsequent onboarding call reuses existing account; only mints a fresh URL', { skip }, async () => {

@@ -184,9 +184,19 @@ export async function startOnboarding(req, res, next) {
       // from the tenant — Stripe lets the user override during their
       // own onboarding form. We DO NOT pass capabilities; Standard
       // accounts get card_payments + transfers automatically.
+      //
+      // The JWT payload deliberately carries only IDs (see signToken in
+      // auth.js) — req.user.email does not exist, so look the email up.
+      // Reading req.user.email directly here used to silently pre-fill
+      // nothing (undefined) on every onboarding.
+      const emailRow = await db.query(
+        `SELECT email FROM users WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, req.user.user_id],
+      );
+      const adminEmail = emailRow.rows[0]?.email;
       const account = await stripe.accounts.create({
         type: 'standard',
-        email: req.user.email ?? undefined,
+        email: adminEmail ?? undefined,
         country: 'US',
         metadata: {
           courtside_tenant_id: tenant.id,

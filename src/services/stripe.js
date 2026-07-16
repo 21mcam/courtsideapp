@@ -61,6 +61,10 @@ export function __setAccountState(id, patch) {
   _fakeAccounts.set(id, { ...cur, ...patch });
 }
 
+export function __getAccount(id) {
+  return _fakeAccounts.get(id) ?? null;
+}
+
 export function __getProductsForAccount(acct) {
   return Array.from(_fakeProducts.entries())
     .filter(([k]) => k.startsWith(`${acct}:`))
