@@ -322,11 +322,18 @@ function BookingsCallout() {
       <div>
         <div className="font-semibold text-sky-900">Bookings</div>
         <div className="text-sm text-sky-800">
-          View, cancel, or mark no-show on bookings across the facility.
+          Day-by-day calendar view of every resource. Click a card to
+          cancel or mark no-show.
         </div>
+        <Link
+          to="/admin/bookings"
+          className="text-xs text-sky-700 hover:underline mt-1 inline-block"
+        >
+          Or view as a list →
+        </Link>
       </div>
       <Link
-        to="/admin/bookings"
+        to="/admin/calendar"
         className="rounded bg-sky-700 text-white px-4 py-2 hover:bg-sky-800"
       >
         Open calendar

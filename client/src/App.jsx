@@ -10,6 +10,7 @@
 //   /admin/bookings → admin booking calendar (Phase 3 slice 6)
 //   /admin/classes  → admin schedules + instances + roster (Phase 4 slice 4)
 //   /admin/stripe   → Stripe Connect onboarding + status (Phase 5 slice 1)
+//   /admin/calendar → multi-resource day view (visual ops calendar)
 //
 // Wrapping AuthProvider so any page can read tenant + me state.
 
@@ -24,6 +25,7 @@ import AdminBookings from './pages/AdminBookings.jsx';
 import ClassesPage from './pages/ClassesPage.jsx';
 import AdminClasses from './pages/AdminClasses.jsx';
 import AdminStripe from './pages/AdminStripe.jsx';
+import AdminCalendar from './pages/AdminCalendar.jsx';
 import MemberPlans from './pages/MemberPlans.jsx';
 
 export default function App() {
@@ -52,6 +54,7 @@ function Shell() {
       <Route path="/wizard" element={<RouteAdminOnly><Wizard /></RouteAdminOnly>} />
       <Route path="/admin/bookings" element={<RouteAdminOnly><AdminBookings /></RouteAdminOnly>} />
       <Route path="/admin/classes" element={<RouteAdminOnly><AdminClasses /></RouteAdminOnly>} />
+      <Route path="/admin/calendar" element={<RouteAdminOnly><AdminCalendar /></RouteAdminOnly>} />
       <Route path="/admin/stripe" element={<RouteAdminOnly><AdminStripe /></RouteAdminOnly>} />
       <Route path="/book" element={<RouteAuthed><BookingPage /></RouteAuthed>} />
       <Route path="/classes" element={<RouteAuthed><ClassesPage /></RouteAuthed>} />
