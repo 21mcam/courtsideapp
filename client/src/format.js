@@ -26,9 +26,16 @@ export function formatCents(cents) {
   }).format(cents / 100);
 }
 
-export function formatDate(iso) {
+// Calendar date of an instant, rendered in the tenant's timezone.
+// Without `tz` this falls back to the viewer's zone — every call site
+// should pass the tenant timezone (a member who joined at 11:30 PM
+// tenant time shows the wrong "Joined" day to any viewer east of the
+// tenant otherwise).
+export function formatDate(iso, tz) {
   if (!iso) return '—';
-  return new Date(iso).toLocaleDateString();
+  return new Date(iso).toLocaleDateString('en-US', {
+    timeZone: tz || undefined,
+  });
 }
 
 // allowed_categories is null (= all categories allowed) or an array.

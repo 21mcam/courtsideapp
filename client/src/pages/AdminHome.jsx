@@ -251,7 +251,11 @@ export default function AdminHome() {
               label: 'Credits',
               render: (r) => r.current_credits ?? 0,
             },
-            { key: 'created_at', label: 'Joined', render: (r) => formatDate(r.created_at) },
+            {
+              key: 'created_at',
+              label: 'Joined',
+              render: (r) => formatDate(r.created_at, me.tenant.timezone),
+            },
           ]}
         />
 

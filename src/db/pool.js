@@ -18,6 +18,16 @@ if (!process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is required (see .env.example)');
 }
 
+// Return Postgres `date` columns as plain 'YYYY-MM-DD' strings instead
+// of JS Date objects. node-postgres's default parses a date as
+// midnight in the SERVER's local timezone; res.json then serializes it
+// via toISOString (UTC), so on any server east of UTC every date field
+// (class_schedules.start_date / end_date / generated_through) would
+// come out shifted a day — and clients doing String(d).slice(0, 10)
+// would render the wrong calendar date. A calendar date is not an
+// instant; keep it a string end-to-end. (OID 1082 = date.)
+pg.types.setTypeParser(1082, (v) => v);
+
 export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
 });
