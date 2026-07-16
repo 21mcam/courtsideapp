@@ -30,7 +30,7 @@ import { Link } from 'react-router-dom';
 import Header from '../components/Header.jsx';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import { bookingStatusBadge, formatTimeLocal } from '../format.js';
+import { bookingStatusBadge, formatSlotLocal, formatTimeLocal } from '../format.js';
 import {
   assignLanes,
   effectiveEndMin,
@@ -632,7 +632,9 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
                 <>
                   <dt className="text-slate-500">Cancelled</dt>
                   <dd className="col-span-2 text-rose-700">
-                    {new Date(item.cancelled_at).toLocaleString()}
+                    {/* Tenant tz, like every other time on this page —
+                        bare toLocaleString() renders the VIEWER's zone. */}
+                    {formatSlotLocal(item.cancelled_at, tz)}
                   </dd>
                 </>
               )}

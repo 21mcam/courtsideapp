@@ -18,6 +18,7 @@ import { Link } from 'react-router-dom';
 import Header from '../components/Header.jsx';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
+import { addDays, localDateString, todayLocalString, zonedDayStartIso } from '../lib/tz.js';
 import { bookingStatusBadge, formatSlotLocal } from '../format.js';
 
 const DEFAULT_STATUS_FILTERS = ['confirmed', 'pending_payment'];
@@ -29,22 +30,21 @@ const ALL_STATUSES = [
   'cancelled',
 ];
 
-// Compute an ISO timestamp for "today at midnight, tenant-local" — used as
-// the default `from` in the query. Falls back to start of UTC day if the
-// browser doesn't support timeZone option (it does, but be safe).
-function dayStartIso(daysFromNow = 0) {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() + daysFromNow);
-  return d.toISOString();
-}
 
 export default function AdminBookings() {
   const { me } = useAuth();
   const tz = me.tenant.timezone;
 
-  const [from, setFrom] = useState(() => dayStartIso(0));
-  const [to, setTo] = useState(() => dayStartIso(7));
+  // Default window: tenant-local today → +7 days. This must be
+  // TENANT-local midnight, not the viewer's — setHours(0,...) on a
+  // staff laptop in another timezone shifts the window by the zone
+  // difference and drops/leaks bookings at the day boundaries.
+  const [from, setFrom] = useState(() =>
+    zonedDayStartIso(todayLocalString(tz), tz),
+  );
+  const [to, setTo] = useState(() =>
+    zonedDayStartIso(addDays(todayLocalString(tz), 7), tz),
+  );
   const [statusFilters, setStatusFilters] = useState(DEFAULT_STATUS_FILTERS);
 
   const [bookings, setBookings] = useState(null);
@@ -131,18 +131,16 @@ export default function AdminBookings() {
     }
   }
 
-  // Date input value <-> ISO conversion. Native <input type="date">
-  // gives YYYY-MM-DD in the browser's local zone; we convert to a
-  // start-of-day ISO. Good enough for an internal admin tool.
+  // Date input value <-> ISO conversion. The YYYY-MM-DD the admin
+  // picks means a TENANT-local calendar day — the page header says
+  // "Times shown in {tz}", so the window boundaries must agree.
   function setFromDate(yyyymmdd) {
     if (!yyyymmdd) return;
-    const d = new Date(yyyymmdd + 'T00:00:00');
-    setFrom(d.toISOString());
+    setFrom(zonedDayStartIso(yyyymmdd, tz));
   }
   function setToDate(yyyymmdd) {
     if (!yyyymmdd) return;
-    const d = new Date(yyyymmdd + 'T00:00:00');
-    setTo(d.toISOString());
+    setTo(zonedDayStartIso(yyyymmdd, tz));
   }
 
   return (
@@ -162,8 +160,8 @@ export default function AdminBookings() {
         {/* Filters */}
         <section className="rounded border border-slate-200 bg-white p-4 space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
-            <DateField label="From" valueIso={from} onChange={setFromDate} />
-            <DateField label="To" valueIso={to} onChange={setToDate} />
+            <DateField label="From" valueIso={from} tz={tz} onChange={setFromDate} />
+            <DateField label="To" valueIso={to} tz={tz} onChange={setToDate} />
           </div>
           <div className="flex flex-wrap gap-2">
             {ALL_STATUSES.map((s) => {
@@ -209,16 +207,10 @@ export default function AdminBookings() {
   );
 }
 
-function DateField({ label, valueIso, onChange }) {
-  // Convert the stored ISO to YYYY-MM-DD in the browser's local zone
-  // for the native input.
-  const yyyymmdd = (() => {
-    const d = new Date(valueIso);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  })();
+function DateField({ label, valueIso, tz, onChange }) {
+  // Render the stored ISO as YYYY-MM-DD in the TENANT's zone so the
+  // input round-trips with the tenant-local window boundaries.
+  const yyyymmdd = localDateString(valueIso, tz);
   return (
     <label className="block text-sm">
       <span className="text-slate-700">{label}</span>
