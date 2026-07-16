@@ -171,13 +171,15 @@ test('create schedule with end_date generates exactly N occurrences', { skip }, 
   const sched = body.class_schedule;
   assert.ok(sched.id);
   assert.equal(sched.day_of_week, 2);
-  // generated_through is the last attempted date.
-  // pg returns date columns as ISO strings via the JSON serializer
-  // — accept either.
-  assert.match(
-    String(sched.generated_through).slice(0, 10),
-    /^2027-05-25$/,
-  );
+  // Regression: `date` columns must serialize as plain YYYY-MM-DD
+  // strings, NOT server-local-midnight Date objects. The old
+  // behavior (pg's default date parser + res.json's toISOString)
+  // shifted every date field a day backwards on any server whose
+  // local timezone is east of UTC. Exact-string assertions here fail
+  // on such a server unless the pg type parser pins dates to strings.
+  assert.equal(sched.start_date, '2027-05-04');
+  assert.equal(sched.end_date, '2027-05-25');
+  assert.equal(sched.generated_through, '2027-05-25');
 
   // DB: 4 instances exist for this schedule.
   const rows = await privilegedPool.query(
