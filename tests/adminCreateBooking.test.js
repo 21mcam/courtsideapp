@@ -44,8 +44,11 @@ const DOLLAR_PRICE = 4500;
 
 // Far-future Monday so nothing collides with other test files.
 // 2027-03-01 is a Monday; operating hours below cover Mondays only.
+// Zod's .datetime() only accepts Z-suffixed instants, so wall-clock
+// EST times are converted to UTC ISO before sending.
 const MONDAY = '2027-03-01';
-const iso = (hhmm) => `${MONDAY}T${hhmm}:00.000-05:00`; // EST
+const isoAt = (date, hhmm) => new Date(`${date}T${hhmm}:00.000-05:00`).toISOString();
+const iso = (hhmm) => isoAt(MONDAY, hhmm);
 
 before(async () => {
   if (!process.env.DATABASE_URL_PRIVILEGED) return;
@@ -248,7 +251,7 @@ test('end before start is 400; longer than 24h is 400', { skip }, async () => {
     body: JSON.stringify(
       body({
         start_time: iso('10:00'),
-        end_time: `2027-03-02T11:00:00.000-05:00`,
+        end_time: isoAt('2027-03-02', '11:00'),
         customer: walkin(),
       }),
     ),
