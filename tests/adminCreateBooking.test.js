@@ -105,7 +105,7 @@ before(async () => {
   await privilegedPool.query(
     `INSERT INTO offering_resources (tenant_id, offering_id, resource_id)
      VALUES ($1, $2, $3), ($1, $4, $3)`,
-    [tenant_id, offering_id, resource_id, class_offering_id, resource_id],
+    [tenant_id, offering_id, resource_id, class_offering_id],
   );
   // Mondays 9-17 only — everything outside is "outside operating
   // hours" for the member flow, which admins may override.
