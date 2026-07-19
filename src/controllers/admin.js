@@ -242,3 +242,259 @@ export async function listAdmins(req, res, next) {
     next(err);
   }
 }
+
+// ---------- POST /api/admin/bookings — front-desk booking creation ----------
+//
+// Calendar click/drag creation. Differences from the self-serve flows:
+//   * The window is explicit (start_time AND end_time) — a dragged
+//     custom length is kept as-is; the offering supplies the flat
+//     price/credit cost regardless of length.
+//   * Admins bypass allow_member_booking / allow_public_booking (those
+//     gate the self-serve surfaces), the advance-booking window, and
+//     operating hours (front desk books special sessions). Blackouts
+//     still 409 — they're an explicit admin "don't book this" and
+//     should be deleted, not silently overridden.
+//   * member_id XOR customer{...}: members spend credits through the
+//     ledger (rejected if insufficient — rollback undoes the INSERT);
+//     walk-ins go straight to confirmed with the offering's dollar
+//     price recorded as cash due on arrival (payment_status 'pending',
+//     no Stripe involved).
+
+const MAX_ADMIN_BOOKING_MINUTES = 24 * 60;
+
+const createAdminBookingSchema = z
+  .object({
+    offering_id: z.string().uuid(),
+    resource_id: z.string().uuid(),
+    start_time: z.string().datetime({
+      message: 'start_time must be ISO 8601 (e.g. 2027-01-04T14:00:00.000Z)',
+    }),
+    end_time: z.string().datetime({
+      message: 'end_time must be ISO 8601',
+    }),
+    member_id: z.string().uuid().optional(),
+    customer: z
+      .object({
+        first_name: z.string().trim().min(1).max(200),
+        last_name: z.string().trim().min(1).max(200),
+        email: z.string().email().transform((s) => s.toLowerCase().trim()),
+        phone: z.string().trim().max(50).optional(),
+      })
+      .optional(),
+  })
+  .refine((v) => Boolean(v.member_id) !== Boolean(v.customer), {
+    message: 'provide exactly one of member_id or customer',
+  });
+
+export async function createAdminBooking(req, res, next) {
+  try {
+    const parsed = createAdminBookingSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const { offering_id, resource_id, member_id, customer } = parsed.data;
+    const { tenant, db, user } = req;
+
+    const start = new Date(parsed.data.start_time);
+    const end = new Date(parsed.data.end_time);
+    if (end <= start) {
+      return res.status(400).json({ error: 'end_time must be after start_time' });
+    }
+    if ((end - start) / 60000 > MAX_ADMIN_BOOKING_MINUTES) {
+      return res
+        .status(400)
+        .json({ error: 'booking cannot be longer than 24 hours' });
+    }
+
+    // Offering: active rental. Self-serve visibility flags don't gate
+    // the front desk.
+    const offerRes = await db.query(
+      `SELECT id, duration_minutes, credit_cost, dollar_price,
+              capacity, active
+         FROM offerings
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenant.id, offering_id],
+    );
+    if (offerRes.rows.length === 0) {
+      return res.status(404).json({ error: 'offering not found' });
+    }
+    const offering = offerRes.rows[0];
+    if (!offering.active) {
+      return res.status(409).json({ error: 'offering is inactive' });
+    }
+    if (offering.capacity !== 1) {
+      return res.status(409).json({
+        error: 'class offerings use the class flow — create a class instance instead',
+      });
+    }
+
+    const linkRes = await db.query(
+      `SELECT active FROM offering_resources
+        WHERE tenant_id = $1 AND offering_id = $2 AND resource_id = $3`,
+      [tenant.id, offering_id, resource_id],
+    );
+    if (linkRes.rows.length === 0 || !linkRes.rows[0].active) {
+      return res
+        .status(409)
+        .json({ error: 'offering not offered on this resource' });
+    }
+
+    // Lock the resource row to serialize concurrent attempts on it
+    // (same pattern as the member flow).
+    const lockRes = await db.query(
+      `SELECT active FROM resources
+        WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+      [tenant.id, resource_id],
+    );
+    if (lockRes.rows.length === 0) {
+      return res.status(404).json({ error: 'resource not found' });
+    }
+    if (!lockRes.rows[0].active) {
+      return res.status(409).json({ error: 'resource is inactive' });
+    }
+
+    // Blackouts still apply (see header comment).
+    const blackoutCheck = await db.query(
+      `SELECT 1 FROM blackouts
+        WHERE tenant_id = $1
+          AND tstzrange(starts_at, ends_at, '[)') && tstzrange($2, $3, '[)')
+          AND (
+            (resource_id IS NULL AND offering_id IS NULL)
+            OR resource_id = $4
+            OR offering_id = $5
+          )
+        LIMIT 1`,
+      [tenant.id, start, end, resource_id, offering_id],
+    );
+    if (blackoutCheck.rows.length > 0) {
+      return res.status(409).json({ error: 'requested slot is blacked out' });
+    }
+
+    const overlapBookings = await db.query(
+      `SELECT 1 FROM bookings
+        WHERE tenant_id = $1 AND resource_id = $2
+          AND status <> 'cancelled'
+          AND time_range && tstzrange($3, $4, '[)')
+        LIMIT 1`,
+      [tenant.id, resource_id, start, end],
+    );
+    if (overlapBookings.rows.length > 0) {
+      return res.status(409).json({ error: 'slot already booked' });
+    }
+    const overlapClasses = await db.query(
+      `SELECT 1 FROM class_instances
+        WHERE tenant_id = $1 AND resource_id = $2
+          AND cancelled_at IS NULL
+          AND time_range && tstzrange($3, $4, '[)')
+        LIMIT 1`,
+      [tenant.id, resource_id, start, end],
+    );
+    if (overlapClasses.rows.length > 0) {
+      return res
+        .status(409)
+        .json({ error: 'slot conflicts with an existing class instance' });
+    }
+
+    if (member_id) {
+      const memberRes = await db.query(
+        `SELECT id FROM members WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, member_id],
+      );
+      if (memberRes.rows.length === 0) {
+        return res.status(404).json({ error: 'member not found' });
+      }
+    }
+
+    let booking;
+    try {
+      const bookRes = await db.query(
+        member_id
+          ? `INSERT INTO bookings (
+               tenant_id, offering_id, resource_id, member_id,
+               start_time, end_time, status,
+               amount_due_cents, credit_cost_charged, payment_status
+             ) VALUES (
+               $1, $2, $3, $4, $5, $6, 'confirmed', 0, $7, 'not_required'
+             )
+             RETURNING id, offering_id, resource_id, member_id,
+                       start_time, end_time, status,
+                       credit_cost_charged, amount_due_cents,
+                       payment_status, created_at`
+          : `INSERT INTO bookings (
+               tenant_id, offering_id, resource_id,
+               customer_first_name, customer_last_name,
+               customer_email, customer_phone,
+               start_time, end_time, status,
+               amount_due_cents, credit_cost_charged, payment_status
+             ) VALUES (
+               $1, $2, $3, $4, $5, $6, $7, $8, $9, 'confirmed',
+               $10, 0, $11
+             )
+             RETURNING id, offering_id, resource_id, member_id,
+                       customer_first_name, customer_last_name,
+                       customer_email, customer_phone,
+                       start_time, end_time, status,
+                       credit_cost_charged, amount_due_cents,
+                       payment_status, created_at`,
+        member_id
+          ? [
+              tenant.id,
+              offering_id,
+              resource_id,
+              member_id,
+              start,
+              end,
+              offering.credit_cost,
+            ]
+          : [
+              tenant.id,
+              offering_id,
+              resource_id,
+              customer.first_name,
+              customer.last_name,
+              customer.email,
+              customer.phone ?? null,
+              start,
+              end,
+              offering.dollar_price,
+              offering.dollar_price > 0 ? 'pending' : 'not_required',
+            ],
+      );
+      booking = bookRes.rows[0];
+    } catch (err) {
+      if (err.code === '23P01') {
+        return res.status(409).json({ error: 'slot already booked (concurrent)' });
+      }
+      throw err;
+    }
+
+    if (member_id && offering.credit_cost !== 0) {
+      try {
+        const creditRes = await db.query(
+          `SELECT entry_id, balance_after FROM apply_credit_change(
+             $1, $2, $3, 'booking_spend', NULL, $4, $5, NULL
+           )`,
+          [tenant.id, member_id, -offering.credit_cost, user.user_id, booking.id],
+        );
+        return res.status(201).json({
+          booking,
+          balance_after: creditRes.rows[0].balance_after,
+        });
+      } catch (err) {
+        if (err.code === '23514') {
+          // insufficient credits — transaction rollback undoes the INSERT
+          return res
+            .status(400)
+            .json({ error: err.message || 'credit change rejected' });
+        }
+        throw err;
+      }
+    }
+
+    res.status(201).json({ booking });
+  } catch (err) {
+    next(err);
+  }
+}
