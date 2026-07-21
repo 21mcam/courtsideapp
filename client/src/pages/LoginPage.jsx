@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
+import { Button, Card, Field, Input } from '../components/ui/index.js';
 
 export default function LoginPage() {
   const { tenant, login } = useAuth();
@@ -39,51 +40,55 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-900 p-6">
+    <main className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
       <div className="w-full max-w-sm">
-        <h1 className="text-3xl font-semibold text-center">{tenant?.name}</h1>
-        <p className="mt-1 text-center text-sm text-slate-500">
-          Sign in to continue
-        </p>
-        <form onSubmit={submit} className="mt-8 space-y-4">
-          <Field label="Email" type="email" value={email} onChange={setEmail} />
-          <Field
-            label="Password"
-            type="password"
-            value={password}
-            onChange={setPassword}
-          />
-          {error && <p className="text-sm text-rose-700">{error}</p>}
-          <button
-            type="submit"
-            disabled={busy}
-            className="w-full rounded bg-slate-900 text-white py-2 hover:bg-slate-800 disabled:opacity-50"
-          >
-            {busy ? 'signing in…' : 'Sign in'}
-          </button>
-        </form>
+        <div className="flex flex-col items-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-600 text-xl font-semibold text-white">
+            {tenant?.name?.charAt(0).toUpperCase() ?? '·'}
+          </div>
+          <h1 className="mt-3 text-2xl font-semibold text-slate-900">
+            {tenant?.name}
+          </h1>
+          <p className="mt-1 text-sm text-slate-500">Sign in to continue</p>
+        </div>
+        <Card className="mt-6">
+          <form onSubmit={submit} className="space-y-4">
+            <Field label="Email">
+              <Input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </Field>
+            <Field label="Password">
+              <Input
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </Field>
+            {error && (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {error}
+              </div>
+            )}
+            <Button type="submit" disabled={busy} className="w-full">
+              {busy ? 'signing in…' : 'Sign in'}
+            </Button>
+          </form>
+        </Card>
         <p className="mt-6 text-center text-sm text-slate-500">
           Just visiting?{' '}
-          <Link to="/walk-in" className="text-sky-700 hover:underline">
+          <Link
+            to="/walk-in"
+            className="text-brand-600 hover:text-brand-700 font-medium"
+          >
             Book a session without an account
           </Link>
         </p>
       </div>
     </main>
-  );
-}
-
-function Field({ label, type, value, onChange }) {
-  return (
-    <div>
-      <label className="block text-sm text-slate-600 mb-1">{label}</label>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        required
-        className="w-full rounded border border-slate-300 px-3 py-2 outline-none focus:border-slate-500"
-      />
-    </div>
   );
 }

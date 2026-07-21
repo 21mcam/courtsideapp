@@ -8,14 +8,13 @@
 // will reflect the new subscription within a couple seconds.
 
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import Header from '../components/Header.jsx';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import {
   formatAllowedCategories,
   formatCents,
 } from '../format.js';
+import { Page, PageHeader, Card, Button, Badge } from '../components/ui/index.js';
 
 export default function MemberPlans() {
   const { me } = useAuth();
@@ -66,93 +65,92 @@ export default function MemberPlans() {
 
   if (!me.memberships.member) {
     return (
-      <div className="min-h-screen bg-slate-50">
-        <Header />
-        <main className="max-w-2xl mx-auto p-6">
-          <p className="text-slate-700">Subscriptions require a member account.</p>
-          <Link to="/" className="mt-4 inline-block text-sm text-sky-700 hover:underline">
-            ← Back home
-          </Link>
-        </main>
-      </div>
+      <Page width="default">
+        <PageHeader title="Plans" />
+        <p className="text-sm text-slate-700">
+          Subscriptions require a member account.
+        </p>
+      </Page>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Header />
-      <main className="max-w-3xl mx-auto p-6 space-y-6">
-        <div>
-          <Link to="/" className="text-sm text-sky-700 hover:underline">
-            ← Back
-          </Link>
-          <h1 className="mt-2 text-2xl font-semibold">Subscribe to a plan</h1>
-          <p className="text-sm text-slate-500">
-            Pay monthly. Cancel any time. Credits drop into your account
-            once your first payment clears.
-          </p>
+    <Page width="default">
+      <PageHeader
+        title="Plans"
+        description="Pay monthly. Cancel any time. Credits drop into your account once your first payment clears."
+      />
+
+      {currentSub && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          You're already subscribed to{' '}
+          <strong>{currentSub.plan_name ?? 'a plan'}</strong>. Cancel
+          it from the dashboard before subscribing to a different
+          plan.
         </div>
+      )}
 
-        {currentSub && (
-          <div className="rounded border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-            You're already subscribed to{' '}
-            <strong>{currentSub.plan_name ?? 'a plan'}</strong>. Cancel
-            it from the dashboard before subscribing to a different
-            plan.
-          </div>
-        )}
+      {loadError && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {loadError}
+        </div>
+      )}
+      {actionError && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          Subscribe failed: {actionError}
+        </div>
+      )}
 
-        {loadError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
-            {loadError}
-          </div>
-        )}
-        {actionError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
-            Subscribe failed: {actionError}
-          </div>
-        )}
-
-        {plans === null ? (
-          <p className="text-sm text-slate-400">loading…</p>
-        ) : plans.length === 0 ? (
-          <p className="text-sm text-slate-500">
-            No plans available right now. Ask the facility to add one.
-          </p>
-        ) : (
-          <ul className="grid gap-3">
-            {plans.map((p) => (
-              <li
-                key={p.id}
-                className="rounded border border-slate-200 bg-white p-5 flex items-center justify-between"
-              >
-                <div>
-                  <div className="text-lg font-semibold">{p.name}</div>
+      {plans === null ? (
+        <p className="text-sm text-slate-400">loading…</p>
+      ) : plans.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
+          No plans available right now. Ask the facility to add one.
+        </div>
+      ) : (
+        <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {plans.map((p) => {
+            const isCurrent = currentSub?.plan_id === p.id;
+            return (
+              <li key={p.id}>
+                <Card className="flex h-full flex-col">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="font-semibold text-slate-900">{p.name}</div>
+                    {isCurrent && <Badge tone="brand">Current plan</Badge>}
+                  </div>
+                  <div className="mt-2">
+                    <span className="text-2xl font-semibold text-slate-900">
+                      {formatCents(p.monthly_price_cents)}
+                    </span>
+                    <span className="ml-1 text-sm text-slate-500">/mo</span>
+                  </div>
                   {p.description && (
-                    <div className="text-sm text-slate-600 mt-1">
+                    <div className="mt-2 text-sm text-slate-500">
                       {p.description}
                     </div>
                   )}
-                  <div className="mt-1 text-sm text-slate-700">
-                    {formatCents(p.monthly_price_cents)} / mo ·{' '}
+                  <div className="mt-2 text-sm text-slate-500">
                     {p.credits_per_week} credit
                     {p.credits_per_week === 1 ? '' : 's'} per week ·{' '}
                     {formatAllowedCategories(p.allowed_categories)}
                   </div>
-                </div>
-                <button
-                  onClick={() => subscribe(p)}
-                  disabled={!!currentSub || busyPlanId === p.id}
-                  className="rounded bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {busyPlanId === p.id ? 'opening…' : 'Subscribe'}
-                </button>
+                  <div className="mt-auto pt-4">
+                    <Button
+                      variant="primary"
+                      className="w-full"
+                      onClick={() => subscribe(p)}
+                      disabled={!!currentSub || busyPlanId === p.id}
+                    >
+                      {busyPlanId === p.id ? 'opening…' : 'Subscribe'}
+                    </Button>
+                  </div>
+                </Card>
               </li>
-            ))}
-          </ul>
-        )}
-      </main>
-    </div>
+            );
+          })}
+        </ul>
+      )}
+    </Page>
   );
 }
 

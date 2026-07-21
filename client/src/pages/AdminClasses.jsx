@@ -14,11 +14,19 @@
 // /api/admin/class-instances).
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import Header from '../components/Header.jsx';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { zonedTimeToUtc } from '../lib/tz.js';
+import {
+  Page,
+  PageHeader,
+  Card,
+  Button,
+  Badge,
+  Field,
+  Input,
+  Select,
+} from '../components/ui/index.js';
 import {
   bookingStatusBadge,
   dayOfWeekLabel,
@@ -69,54 +77,45 @@ export default function AdminClasses() {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Header />
-      <main className="max-w-5xl mx-auto p-6 space-y-8">
-        <div>
-          <Link to="/" className="text-sm text-sky-700 hover:underline">
-            ← Back
-          </Link>
-          <h1 className="mt-2 text-2xl font-semibold">Classes</h1>
-          <p className="text-sm text-slate-500">
-            Times shown in {tz}. Schedules generate up to 90 days at a
-            time; click "Generate more" to extend.
-          </p>
+    <Page width="default">
+      <PageHeader
+        title="Classes"
+        description={`Times shown in ${tz}. Schedules generate up to 90 days at a time; click "Generate more" to extend.`}
+      />
+
+      {actionMessage && (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+          {actionMessage}
         </div>
+      )}
 
-        {actionMessage && (
-          <div className="rounded border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-700">
-            {actionMessage}
-          </div>
-        )}
+      {loadError && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {loadError}
+        </div>
+      )}
 
-        {loadError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
-            {loadError}
-          </div>
-        )}
+      <SchedulesSection
+        schedules={schedules}
+        classOfferings={classOfferings}
+        activeResources={activeResources}
+        onChanged={(msg) => {
+          if (msg) setActionMessage(msg);
+          load();
+        }}
+      />
 
-        <SchedulesSection
-          schedules={schedules}
-          classOfferings={classOfferings}
-          activeResources={activeResources}
-          onChanged={(msg) => {
-            if (msg) setActionMessage(msg);
-            load();
-          }}
-        />
-
-        <InstancesSection
-          instances={instances}
-          classOfferings={classOfferings}
-          activeResources={activeResources}
-          tz={tz}
-          onChanged={(msg) => {
-            if (msg) setActionMessage(msg);
-            load();
-          }}
-        />
-      </main>
-    </div>
+      <InstancesSection
+        instances={instances}
+        classOfferings={classOfferings}
+        activeResources={activeResources}
+        tz={tz}
+        onChanged={(msg) => {
+          if (msg) setActionMessage(msg);
+          load();
+        }}
+      />
+    </Page>
   );
 }
 
@@ -136,57 +135,59 @@ function SchedulesSection({ schedules, classOfferings, activeResources, onChange
   const [showForm, setShowForm] = useState(false);
 
   return (
-    <section>
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold">
+    <Card
+      padded={false}
+      title={
+        <>
           Schedules
           {schedules !== null && (
-            <span className="ml-2 text-slate-400 text-sm font-normal">
+            <span className="ml-2 text-sm font-normal text-slate-400">
               ({schedules.length})
             </span>
           )}
-        </h2>
-        <button
-          onClick={() => setShowForm((v) => !v)}
-          className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50"
-        >
+        </>
+      }
+      actions={
+        <Button size="sm" variant="secondary" onClick={() => setShowForm((v) => !v)}>
           {showForm ? 'Cancel' : 'New schedule'}
-        </button>
-      </div>
-
+        </Button>
+      }
+    >
       {showForm && (
-        <ScheduleForm
-          classOfferings={classOfferings}
-          activeResources={activeResources}
-          onSubmitted={(msg) => {
-            setShowForm(false);
-            onChanged(msg);
-          }}
-        />
+        <div className="border-b border-slate-200 px-5 py-4">
+          <ScheduleForm
+            classOfferings={classOfferings}
+            activeResources={activeResources}
+            onSubmitted={(msg) => {
+              setShowForm(false);
+              onChanged(msg);
+            }}
+          />
+        </div>
       )}
 
       {schedules === null ? (
-        <p className="text-sm text-slate-400">loading…</p>
+        <p className="px-5 py-4 text-sm text-slate-400">loading…</p>
       ) : schedules.length === 0 ? (
-        <p className="text-sm text-slate-500">
+        <p className="px-5 py-8 text-center text-sm text-slate-500">
           No schedules yet. Create one above to generate recurring class
           instances.
         </p>
       ) : (
-        <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+        <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="text-left text-slate-500 border-b border-slate-200">
+            <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
               <tr>
-                <th className="py-2 px-3 font-medium">Offering</th>
-                <th className="py-2 px-3 font-medium">Resource</th>
-                <th className="py-2 px-3 font-medium">When</th>
-                <th className="py-2 px-3 font-medium">Range</th>
-                <th className="py-2 px-3 font-medium">Generated</th>
-                <th className="py-2 px-3 font-medium">Active</th>
-                <th className="py-2 px-3 font-medium">Actions</th>
+                <th className="px-4 py-3">Offering</th>
+                <th className="px-4 py-3">Resource</th>
+                <th className="px-4 py-3">When</th>
+                <th className="px-4 py-3">Range</th>
+                <th className="px-4 py-3">Generated</th>
+                <th className="px-4 py-3">Active</th>
+                <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-slate-100">
               {schedules.map((s) => (
                 <ScheduleRow
                   key={s.id}
@@ -198,7 +199,7 @@ function SchedulesSection({ schedules, classOfferings, activeResources, onChange
           </table>
         </div>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -228,43 +229,33 @@ function ScheduleRow({ schedule, onChanged }) {
   }
 
   return (
-    <tr className="border-b border-slate-100 last:border-0">
-      <td className="py-2 px-3">{schedule.offering_name}</td>
-      <td className="py-2 px-3">{schedule.resource_name}</td>
-      <td className="py-2 px-3">
+    <tr className="hover:bg-slate-50">
+      <td className="px-4 py-3 text-sm">{schedule.offering_name}</td>
+      <td className="px-4 py-3 text-sm">{schedule.resource_name}</td>
+      <td className="px-4 py-3 text-sm">
         {dayOfWeekLabel(schedule.day_of_week)} {timeShort(schedule.start_time)}
       </td>
-      <td className="py-2 px-3 text-xs">
+      <td className="px-4 py-3 text-xs">
         {String(schedule.start_date).slice(0, 10)} –{' '}
         {schedule.end_date
           ? String(schedule.end_date).slice(0, 10)
           : 'open-ended'}
       </td>
-      <td className="py-2 px-3 text-xs">
+      <td className="px-4 py-3 text-xs">
         {schedule.generated_through
           ? String(schedule.generated_through).slice(0, 10)
           : '—'}{' '}
         <span className="text-slate-400">({schedule.active_instance_count})</span>
       </td>
-      <td className="py-2 px-3">
-        <span
-          className={`text-xs rounded px-2 py-0.5 ${
-            schedule.active
-              ? 'bg-emerald-100 text-emerald-900'
-              : 'bg-slate-200 text-slate-600'
-          }`}
-        >
+      <td className="px-4 py-3 text-sm">
+        <Badge tone={schedule.active ? 'success' : 'neutral'}>
           {schedule.active ? 'active' : 'inactive'}
-        </span>
+        </Badge>
       </td>
-      <td className="py-2 px-3">
-        <button
-          onClick={generateMore}
-          disabled={busy}
-          className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-50 disabled:opacity-50"
-        >
+      <td className="px-4 py-3 text-sm">
+        <Button size="sm" variant="secondary" onClick={generateMore} disabled={busy}>
           {busy ? 'generating…' : 'Generate more'}
-        </button>
+        </Button>
       </td>
     </tr>
   );
@@ -310,22 +301,18 @@ function ScheduleForm({ classOfferings, activeResources, onSubmitted }) {
   }
 
   return (
-    <form
-      onSubmit={submit}
-      className="rounded border border-slate-200 bg-white p-4 mb-4 space-y-3"
-    >
+    <form onSubmit={submit} className="space-y-3">
       {error && (
-        <div className="rounded border border-rose-200 bg-rose-50 px-3 py-1 text-sm text-rose-800">
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           {error}
         </div>
       )}
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Offering">
-          <select
+          <Select
             required
             value={offering_id}
             onChange={(e) => setOfferingId(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
           >
             <option value="">— pick an offering —</option>
             {classOfferings.map((o) => (
@@ -333,14 +320,13 @@ function ScheduleForm({ classOfferings, activeResources, onSubmitted }) {
                 {o.name} · cap {o.capacity}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
         <Field label="Resource">
-          <select
+          <Select
             required
             value={resource_id}
             onChange={(e) => setResourceId(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
           >
             <option value="">— pick a resource —</option>
             {activeResources.map((r) => (
@@ -348,67 +334,50 @@ function ScheduleForm({ classOfferings, activeResources, onSubmitted }) {
                 {r.name}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
         <Field label="Day of week">
-          <select
+          <Select
             value={day_of_week}
             onChange={(e) => setDow(Number(e.target.value))}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
           >
             {DOW_OPTIONS.map((d) => (
               <option key={d} value={d}>
                 {dayOfWeekLabel(d)}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
         <Field label="Start time (24h)">
-          <input
+          <Input
             required
             type="time"
             value={start_time}
             onChange={(e) => setStartTime(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
           />
         </Field>
-        <Field label="Start date (must match day of week)">
-          <input
+        <Field label="Start date" hint="Must match day of week">
+          <Input
             required
             type="date"
             value={start_date}
             onChange={(e) => setStartDate(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
           />
         </Field>
-        <Field label="End date (optional, blank = open-ended)">
-          <input
+        <Field label="End date" hint="Optional, blank = open-ended">
+          <Input
             type="date"
             value={end_date}
             onChange={(e) => setEndDate(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
           />
         </Field>
       </div>
       <div className="flex justify-end">
-        <button
-          type="submit"
-          disabled={submitting}
-          className="rounded bg-sky-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-sky-800 disabled:opacity-50"
-        >
+        <Button type="submit" disabled={submitting}>
           {submitting ? 'creating…' : 'Create schedule'}
-        </button>
+        </Button>
       </div>
     </form>
-  );
-}
-
-function Field({ label, children }) {
-  return (
-    <label className="block text-sm">
-      <span className="text-slate-700">{label}</span>
-      <div className="mt-1">{children}</div>
-    </label>
   );
 }
 
@@ -421,53 +390,57 @@ function InstancesSection({ instances, classOfferings, activeResources, tz, onCh
   const [showForm, setShowForm] = useState(false);
 
   return (
-    <section>
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold">
+    <Card
+      padded={false}
+      title={
+        <>
           Instances
           {instances !== null && (
-            <span className="ml-2 text-slate-400 text-sm font-normal">
+            <span className="ml-2 text-sm font-normal text-slate-400">
               ({instances.length})
             </span>
           )}
-        </h2>
-        <button
-          onClick={() => setShowForm((v) => !v)}
-          className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50"
-        >
+        </>
+      }
+      actions={
+        <Button size="sm" variant="secondary" onClick={() => setShowForm((v) => !v)}>
           {showForm ? 'Cancel' : 'New one-off'}
-        </button>
-      </div>
-
+        </Button>
+      }
+    >
       {showForm && (
-        <OneoffForm
-          classOfferings={classOfferings}
-          activeResources={activeResources}
-          tz={tz}
-          onSubmitted={(msg) => {
-            setShowForm(false);
-            onChanged(msg);
-          }}
-        />
+        <div className="border-b border-slate-200 px-5 py-4">
+          <OneoffForm
+            classOfferings={classOfferings}
+            activeResources={activeResources}
+            tz={tz}
+            onSubmitted={(msg) => {
+              setShowForm(false);
+              onChanged(msg);
+            }}
+          />
+        </div>
       )}
 
       {instances === null ? (
-        <p className="text-sm text-slate-400">loading…</p>
+        <p className="px-5 py-4 text-sm text-slate-400">loading…</p>
       ) : instances.length === 0 ? (
-        <p className="text-sm text-slate-500">No instances in the window.</p>
+        <p className="px-5 py-8 text-center text-sm text-slate-500">
+          No instances in the window.
+        </p>
       ) : (
-        <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+        <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="text-left text-slate-500 border-b border-slate-200">
+            <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
               <tr>
-                <th className="py-2 px-3 font-medium">When</th>
-                <th className="py-2 px-3 font-medium">Offering</th>
-                <th className="py-2 px-3 font-medium">Resource</th>
-                <th className="py-2 px-3 font-medium">Roster</th>
-                <th className="py-2 px-3 font-medium">Actions</th>
+                <th className="px-4 py-3">When</th>
+                <th className="px-4 py-3">Offering</th>
+                <th className="px-4 py-3">Resource</th>
+                <th className="px-4 py-3">Roster</th>
+                <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-slate-100">
               {instances.map((ci) => (
                 <InstanceRow
                   key={ci.id}
@@ -484,7 +457,7 @@ function InstancesSection({ instances, classOfferings, activeResources, tz, onCh
           </table>
         </div>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -520,40 +493,36 @@ function InstanceRow({ instance, tz, expanded, onToggle, onChanged }) {
 
   return (
     <>
-      <tr
-        className={`border-b border-slate-100 last:border-0 ${expanded ? 'bg-slate-50' : ''}`}
-      >
-        <td className="py-2 px-3 whitespace-nowrap">
+      <tr className={expanded ? 'bg-slate-50' : 'hover:bg-slate-50'}>
+        <td className="px-4 py-3 text-sm whitespace-nowrap">
           {formatSlotLocal(instance.start_time, tz)}
         </td>
-        <td className="py-2 px-3">{instance.offering_name}</td>
-        <td className="py-2 px-3">{instance.resource_name}</td>
-        <td className="py-2 px-3 tabular-nums">
+        <td className="px-4 py-3 text-sm">{instance.offering_name}</td>
+        <td className="px-4 py-3 text-sm">{instance.resource_name}</td>
+        <td className="px-4 py-3 text-sm tabular-nums">
           {instance.roster_count ?? 0} / {instance.capacity}
         </td>
-        <td className="py-2 px-3 whitespace-nowrap">
-          <div className="flex gap-1">
-            <button
-              onClick={onToggle}
-              className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-50"
-            >
+        <td className="px-4 py-3 text-sm whitespace-nowrap">
+          <div className="flex gap-2">
+            <Button size="sm" variant="secondary" onClick={onToggle}>
               {expanded ? 'Hide roster' : 'View roster'}
-            </button>
+            </Button>
             {!instance.cancelled_at && (
-              <button
+              <Button
+                size="sm"
+                variant="danger"
                 onClick={cancelInstance}
                 disabled={busy}
-                className="rounded border border-rose-300 bg-rose-50 px-2 py-0.5 text-xs text-rose-800 hover:bg-rose-100 disabled:opacity-50"
               >
                 Cancel class
-              </button>
+              </Button>
             )}
           </div>
         </td>
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={5} className="px-3 py-3 bg-slate-50 border-b border-slate-100">
+          <td colSpan={5} className="bg-slate-50 px-4 py-3">
             <RosterPanel instanceId={instance.id} onChanged={onChanged} />
           </td>
         </tr>
@@ -627,42 +596,34 @@ function RosterPanel({ instanceId, onChanged }) {
   }
 
   return (
-    <ul className="divide-y divide-slate-200 rounded border border-slate-200 bg-white">
+    <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
       {roster.map((b) => {
         const name = b.member_id
           ? `${b.member_first_name ?? ''} ${b.member_last_name ?? ''}`.trim()
           : `${b.customer_first_name ?? ''} ${b.customer_last_name ?? ''}`.trim();
         const email = b.member_email ?? b.customer_email;
-        const { label, className } = bookingStatusBadge(b.status);
+        const badge = bookingStatusBadge(b.status);
         return (
-          <li key={b.id} className="flex items-center justify-between px-3 py-2">
+          <li key={b.id} className="flex items-center justify-between px-4 py-3">
             <div className="text-sm">
-              <div>{name || '—'}</div>
+              <div className="text-slate-900">{name || '—'}</div>
               {email && (
                 <div className="text-xs text-slate-500 font-mono">{email}</div>
               )}
             </div>
             <div className="flex items-center gap-2">
-              <span className={`text-xs rounded px-2 py-0.5 ${className}`}>
-                {label}
-              </span>
+              <Badge tone={badge.tone}>{badge.label}</Badge>
               {b.status === 'confirmed' && (
                 <>
-                  <button
-                    onClick={() => cancel(b)}
-                    className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-50"
-                  >
+                  <Button size="sm" variant="secondary" onClick={() => cancel(b)}>
                     Cancel
-                  </button>
+                  </Button>
                   {/* The server gates no-show on future-dated instances
                       (409). The button always shows for confirmed status;
                       premature clicks surface the error in onChanged. */}
-                  <button
-                    onClick={() => markNoShow(b)}
-                    className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-900 hover:bg-amber-100"
-                  >
+                  <Button size="sm" variant="secondary" onClick={() => markNoShow(b)}>
                     No-show
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -719,22 +680,18 @@ function OneoffForm({ classOfferings, activeResources, tz, onSubmitted }) {
   }
 
   return (
-    <form
-      onSubmit={submit}
-      className="rounded border border-slate-200 bg-white p-4 mb-4 space-y-3"
-    >
+    <form onSubmit={submit} className="space-y-3">
       {error && (
-        <div className="rounded border border-rose-200 bg-rose-50 px-3 py-1 text-sm text-rose-800">
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           {error}
         </div>
       )}
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Offering">
-          <select
+          <Select
             required
             value={offering_id}
             onChange={(e) => setOfferingId(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
           >
             <option value="">— pick a class offering —</option>
             {classOfferings.map((o) => (
@@ -742,14 +699,13 @@ function OneoffForm({ classOfferings, activeResources, tz, onSubmitted }) {
                 {o.name} · cap {o.capacity}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
         <Field label="Resource">
-          <select
+          <Select
             required
             value={resource_id}
             onChange={(e) => setResourceId(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
           >
             <option value="">— pick a resource —</option>
             {activeResources.map((r) => (
@@ -757,26 +713,21 @@ function OneoffForm({ classOfferings, activeResources, tz, onSubmitted }) {
                 {r.name}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
         <Field label={`Start time (${tz})`}>
-          <input
+          <Input
             required
             type="datetime-local"
             value={start_time}
             onChange={(e) => setStartTime(e.target.value)}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
           />
         </Field>
       </div>
       <div className="flex justify-end">
-        <button
-          type="submit"
-          disabled={submitting}
-          className="rounded bg-sky-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-sky-800 disabled:opacity-50"
-        >
+        <Button type="submit" disabled={submitting}>
           {submitting ? 'creating…' : 'Create instance'}
-        </button>
+        </Button>
       </div>
     </form>
   );

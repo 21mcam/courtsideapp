@@ -15,8 +15,9 @@
 //
 // Wrapping AuthProvider so any page can read tenant + me state.
 
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth.jsx';
+import AppShell from './components/AppShell.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import MemberHome from './pages/MemberHome.jsx';
 import AdminHome from './pages/AdminHome.jsx';
@@ -28,6 +29,7 @@ import AdminClasses from './pages/AdminClasses.jsx';
 import AdminStripe from './pages/AdminStripe.jsx';
 import AdminCalendar from './pages/AdminCalendar.jsx';
 import MemberPlans from './pages/MemberPlans.jsx';
+import AdminSettings from './pages/AdminSettings.jsx';
 import WalkInPage from './pages/WalkInPage.jsx';
 import WalkInSuccessPage from './pages/WalkInSuccessPage.jsx';
 
@@ -53,19 +55,27 @@ function Shell() {
 
   return (
     <Routes>
+      {/* Outside the shell: login + public walk-in booking */}
       <Route path="/login" element={<RouteLogin />} />
-      <Route path="/wizard" element={<RouteAdminOnly><Wizard /></RouteAdminOnly>} />
-      <Route path="/admin/bookings" element={<RouteAdminOnly><AdminBookings /></RouteAdminOnly>} />
-      <Route path="/admin/classes" element={<RouteAdminOnly><AdminClasses /></RouteAdminOnly>} />
-      <Route path="/admin/calendar" element={<RouteAdminOnly><AdminCalendar /></RouteAdminOnly>} />
-      <Route path="/admin/stripe" element={<RouteAdminOnly><AdminStripe /></RouteAdminOnly>} />
-      <Route path="/book" element={<RouteAuthed><BookingPage /></RouteAuthed>} />
-      <Route path="/classes" element={<RouteAuthed><ClassesPage /></RouteAuthed>} />
-      <Route path="/plans" element={<RouteAuthed><MemberPlans /></RouteAuthed>} />
-      {/* Public — no auth wrapper. Walk-ins book without an account. */}
       <Route path="/walk-in" element={<WalkInPage />} />
       <Route path="/walk-in/success" element={<WalkInSuccessPage />} />
-      <Route path="/" element={<RouteHome />} />
+
+      {/* Everything authed renders inside the sidebar shell */}
+      <Route element={<RouteAuthed><AppShell /></RouteAuthed>}>
+        <Route path="/" element={<RouteHome />} />
+        <Route path="/book" element={<BookingPage />} />
+        <Route path="/classes" element={<ClassesPage />} />
+        <Route path="/plans" element={<MemberPlans />} />
+        <Route element={<RouteAdminOnly />}>
+          <Route path="/wizard" element={<Wizard />} />
+          <Route path="/admin/bookings" element={<AdminBookings />} />
+          <Route path="/admin/classes" element={<AdminClasses />} />
+          <Route path="/admin/calendar" element={<AdminCalendar />} />
+          <Route path="/admin/stripe" element={<AdminStripe />} />
+          <Route path="/admin/settings" element={<AdminSettings />} />
+        </Route>
+      </Route>
+
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
@@ -83,17 +93,19 @@ function RouteLogin() {
   return <LoginPage />;
 }
 
+// Guards work both as children-wrappers and as layout routes (via
+// Outlet fallback).
 function RouteAdminOnly({ children }) {
   const { me } = useAuth();
   if (!me) return <Navigate to="/login" replace />;
   if (!me.memberships.admin) return <Navigate to="/" replace />;
-  return children;
+  return children ?? <Outlet />;
 }
 
 function RouteAuthed({ children }) {
   const { me } = useAuth();
   if (!me) return <Navigate to="/login" replace />;
-  return children;
+  return children ?? <Outlet />;
 }
 
 function Loading() {

@@ -10,11 +10,17 @@
 // case.
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import Header from '../components/Header.jsx';
 import { formatTimeLocal } from '../format.js';
+import {
+  Page,
+  PageHeader,
+  Card,
+  Button,
+  Badge,
+} from '../components/ui/index.js';
 
 export default function ClassesPage() {
   const { me, refresh } = useAuth();
@@ -82,113 +88,104 @@ export default function ClassesPage() {
 
   if (!me.memberships.member) {
     return (
-      <div className="min-h-screen bg-slate-50">
-        <Header />
-        <main className="max-w-2xl mx-auto p-6">
-          <p className="text-slate-700">
+      <Page width="default">
+        <PageHeader title="Classes" />
+        <Card>
+          <p className="text-sm text-slate-600">
             Class booking requires a member account. Contact an admin
             to be added as a member.
           </p>
-          <Link
-            to="/"
-            className="mt-4 inline-block text-sm text-sky-700 hover:underline"
-          >
-            ← Back home
-          </Link>
-        </main>
-      </div>
+        </Card>
+      </Page>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Header />
-      <main className="max-w-3xl mx-auto p-6 space-y-6">
-        <div>
-          <Link to="/" className="text-sm text-sky-700 hover:underline">
-            ← Back
-          </Link>
-          <h1 className="mt-2 text-2xl font-semibold">Classes</h1>
-          <p className="text-sm text-slate-500">
+    <Page width="default">
+      <PageHeader
+        title="Classes"
+        description={
+          <>
             Times shown in {tz}. Available credits:{' '}
             <span className="font-medium text-slate-800">
               {me.credits?.current_credits ?? 0}
             </span>
-          </p>
+          </>
+        }
+      />
+
+      {loadError && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {loadError}
         </div>
+      )}
 
-        {loadError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
-            {loadError}
-          </div>
-        )}
+      {submitError && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          Booking failed: {submitError}
+        </div>
+      )}
 
-        {submitError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
-            Booking failed: {submitError}
-          </div>
-        )}
-
-        {grouped === null ? (
-          <p className="text-sm text-slate-400">loading…</p>
-        ) : grouped.length === 0 ? (
-          <p className="text-sm text-slate-500">
-            No classes scheduled in the next 60 days.
-          </p>
-        ) : (
-          <div className="space-y-5">
-            {grouped.map(([dayLabel, list]) => (
-              <section key={dayLabel}>
-                <h2 className="text-sm font-medium text-slate-700 mb-2">
-                  {dayLabel}
-                </h2>
-                <ul className="divide-y divide-slate-200 rounded border border-slate-200 bg-white">
-                  {list.map((ci) => {
-                    const full = ci.spots_remaining <= 0;
-                    return (
-                      <li
-                        key={ci.id}
-                        className="flex items-center justify-between px-4 py-3"
-                      >
-                        <div>
-                          <div className="font-medium">
-                            {ci.offering_name}
-                            <span className="ml-2 text-sm font-normal text-slate-500">
-                              {ci.resource_name}
-                            </span>
-                          </div>
-                          <div className="text-sm text-slate-600">
-                            {formatTimeLocal(ci.start_time, tz)} ·{' '}
-                            {ci.duration_minutes} min ·{' '}
-                            {ci.credit_cost} credit
-                            {ci.credit_cost === 1 ? '' : 's'}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3 text-sm">
-                          <span
-                            className={`tabular-nums ${full ? 'text-rose-700' : 'text-slate-600'}`}
-                          >
-                            {full
-                              ? 'full'
-                              : `${ci.spots_remaining}/${ci.capacity} open`}
+      {grouped === null ? (
+        <p className="text-sm text-slate-400">loading…</p>
+      ) : grouped.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
+          No classes scheduled in the next 60 days.
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {grouped.map(([dayLabel, list]) => (
+            <section key={dayLabel} className="space-y-2">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+                {dayLabel}
+              </h2>
+              <div className="space-y-2">
+                {list.map((ci) => {
+                  const full = ci.spots_remaining <= 0;
+                  return (
+                    <Card
+                      key={ci.id}
+                      padded={false}
+                      className="flex items-center justify-between gap-3 px-4 py-3"
+                    >
+                      <div>
+                        <div className="font-medium text-slate-900">
+                          {ci.offering_name}
+                          <span className="ml-2 text-sm font-normal text-slate-500">
+                            {ci.resource_name}
                           </span>
-                          <button
-                            onClick={() => bookInstance(ci)}
-                            disabled={full || submitting === ci.id}
-                            className="rounded bg-sky-700 px-3 py-1 text-xs font-medium text-white hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {submitting === ci.id ? 'booking…' : 'Book'}
-                          </button>
                         </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-            ))}
-          </div>
-        )}
-      </main>
-    </div>
+                        <div className="text-sm text-slate-500">
+                          {formatTimeLocal(ci.start_time, tz)} ·{' '}
+                          {ci.duration_minutes} min ·{' '}
+                          {ci.credit_cost} credit
+                          {ci.credit_cost === 1 ? '' : 's'}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {full ? (
+                          <Badge tone="danger">Full</Badge>
+                        ) : (
+                          <Badge tone="info">
+                            {ci.spots_remaining}/{ci.capacity} spots left
+                          </Badge>
+                        )}
+                        <Button
+                          size="sm"
+                          onClick={() => bookInstance(ci)}
+                          disabled={full || submitting === ci.id}
+                        >
+                          {submitting === ci.id ? 'Booking…' : 'Book'}
+                        </Button>
+                      </div>
+                    </Card>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+    </Page>
   );
 }

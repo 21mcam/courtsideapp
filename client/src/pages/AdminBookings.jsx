@@ -14,12 +14,11 @@
 // the final state after the policy/refund/audit logic runs.
 
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import Header from '../components/Header.jsx';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { addDays, localDateString, todayLocalString, zonedDayStartIso } from '../lib/tz.js';
 import { bookingStatusBadge, formatSlotLocal } from '../format.js';
+import { Badge, Button, Card, Field, Input, Page, PageHeader } from '../components/ui/index.js';
 
 const DEFAULT_STATUS_FILTERS = ['confirmed', 'pending_payment'];
 const ALL_STATUSES = [
@@ -144,21 +143,15 @@ export default function AdminBookings() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Header />
-      <main className="max-w-5xl mx-auto p-6 space-y-6">
-        <div>
-          <Link to="/" className="text-sm text-sky-700 hover:underline">
-            ← Back
-          </Link>
-          <h1 className="mt-2 text-2xl font-semibold">Bookings</h1>
-          <p className="text-sm text-slate-500">
-            Times shown in {tz}. Up to 500 bookings per query.
-          </p>
-        </div>
+    <Page width="default">
+      <PageHeader
+        title="Bookings"
+        description={`Times shown in ${tz}. Up to 500 bookings per query.`}
+      />
 
-        {/* Filters */}
-        <section className="rounded border border-slate-200 bg-white p-4 space-y-3">
+      {/* Filters */}
+      <Card>
+        <div className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <DateField label="From" valueIso={from} tz={tz} onChange={setFromDate} />
             <DateField label="To" valueIso={to} tz={tz} onChange={setToDate} />
@@ -171,10 +164,10 @@ export default function AdminBookings() {
                 <button
                   key={s}
                   onClick={() => toggleStatus(s)}
-                  className={`text-xs rounded-full px-3 py-1 border transition ${
+                  className={`rounded-full border px-3 py-1 text-sm font-medium transition ${
                     active
-                      ? 'border-sky-700 bg-sky-50 text-sky-900'
-                      : 'border-slate-200 bg-white text-slate-500 hover:border-slate-400'
+                      ? 'border-brand-600 bg-brand-50 text-brand-700'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                   }`}
                 >
                   {label}
@@ -182,28 +175,28 @@ export default function AdminBookings() {
               );
             })}
           </div>
-        </section>
+        </div>
+      </Card>
 
-        {actionMessage && (
-          <div className="rounded border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-700">
-            {actionMessage}
-          </div>
-        )}
+      {actionMessage && (
+        <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-700">
+          {actionMessage}
+        </div>
+      )}
 
-        {loadError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
-            {loadError}
-          </div>
-        )}
+      {loadError && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {loadError}
+        </div>
+      )}
 
-        <BookingTable
-          bookings={bookings}
-          tz={tz}
-          onCancel={cancel}
-          onNoShow={markNoShow}
-        />
-      </main>
-    </div>
+      <BookingTable
+        bookings={bookings}
+        tz={tz}
+        onCancel={cancel}
+        onNoShow={markNoShow}
+      />
+    </Page>
   );
 }
 
@@ -212,15 +205,13 @@ function DateField({ label, valueIso, tz, onChange }) {
   // input round-trips with the tenant-local window boundaries.
   const yyyymmdd = localDateString(valueIso, tz);
   return (
-    <label className="block text-sm">
-      <span className="text-slate-700">{label}</span>
-      <input
+    <Field label={label}>
+      <Input
         type="date"
         value={yyyymmdd}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 block rounded border border-slate-300 px-2 py-1"
       />
-    </label>
+    </Field>
   );
 }
 
@@ -230,79 +221,73 @@ function BookingTable({ bookings, tz, onCancel, onNoShow }) {
   }
   if (bookings.length === 0) {
     return (
-      <p className="text-sm text-slate-500">
+      <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
         No bookings match the current filters.
-      </p>
+      </div>
     );
   }
   const now = Date.now();
   return (
-    <div className="overflow-x-auto rounded border border-slate-200 bg-white">
-      <table className="w-full text-sm">
-        <thead className="text-left text-slate-500 border-b border-slate-200">
-          <tr>
-            <th className="py-2 px-3 font-medium">When</th>
-            <th className="py-2 px-3 font-medium">Offering</th>
-            <th className="py-2 px-3 font-medium">Resource</th>
-            <th className="py-2 px-3 font-medium">Who</th>
-            <th className="py-2 px-3 font-medium">Status</th>
-            <th className="py-2 px-3 font-medium">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {bookings.map((b) => {
-            const isPast = new Date(b.start_time).getTime() <= now;
-            const { label, className } = bookingStatusBadge(b.status);
-            const who = b.member_id
-              ? `${b.member_first_name ?? ''} ${b.member_last_name ?? ''}`.trim()
-              : b.customer_first_name
-              ? `${b.customer_first_name} ${b.customer_last_name ?? ''}`.trim()
-              : '—';
-            return (
-              <tr key={b.id} className="border-b border-slate-100 last:border-0">
-                <td className="py-2 px-3 whitespace-nowrap">
-                  {formatSlotLocal(b.start_time, tz)}
-                </td>
-                <td className="py-2 px-3">{b.offering_name}</td>
-                <td className="py-2 px-3">{b.resource_name}</td>
-                <td className="py-2 px-3">
-                  <div>{who || '—'}</div>
-                  {b.member_email && (
-                    <div className="text-xs text-slate-500 font-mono">
-                      {b.member_email}
-                    </div>
-                  )}
-                </td>
-                <td className="py-2 px-3">
-                  <span className={`text-xs rounded px-2 py-0.5 ${className}`}>
-                    {label}
-                  </span>
-                </td>
-                <td className="py-2 px-3 whitespace-nowrap">
-                  {b.status === 'confirmed' && (
-                    <div className="flex gap-1">
-                      <button
-                        onClick={() => onCancel(b)}
-                        className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-50"
-                      >
-                        Cancel
-                      </button>
-                      {isPast && (
-                        <button
-                          onClick={() => onNoShow(b)}
-                          className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-900 hover:bg-amber-100"
-                        >
-                          No-show
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <Card padded={false}>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-4 py-3">When</th>
+              <th className="px-4 py-3">Offering</th>
+              <th className="px-4 py-3">Resource</th>
+              <th className="px-4 py-3">Who</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {bookings.map((b) => {
+              const isPast = new Date(b.start_time).getTime() <= now;
+              const badge = bookingStatusBadge(b.status);
+              const who = b.member_id
+                ? `${b.member_first_name ?? ''} ${b.member_last_name ?? ''}`.trim()
+                : b.customer_first_name
+                ? `${b.customer_first_name} ${b.customer_last_name ?? ''}`.trim()
+                : '—';
+              return (
+                <tr key={b.id} className="hover:bg-slate-50">
+                  <td className="whitespace-nowrap px-4 py-3 text-sm">
+                    {formatSlotLocal(b.start_time, tz)}
+                  </td>
+                  <td className="px-4 py-3 text-sm">{b.offering_name}</td>
+                  <td className="px-4 py-3 text-sm">{b.resource_name}</td>
+                  <td className="px-4 py-3 text-sm">
+                    <div>{who || '—'}</div>
+                    {b.member_email && (
+                      <div className="font-mono text-xs text-slate-500">
+                        {b.member_email}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    <Badge tone={badge.tone}>{badge.label}</Badge>
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-sm">
+                    {b.status === 'confirmed' && (
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="secondary" onClick={() => onCancel(b)}>
+                          Cancel
+                        </Button>
+                        {isPast && (
+                          <Button size="sm" variant="danger" onClick={() => onNoShow(b)}>
+                            No-show
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   );
 }

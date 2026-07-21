@@ -17,6 +17,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { formatCents, formatSlotLocal, formatTimeLocal } from '../format.js';
+import { Button, Card, Field, Input, cn } from '../components/ui/index.js';
 
 // Tenant-local YYYY-MM-DD for "today" — same helper as BookingPage.
 function tenantLocalDate(tz, daysFromNow = 0) {
@@ -171,90 +172,103 @@ export default function WalkInPage() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
-        <div className="font-semibold">{tenant.name}</div>
-        <Link to={me ? '/' : '/login'} className="text-sm text-sky-700 hover:underline">
+      <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 sm:px-6">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-sm font-semibold text-white">
+            {tenant.name?.charAt(0).toUpperCase()}
+          </div>
+          <div className="font-semibold text-slate-900">{tenant.name}</div>
+        </div>
+        <Link
+          to={me ? '/' : '/login'}
+          className="text-sm text-brand-600 hover:text-brand-700 font-medium"
+        >
           {me ? 'Back to my account' : 'Member sign in'}
         </Link>
       </header>
-      <main className="max-w-2xl mx-auto p-6 space-y-6">
+      <main className="max-w-2xl mx-auto p-4 sm:p-6 space-y-6">
         <div>
-          <h1 className="text-2xl font-semibold">Book a session</h1>
-          <p className="text-sm text-slate-500">
+          <h1 className="text-2xl font-semibold text-slate-900">
+            Book a session
+          </h1>
+          <p className="mt-1 text-sm text-slate-500">
             No account needed — pick a time, pay by card, and you're
             booked. Times shown in {tz}.
           </p>
         </div>
 
         {paymentCancelled && !selectedSlot && (
-          <div className="rounded border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             Payment was cancelled — no booking was made. Pick a time to
             try again.
           </div>
         )}
 
         {loadError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
+          <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
             {loadError}
           </div>
         )}
 
         {/* Offering picker */}
-        <section>
-          <label className="block text-sm font-medium text-slate-700">
-            What would you like to book?
-          </label>
+        <Card title="What would you like to book?">
           {offerings === null ? (
-            <p className="mt-2 text-sm text-slate-400">loading…</p>
+            <p className="text-sm text-slate-400">loading…</p>
           ) : offerings.length === 0 ? (
-            <p className="mt-2 text-sm text-slate-500">
+            <p className="text-sm text-slate-500">
               Online walk-in booking isn't available yet. Contact the
               front desk to book.
             </p>
           ) : (
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-2">
               {offerings.map((o) => (
                 <button
                   key={o.id}
                   onClick={() => setSelectedOfferingId(o.id)}
-                  className={`text-left rounded border px-3 py-2 transition ${
+                  className={cn(
+                    'rounded-lg border px-4 py-3 text-left transition',
                     selectedOfferingId === o.id
-                      ? 'border-sky-700 bg-sky-50'
-                      : 'border-slate-200 bg-white hover:border-slate-400'
-                  }`}
+                      ? 'border-brand-600 bg-brand-50 ring-1 ring-brand-600'
+                      : 'border-slate-200 bg-white hover:border-slate-300',
+                  )}
                 >
-                  <div className="font-medium">{o.name}</div>
-                  <div className="text-xs text-slate-500">
-                    {o.duration_minutes} min · {formatCents(o.dollar_price)}
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="font-medium text-slate-900">
+                      {o.name}
+                    </span>
+                    <span className="font-semibold text-slate-900">
+                      {formatCents(o.dollar_price)}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-xs text-slate-500">
+                    {o.duration_minutes} min
                   </div>
                 </button>
               ))}
             </div>
           )}
-        </section>
+        </Card>
 
         {/* Resource picker — only if the offering has multiple resources */}
         {selectedOffering && selectedOffering.resources.length > 1 && (
-          <section>
-            <label className="block text-sm font-medium text-slate-700">
-              Which {selectedOffering.name}?
-            </label>
-            <div className="mt-2 flex flex-wrap gap-2">
+          <Card title={`Which ${selectedOffering.name}?`}>
+            <div className="flex flex-wrap gap-2">
               {selectedOffering.resources.map((r) => (
                 <button
                   key={r.id}
                   onClick={() => setSelectedResourceId(r.id)}
-                  className={`rounded border px-3 py-1 text-sm transition ${
+                  className={cn(
+                    'rounded-lg border px-3 py-1.5 text-sm transition',
                     selectedResourceId === r.id
-                      ? 'border-sky-700 bg-sky-50'
-                      : 'border-slate-200 bg-white hover:border-slate-400'
-                  }`}
+                      ? 'border-brand-600 bg-brand-50 ring-1 ring-brand-600 font-medium text-slate-900'
+                      : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300',
+                  )}
                 >
                   {r.name}
                 </button>
               ))}
             </div>
-          </section>
+          </Card>
         )}
 
         {selectedOffering && selectedOffering.resources.length === 0 && (
@@ -265,141 +279,124 @@ export default function WalkInPage() {
 
         {/* Date picker */}
         {selectedOffering && selectedResourceId && (
-          <section>
-            <label
-              htmlFor="walkin-date"
-              className="block text-sm font-medium text-slate-700"
-            >
-              Date
-            </label>
-            <input
-              id="walkin-date"
-              type="date"
-              value={date}
-              min={tenantLocalDate(tz)}
-              onChange={(e) => setDate(e.target.value)}
-              className="mt-2 rounded border border-slate-300 px-3 py-1 text-sm"
-            />
-          </section>
+          <Card title="Date">
+            <Field>
+              <Input
+                id="walkin-date"
+                type="date"
+                value={date}
+                min={tenantLocalDate(tz)}
+                onChange={(e) => setDate(e.target.value)}
+                className="sm:max-w-xs"
+              />
+            </Field>
+          </Card>
         )}
 
         {/* Slots */}
         {selectedOffering && selectedResourceId && date && (
-          <section>
-            <h2 className="text-sm font-medium text-slate-700">
-              Available times
-            </h2>
+          <Card title="Available times">
             {loadingSlots ? (
-              <p className="mt-2 text-sm text-slate-400">loading…</p>
+              <p className="text-sm text-slate-400">loading…</p>
             ) : slotsError ? (
-              <p className="mt-2 text-sm text-rose-700">{slotsError}</p>
+              <p className="text-sm text-rose-700">{slotsError}</p>
             ) : slots && slots.length === 0 ? (
-              <p className="mt-2 text-sm text-slate-500">
+              <p className="text-sm text-slate-500">
                 No open slots on this day.
                 {slotsReason && (
                   <span className="ml-1 text-slate-400">({slotsReason})</span>
                 )}
               </p>
             ) : slots ? (
-              <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-4">
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                 {slots.map((s) => (
                   <button
                     key={s.start}
                     onClick={() => setSelectedSlot(s)}
-                    className={`rounded border px-2 py-2 text-sm transition ${
+                    className={cn(
+                      'rounded-lg border px-2 py-2 text-sm transition',
                       selectedSlot?.start === s.start
-                        ? 'border-sky-700 bg-sky-50 font-medium'
-                        : 'border-slate-300 bg-white hover:border-sky-700 hover:bg-sky-50'
-                    }`}
+                        ? 'border-brand-600 bg-brand-600 font-medium text-white'
+                        : 'border-slate-300 bg-white text-slate-700 hover:border-brand-600 hover:bg-brand-50',
+                    )}
                   >
                     {formatTimeLocal(s.start, tz)}
                   </button>
                 ))}
               </div>
             ) : null}
-          </section>
+          </Card>
         )}
 
         {/* Contact + pay */}
         {selectedSlot && selectedOffering && (
-          <section className="rounded border border-slate-200 bg-white p-4">
-            <h2 className="text-sm font-medium text-slate-700">
-              Your details
-            </h2>
-            <p className="mt-1 text-sm text-slate-500">
+          <Card title="Your details">
+            <p className="text-sm text-slate-500">
               {selectedOffering.name} ·{' '}
               {formatSlotLocal(selectedSlot.start, tz)} ·{' '}
-              {formatCents(selectedOffering.dollar_price)}
+              <span className="font-semibold text-slate-900">
+                {formatCents(selectedOffering.dollar_price)}
+              </span>
             </p>
-            <form onSubmit={submit} className="mt-3 space-y-3">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="block text-sm">
-                  <span className="text-slate-700">First name</span>
-                  <input
+            <form onSubmit={submit} className="mt-4 space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="First name">
+                  <Input
                     required
                     value={contact.first_name}
                     onChange={(e) =>
                       setContact({ ...contact, first_name: e.target.value })
                     }
-                    className="mt-1 w-full rounded border border-slate-300 px-3 py-1.5"
                   />
-                </label>
-                <label className="block text-sm">
-                  <span className="text-slate-700">Last name</span>
-                  <input
+                </Field>
+                <Field label="Last name">
+                  <Input
                     required
                     value={contact.last_name}
                     onChange={(e) =>
                       setContact({ ...contact, last_name: e.target.value })
                     }
-                    className="mt-1 w-full rounded border border-slate-300 px-3 py-1.5"
                   />
-                </label>
+                </Field>
               </div>
-              <label className="block text-sm">
-                <span className="text-slate-700">Email</span>
-                <input
+              <Field label="Email">
+                <Input
                   required
                   type="email"
                   value={contact.email}
                   onChange={(e) =>
                     setContact({ ...contact, email: e.target.value })
                   }
-                  className="mt-1 w-full rounded border border-slate-300 px-3 py-1.5"
                 />
-              </label>
-              <label className="block text-sm">
-                <span className="text-slate-700">
-                  Phone <span className="text-slate-400">(optional)</span>
-                </span>
-                <input
+              </Field>
+              <Field label="Phone" hint="Optional">
+                <Input
                   type="tel"
                   value={contact.phone}
                   onChange={(e) =>
                     setContact({ ...contact, phone: e.target.value })
                   }
-                  className="mt-1 w-full rounded border border-slate-300 px-3 py-1.5"
                 />
-              </label>
-              <button
+              </Field>
+              <Button
                 type="submit"
                 disabled={submitting || !contactComplete}
-                className="w-full rounded bg-sky-700 px-4 py-2 text-white hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
+                className="w-full"
               >
                 {submitting
                   ? 'Redirecting to payment…'
                   : `Continue to payment · ${formatCents(selectedOffering.dollar_price)}`}
-              </button>
+              </Button>
               <p className="text-xs text-slate-400">
                 Your slot is held for 15 minutes while you pay. Payment
                 is handled securely by Stripe.
               </p>
             </form>
-          </section>
+          </Card>
         )}
 
         {submitError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
+          <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
             Booking failed: {submitError}
           </div>
         )}
