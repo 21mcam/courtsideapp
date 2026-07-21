@@ -16,6 +16,7 @@ import {
   createManualMember,
   adjustMemberCredits,
   listAllBookings,
+  updateTenantTheme,
 } from '../controllers/admin.js';
 import {
   listResources,
@@ -87,6 +88,9 @@ router.post('/operating-hours', createOperatingHours);
 router.delete('/operating-hours/:id', deleteOperatingHours);
 router.get('/booking-policies', getBookingPolicies);
 router.put('/booking-policies', upsertBookingPolicies);
+
+// Tenant appearance (UI accent color, admin Settings page)
+router.put('/theme', updateTenantTheme);
 
 // Blackouts (Phase 3 prep)
 router.get('/blackouts', listBlackouts);

@@ -15,6 +15,8 @@ router.get('/', (req, res) => {
     subdomain: req.tenant.subdomain,
     name: req.tenant.name,
     timezone: req.tenant.timezone,
+    // Falls back to indigo until migration 019 is applied.
+    theme_accent: req.tenant.theme_accent || 'indigo',
   });
 });
 

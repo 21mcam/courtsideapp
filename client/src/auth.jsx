@@ -4,6 +4,7 @@
 
 import { createContext, useContext, useEffect, useState } from 'react';
 import { api, clearToken, setToken, TOKEN_KEY } from './api.js';
+import { applyAccent } from './theme.js';
 
 const AuthContext = createContext(null);
 
@@ -24,7 +25,9 @@ export function AuthProvider({ children }) {
       try {
         const tRes = await api('/api/tenant');
         if (tRes.ok) {
-          setTenant(await tRes.json());
+          const t = await tRes.json();
+          setTenant(t);
+          applyAccent(t.theme_accent);
         } else {
           const body = await tRes.json().catch(() => ({}));
           setTenantError({ status: tRes.status, body });
@@ -79,9 +82,19 @@ export function AuthProvider({ children }) {
     setMe(null);
   }
 
+  // Merge a partial update into the tenant (e.g. theme_accent from
+  // the settings page) and re-apply the accent if it changed.
+  function updateTenant(patch) {
+    setTenant((prev) => {
+      const next = { ...prev, ...patch };
+      if (patch.theme_accent) applyAccent(patch.theme_accent);
+      return next;
+    });
+  }
+
   return (
     <AuthContext.Provider
-      value={{ tenant, tenantError, me, booting, login, logout, refresh: async () => {
+      value={{ tenant, tenantError, me, booting, login, logout, updateTenant, refresh: async () => {
         const res = await api('/api/me');
         if (res.ok) setMe(await res.json());
       } }}

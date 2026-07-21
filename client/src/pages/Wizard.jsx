@@ -13,12 +13,21 @@
 
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import Header from '../components/Header.jsx';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
+import {
+  Page,
+  PageHeader,
+  Card,
+  Button,
+  Field,
+  Input,
+  cn,
+} from '../components/ui/index.js';
 
 const STORAGE_KEY = 'courtside_wizard_state';
 const TOTAL_STEPS = 5;
+const STEP_LABELS = ['Welcome', 'Resources', 'Offerings', 'Plans', 'Done'];
 
 function loadState() {
   try {
@@ -69,76 +78,113 @@ export default function Wizard() {
   const { step } = state;
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Header />
-      <main className="max-w-2xl mx-auto p-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold">Setup wizard</h1>
-          <Link to="/" className="text-sm text-slate-500 hover:underline">
-            ← Back to admin
-          </Link>
-        </div>
+    <Page width="narrow">
+      <PageHeader
+        title="Setup wizard"
+        description="Set up your resources, offerings, and plans in five quick steps."
+      />
 
-        <Progress current={step} total={TOTAL_STEPS} />
+      <Progress current={step} total={TOTAL_STEPS} />
 
-        <div className="mt-8 bg-white rounded border border-slate-200 p-6">
-          {step === 1 && <StepWelcome onNext={() => goto(2)} />}
-          {step === 2 && (
-            <StepResources
-              state={state}
-              update={update}
-              onNext={() => goto(3)}
-              onBack={() => goto(1)}
-            />
-          )}
-          {step === 3 && (
-            <StepOffering
-              state={state}
-              update={update}
-              onNext={() => goto(4)}
-              onBack={() => goto(2)}
-            />
-          )}
-          {step === 4 && (
-            <StepPlan
-              state={state}
-              update={update}
-              onNext={() => goto(5)}
-              onBack={() => goto(3)}
-            />
-          )}
-          {step === 5 && <StepDone state={state} onReset={reset} />}
-        </div>
-      </main>
-    </div>
+      <Card>
+        {step === 1 && <StepWelcome onNext={() => goto(2)} />}
+        {step === 2 && (
+          <StepResources
+            state={state}
+            update={update}
+            onNext={() => goto(3)}
+            onBack={() => goto(1)}
+          />
+        )}
+        {step === 3 && (
+          <StepOffering
+            state={state}
+            update={update}
+            onNext={() => goto(4)}
+            onBack={() => goto(2)}
+          />
+        )}
+        {step === 4 && (
+          <StepPlan
+            state={state}
+            update={update}
+            onNext={() => goto(5)}
+            onBack={() => goto(3)}
+          />
+        )}
+        {step === 5 && <StepDone state={state} onReset={reset} />}
+      </Card>
+    </Page>
   );
 }
 
 function Progress({ current, total }) {
   return (
-    <div className="mt-6">
-      <div className="flex items-center gap-2">
-        {Array.from({ length: total }).map((_, i) => {
-          const idx = i + 1;
-          const done = idx < current;
-          const active = idx === current;
-          return (
-            <div
-              key={idx}
-              className={`flex-1 h-2 rounded ${
-                done
-                  ? 'bg-emerald-500'
-                  : active
-                    ? 'bg-amber-500'
-                    : 'bg-slate-200'
-              }`}
-            />
-          );
-        })}
-      </div>
-      <div className="mt-2 text-xs text-slate-500">
-        Step {current} of {total}
-      </div>
+    <div className="flex items-start">
+      {Array.from({ length: total }).map((_, i) => {
+        const idx = i + 1;
+        const done = idx < current;
+        const active = idx === current;
+        return (
+          <div
+            key={idx}
+            className={cn('flex items-start', idx > 1 && 'flex-1')}
+          >
+            {idx > 1 && (
+              <div
+                className={cn(
+                  'flex-1 h-px mx-2 mt-3.5',
+                  done || active ? 'bg-brand-600' : 'bg-slate-200'
+                )}
+              />
+            )}
+            <div className="flex flex-col items-center gap-1">
+              <div
+                className={cn(
+                  'h-7 w-7 rounded-full text-xs font-semibold flex items-center justify-center',
+                  done || active
+                    ? 'bg-brand-600 text-white'
+                    : 'bg-slate-200 text-slate-500'
+                )}
+              >
+                {idx}
+              </div>
+              <span
+                className={cn(
+                  'text-xs',
+                  active
+                    ? 'font-medium text-slate-900'
+                    : 'text-slate-500'
+                )}
+              >
+                {STEP_LABELS[i]}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================
+// Recap rows — simple bordered rows for created / confirmed items
+// ============================================================
+
+function RecapRows({ items }) {
+  return (
+    <div className="mt-6 divide-y divide-slate-100 rounded-lg border border-slate-200">
+      {items.map(({ label, value, mono }) => (
+        <div
+          key={label}
+          className="flex items-center justify-between px-4 py-2.5 text-sm"
+        >
+          <span className="text-slate-500">{label}</span>
+          <span className={cn('text-slate-900', mono && 'font-mono')}>
+            {value}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -151,8 +197,10 @@ function StepWelcome({ onNext }) {
   const { me } = useAuth();
   return (
     <div>
-      <h2 className="text-lg font-semibold">Welcome, {me.user.first_name}.</h2>
-      <p className="mt-2 text-slate-600">
+      <h2 className="text-lg font-semibold text-slate-900">
+        Welcome, {me.user.first_name}.
+      </h2>
+      <p className="mt-2 text-sm text-slate-600">
         We'll get {me.tenant.name} set up in five quick steps:
       </p>
       <ol className="mt-3 list-decimal pl-6 text-slate-700 text-sm space-y-1">
@@ -162,14 +210,13 @@ function StepWelcome({ onNext }) {
         <li>Create a subscription plan</li>
         <li>You're done — preview the catalog</li>
       </ol>
-      <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-1 text-sm max-w-md">
-        <dt className="text-slate-500">Facility</dt>
-        <dd>{me.tenant.name}</dd>
-        <dt className="text-slate-500">Subdomain</dt>
-        <dd className="font-mono">{me.tenant.subdomain}</dd>
-        <dt className="text-slate-500">Timezone</dt>
-        <dd className="font-mono">{me.tenant.timezone}</dd>
-      </dl>
+      <RecapRows
+        items={[
+          { label: 'Facility', value: me.tenant.name },
+          { label: 'Subdomain', value: me.tenant.subdomain, mono: true },
+          { label: 'Timezone', value: me.tenant.timezone, mono: true },
+        ]}
+      />
       <NavButtons onNext={onNext} nextLabel="Let's go" />
     </div>
   );
@@ -209,22 +256,24 @@ function StepResources({ state, update, onNext, onBack }) {
 
   return (
     <form onSubmit={submit}>
-      <h2 className="text-lg font-semibold">Add your first resource</h2>
+      <h2 className="text-lg font-semibold text-slate-900">
+        Add your first resource
+      </h2>
       <p className="mt-1 text-sm text-slate-600">
         A resource is the physical thing being rented — a cage, court, sim
         bay, room, etc. You can add more later.
       </p>
       <div className="mt-6">
-        <label className="block text-sm text-slate-600 mb-1">Resource name</label>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          required
-          placeholder="Cage 1"
-          className="w-full rounded border border-slate-300 px-3 py-2 outline-none focus:border-slate-500"
-        />
+        <Field label="Resource name">
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+            placeholder="Cage 1"
+          />
+        </Field>
       </div>
-      {error && <p className="mt-3 text-sm text-rose-700">{error}</p>}
+      {error && <ErrorBanner message={error} />}
       <NavButtons onBack={onBack} busy={busy} nextLabel="Continue" />
     </form>
   );
@@ -302,73 +351,63 @@ function StepOffering({ state, update, onNext, onBack }) {
 
   return (
     <form onSubmit={submit}>
-      <h2 className="text-lg font-semibold">Create your first offering</h2>
+      <h2 className="text-lg font-semibold text-slate-900">
+        Create your first offering
+      </h2>
       <p className="mt-1 text-sm text-slate-600">
         An offering is what members and walk-ins book — a 30-min cage, a
         90-min sim session, a class. Members spend credits; walk-ins pay
         the dollar price.
       </p>
       <div className="mt-6 space-y-4">
-        <div>
-          <label className="block text-sm text-slate-600 mb-1">Name</label>
-          <input
+        <Field label="Name">
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
-            className="w-full rounded border border-slate-300 px-3 py-2"
           />
-        </div>
-        <div>
-          <label className="block text-sm text-slate-600 mb-1">
-            Category{' '}
-            <span className="text-slate-400">(lowercase-hyphen)</span>
-          </label>
-          <input
+        </Field>
+        <Field label="Category" hint="lowercase-hyphen">
+          <Input
             value={category}
             onChange={(e) => setCategory(e.target.value)}
             required
             placeholder="cage-time"
-            className="w-full rounded border border-slate-300 px-3 py-2 font-mono"
+            className="font-mono"
           />
-        </div>
+        </Field>
         <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className="block text-sm text-slate-600 mb-1">Duration (min)</label>
-            <input
+          <Field label="Duration (min)">
+            <Input
               type="number"
               min="1"
               value={duration}
               onChange={(e) => setDuration(e.target.value)}
               required
-              className="w-full rounded border border-slate-300 px-3 py-2"
             />
-          </div>
-          <div>
-            <label className="block text-sm text-slate-600 mb-1">Credits</label>
-            <input
+          </Field>
+          <Field label="Credits">
+            <Input
               type="number"
               min="0"
               value={creditCost}
               onChange={(e) => setCreditCost(e.target.value)}
               required
-              className="w-full rounded border border-slate-300 px-3 py-2"
             />
-          </div>
-          <div>
-            <label className="block text-sm text-slate-600 mb-1">Dollar price</label>
-            <input
+          </Field>
+          <Field label="Dollar price">
+            <Input
               type="number"
               min="0"
               step="0.01"
               value={dollarPrice}
               onChange={(e) => setDollarPrice(e.target.value)}
               required
-              className="w-full rounded border border-slate-300 px-3 py-2"
             />
-          </div>
+          </Field>
         </div>
       </div>
-      {error && <p className="mt-3 text-sm text-rose-700">{error}</p>}
+      {error && <ErrorBanner message={error} />}
       <NavButtons onBack={onBack} busy={busy} nextLabel="Continue" />
     </form>
   );
@@ -419,48 +458,44 @@ function StepPlan({ state, update, onNext, onBack }) {
 
   return (
     <form onSubmit={submit}>
-      <h2 className="text-lg font-semibold">Create your first plan</h2>
+      <h2 className="text-lg font-semibold text-slate-900">
+        Create your first plan
+      </h2>
       <p className="mt-1 text-sm text-slate-600">
         A plan is what members subscribe to. They pay monthly and get
         credits each week to spend on offerings.
       </p>
       <div className="mt-6 space-y-4">
-        <div>
-          <label className="block text-sm text-slate-600 mb-1">Plan name</label>
-          <input
+        <Field label="Plan name">
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
-            className="w-full rounded border border-slate-300 px-3 py-2"
           />
-        </div>
+        </Field>
         <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm text-slate-600 mb-1">Monthly price</label>
-            <input
+          <Field label="Monthly price">
+            <Input
               type="number"
               min="0"
               step="0.01"
               value={monthlyPrice}
               onChange={(e) => setMonthlyPrice(e.target.value)}
               required
-              className="w-full rounded border border-slate-300 px-3 py-2"
             />
-          </div>
-          <div>
-            <label className="block text-sm text-slate-600 mb-1">Credits per week</label>
-            <input
+          </Field>
+          <Field label="Credits per week">
+            <Input
               type="number"
               min="0"
               value={creditsPerWeek}
               onChange={(e) => setCreditsPerWeek(e.target.value)}
               required
-              className="w-full rounded border border-slate-300 px-3 py-2"
             />
-          </div>
+          </Field>
         </div>
       </div>
-      {error && <p className="mt-3 text-sm text-rose-700">{error}</p>}
+      {error && <ErrorBanner message={error} />}
       <NavButtons onBack={onBack} busy={busy} nextLabel="Continue" />
     </form>
   );
@@ -473,38 +508,42 @@ function StepPlan({ state, update, onNext, onBack }) {
 function StepDone({ state, onReset }) {
   return (
     <div>
-      <h2 className="text-lg font-semibold">All set 🎯</h2>
-      <p className="mt-2 text-slate-600">
+      <h2 className="text-lg font-semibold text-slate-900">All set 🎯</h2>
+      <p className="mt-2 text-sm text-slate-600">
         You created the first piece of your facility's catalog. Members
         can book it as soon as the resource has operating hours.
       </p>
-      <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
-        <dt className="text-slate-500">Resource</dt>
-        <dd>{state.resourceName ?? '—'}</dd>
-        <dt className="text-slate-500">Offering</dt>
-        <dd>{state.offeringName ?? '—'}</dd>
-        <dt className="text-slate-500">Plan</dt>
-        <dd>{state.planName ?? '—'}</dd>
-      </dl>
+      <RecapRows
+        items={[
+          { label: 'Resource', value: state.resourceName ?? '—' },
+          { label: 'Offering', value: state.offeringName ?? '—' },
+          { label: 'Plan', value: state.planName ?? '—' },
+        ]}
+      />
       <p className="mt-6 text-sm text-slate-500">
         Next up: give your new resource operating hours and review the
         cancellation policy — then it's bookable.
       </p>
       <div className="mt-8 flex gap-3">
-        <Link
-          to="/"
-          onClick={onReset}
-          className="rounded bg-slate-900 text-white px-4 py-2 hover:bg-slate-800"
-        >
+        <Button as={Link} to="/" onClick={onReset}>
           Go to admin home
-        </Link>
-        <button
-          onClick={onReset}
-          className="rounded border border-slate-300 px-4 py-2 hover:bg-slate-50"
-        >
+        </Button>
+        <Button variant="secondary" onClick={onReset}>
           Run wizard again
-        </button>
+        </Button>
       </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Shared error banner
+// ============================================================
+
+function ErrorBanner({ message }) {
+  return (
+    <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+      {message}
     </div>
   );
 }
@@ -517,34 +556,25 @@ function NavButtons({ onBack, onNext, busy, nextLabel = 'Next' }) {
   return (
     <div className="mt-8 flex items-center justify-between">
       {onBack ? (
-        <button
+        <Button
           type="button"
+          variant="secondary"
           onClick={onBack}
           disabled={busy}
-          className="text-sm text-slate-500 hover:underline disabled:opacity-50"
         >
-          ← Back
-        </button>
+          Back
+        </Button>
       ) : (
         <span />
       )}
       {onNext ? (
-        <button
-          type="button"
-          onClick={onNext}
-          disabled={busy}
-          className="rounded bg-slate-900 text-white px-4 py-2 hover:bg-slate-800 disabled:opacity-50"
-        >
+        <Button type="button" onClick={onNext} disabled={busy}>
           {nextLabel}
-        </button>
+        </Button>
       ) : (
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded bg-slate-900 text-white px-4 py-2 hover:bg-slate-800 disabled:opacity-50"
-        >
-          {busy ? 'saving…' : nextLabel}
-        </button>
+        <Button type="submit" disabled={busy}>
+          {busy ? 'Saving…' : nextLabel}
+        </Button>
       )}
     </div>
   );

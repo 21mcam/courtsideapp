@@ -15,10 +15,18 @@
 
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import Header from '../components/Header.jsx';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { bookingStatusBadge, formatSlotLocal } from '../format.js';
+import { Page, PageHeader, Card, Button, Badge } from '../components/ui/index.js';
+
+const SUB_STATUS_TONES = {
+  active: 'success',
+  past_due: 'warning',
+  cancelled: 'neutral',
+  pending: 'info',
+  incomplete: 'warning',
+};
 
 export default function MemberHome() {
   const { me, refresh } = useAuth();
@@ -139,98 +147,104 @@ export default function MemberHome() {
       .reverse() ?? null;
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Header />
-      <main className="max-w-3xl mx-auto p-6 space-y-8">
-        <section className="rounded border border-slate-200 bg-white p-5 flex items-center justify-between">
-          <div>
-            <div className="text-sm text-slate-500">Available credits</div>
-            <div className="text-3xl font-semibold tabular-nums">{credits}</div>
-            {subscription && (
-              <div className="mt-1 text-xs text-slate-500">
-                Subscribed to{' '}
-                <span className="font-medium text-slate-700">
-                  {subscription.plan_name ?? '—'}
-                </span>{' '}
-                · {subscription.status}
-                {subscription.cancel_at_period_end && (
-                  <span className="ml-2 text-amber-700">
-                    (ending at period end)
-                  </span>
-                )}
-                <button
-                  onClick={openPortal}
-                  disabled={portalBusy}
-                  className="ml-3 underline hover:text-slate-800 disabled:opacity-50"
-                >
-                  {portalBusy ? 'opening…' : 'Manage'}
-                </button>
-              </div>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Link
-              to="/book"
-              className="rounded bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-800"
-            >
+    <Page width="default">
+      <PageHeader
+        title={`Welcome back, ${me.user.first_name}`}
+        description="Your credits, subscription, and bookings at a glance."
+        actions={
+          <>
+            <Button as={Link} to="/book" variant="primary">
               Book a session
-            </Link>
-            <Link
-              to="/classes"
-              className="rounded border border-sky-700 px-4 py-2 text-sm font-medium text-sky-700 hover:bg-sky-50"
-            >
+            </Button>
+            <Button as={Link} to="/classes" variant="secondary">
               Browse classes
-            </Link>
-          </div>
-        </section>
+            </Button>
+          </>
+        }
+      />
 
-        {/* Subscribe CTA when not yet subscribed. undefined = still
-            loading; null = loaded with no subscription. */}
-        {subscription === null && (
-          <section className="rounded border border-indigo-200 bg-indigo-50 px-5 py-4 flex items-center justify-between">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Card>
+          <div className="text-sm text-slate-500">Available credits</div>
+          <div className="mt-1 text-3xl font-semibold tabular-nums text-slate-900">
+            {credits}
+          </div>
+        </Card>
+        <Card>
+          <div className="text-sm text-slate-500">Subscription</div>
+          {subscription ? (
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <span className="text-lg font-semibold text-slate-900">
+                {subscription.plan_name ?? '—'}
+              </span>
+              <Badge tone={SUB_STATUS_TONES[subscription.status] ?? 'neutral'}>
+                {subscription.status}
+              </Badge>
+              {subscription.cancel_at_period_end && (
+                <Badge tone="warning">ending at period end</Badge>
+              )}
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={openPortal}
+                disabled={portalBusy}
+              >
+                {portalBusy ? 'opening…' : 'Manage'}
+              </Button>
+            </div>
+          ) : (
+            <div className="mt-1 text-sm text-slate-500">
+              {subscription === undefined ? 'loading…' : 'No active plan'}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {/* Subscribe CTA when not yet subscribed. undefined = still
+          loading; null = loaded with no subscription. */}
+      {subscription === null && (
+        <Card className="border-brand-200 bg-brand-50">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="font-medium text-indigo-900">
+              <div className="font-medium text-slate-900">
                 Want weekly credits?
               </div>
-              <div className="text-sm text-indigo-800">
+              <div className="text-sm text-slate-600">
                 Subscribe to a plan to get a fresh set of credits each week.
               </div>
             </div>
-            <Link
-              to="/plans"
-              className="rounded bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800"
-            >
+            <Button as={Link} to="/plans" variant="primary">
               View plans
-            </Link>
-          </section>
-        )}
-
-        {cancelMessage && (
-          <div className="rounded border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-700">
-            {cancelMessage}
+            </Button>
           </div>
-        )}
+        </Card>
+      )}
 
-        <BookingList
-          title="Upcoming"
-          items={upcoming}
-          error={loadError}
-          empty="Nothing booked yet — pick a slot or class above."
-          tz={me.tenant.timezone}
-          onCancel={cancel}
-          showCancel
-        />
+      {cancelMessage && (
+        <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-700">
+          {cancelMessage}
+        </div>
+      )}
 
-        <BookingList
-          title="Past & cancelled"
-          items={past}
-          error={null}
-          empty="No past bookings."
-          tz={me.tenant.timezone}
-          muted
-        />
-      </main>
-    </div>
+      <BookingList
+        title="Upcoming"
+        items={upcoming}
+        error={loadError}
+        empty="Nothing booked yet — pick a slot or class above."
+        tz={me.tenant.timezone}
+        onCancel={cancel}
+        showCancel
+      />
+
+      <BookingList
+        title="Past & cancelled"
+        items={past}
+        error={null}
+        empty="No past bookings."
+        tz={me.tenant.timezone}
+        muted
+      />
+    </Page>
   );
 }
 
@@ -253,40 +267,44 @@ function BookingList({
   muted = false,
 }) {
   return (
-    <section>
-      <h2 className="text-lg font-semibold">
-        {title}
-        {items !== null && (
-          <span className="ml-2 text-slate-400 text-sm font-normal">
-            ({items.length})
-          </span>
-        )}
-      </h2>
-      {error && <p className="mt-2 text-sm text-rose-700">{error}</p>}
+    <Card
+      padded={false}
+      title={
+        <>
+          {title}
+          {items !== null && (
+            <span className="ml-2 font-normal text-slate-400">
+              ({items.length})
+            </span>
+          )}
+        </>
+      }
+    >
+      {error && <p className="px-5 py-4 text-sm text-rose-700">{error}</p>}
       {items === null ? (
-        <p className="mt-2 text-sm text-slate-400">loading…</p>
+        <p className="px-5 py-4 text-sm text-slate-400">loading…</p>
       ) : items.length === 0 ? (
-        <p className="mt-2 text-sm text-slate-500">{empty}</p>
+        <p className="px-5 py-4 text-sm text-slate-500">{empty}</p>
       ) : (
-        <ul className="mt-2 divide-y divide-slate-200 rounded border border-slate-200 bg-white">
+        <ul className="divide-y divide-slate-100">
           {items.map((b) => (
             <li
               key={`${b.kind}:${b.id}`}
-              className={`flex items-center justify-between px-4 py-3 ${muted ? 'opacity-70' : ''}`}
+              className={`flex items-center justify-between gap-3 px-5 py-3 hover:bg-slate-50 ${muted ? 'opacity-70' : ''}`}
             >
               <div>
-                <div className="font-medium">
+                <div className="font-medium text-slate-900">
                   {b.offering_name}
                   <span className="ml-2 text-sm font-normal text-slate-500">
                     {b.resource_name}
                   </span>
                   {b.kind === 'class' && (
-                    <span className="ml-2 text-xs rounded bg-violet-100 text-violet-900 px-1.5 py-0.5">
+                    <Badge tone="brand" className="ml-2">
                       class
-                    </span>
+                    </Badge>
                   )}
                 </div>
-                <div className="text-sm text-slate-600">
+                <div className="text-sm text-slate-500">
                   {formatSlotLocal(b.start_time, tz)} ·{' '}
                   {b.credit_cost_charged} credit
                   {b.credit_cost_charged === 1 ? '' : 's'}
@@ -295,25 +313,24 @@ function BookingList({
               <div className="flex items-center gap-3">
                 <StatusBadge status={b.status} />
                 {showCancel && b.status === 'confirmed' && (
-                  <button
+                  <Button
+                    size="sm"
+                    variant="secondary"
                     onClick={() => onCancel(b)}
-                    className="rounded border border-slate-300 px-3 py-1 text-xs hover:bg-slate-50"
                   >
                     Cancel
-                  </button>
+                  </Button>
                 )}
               </div>
             </li>
           ))}
         </ul>
       )}
-    </section>
+    </Card>
   );
 }
 
 function StatusBadge({ status }) {
-  const { label, className } = bookingStatusBadge(status);
-  return (
-    <span className={`text-xs rounded px-2 py-0.5 ${className}`}>{label}</span>
-  );
+  const { label, tone } = bookingStatusBadge(status);
+  return <Badge tone={tone}>{label}</Badge>;
 }

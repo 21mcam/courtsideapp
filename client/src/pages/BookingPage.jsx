@@ -10,17 +10,26 @@
 // the date refetches slots. No "back" button — picking a different
 // option higher up just clears downstream state.
 //
-// All times rendered in the tenant's timezone (Header shows the
+// All times rendered in the tenant's timezone (the shell shows the
 // tenant; we read tz from the auth context). Slots come from
 // /api/availability as UTC ISO strings; we format with
 // Intl.DateTimeFormat and the tenant's IANA tz.
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import Header from '../components/Header.jsx';
 import { formatTimeLocal } from '../format.js';
+import {
+  Page,
+  PageHeader,
+  Card,
+  Button,
+  Badge,
+  Field,
+  Input,
+  cn,
+} from '../components/ui/index.js';
 
 // Returns the tenant-local YYYY-MM-DD for "today" (or +N days), so
 // the date input defaults to a sensible day in the tenant's zone
@@ -41,6 +50,14 @@ function tenantLocalDate(tz, daysFromNow = 0) {
   return `${y}-${m}-${d}`;
 }
 
+function StepLabel({ children }) {
+  return (
+    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+      {children}
+    </p>
+  );
+}
+
 export default function BookingPage() {
   const { me, refresh } = useAuth();
   const navigate = useNavigate();
@@ -57,6 +74,8 @@ export default function BookingPage() {
   const [slotsError, setSlotsError] = useState(null);
   const [slotsReason, setSlotsReason] = useState(null);
   const [loadingSlots, setLoadingSlots] = useState(false);
+
+  const [selectedSlotStart, setSelectedSlotStart] = useState(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
@@ -131,6 +150,14 @@ export default function BookingPage() {
     };
   }, [selectedOfferingId, selectedResourceId, date]);
 
+  // The selected slot is only honored while it exists in the current
+  // slot list — changing offering/resource/date refetches slots, so a
+  // stale selection simply stops rendering as selected.
+  const selectedSlot = useMemo(
+    () => (slots ?? []).find((s) => s.start === selectedSlotStart) ?? null,
+    [slots, selectedSlotStart],
+  );
+
   async function bookSlot(slot) {
     if (submitting) return;
     setSubmitting(true);
@@ -160,172 +187,183 @@ export default function BookingPage() {
 
   if (!me.memberships.member) {
     return (
-      <div className="min-h-screen bg-slate-50">
-        <Header />
-        <main className="max-w-2xl mx-auto p-6">
-          <p className="text-slate-700">
+      <Page width="narrow">
+        <PageHeader title="Book" />
+        <Card>
+          <p className="text-sm text-slate-600">
             Booking requires a member account. Contact an admin to be
             added as a member.
           </p>
-          <Link
-            to="/"
-            className="mt-4 inline-block text-sm text-sky-700 hover:underline"
-          >
-            ← Back home
-          </Link>
-        </main>
-      </div>
+        </Card>
+      </Page>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Header />
-      <main className="max-w-2xl mx-auto p-6 space-y-6">
-        <div>
-          <Link to="/" className="text-sm text-sky-700 hover:underline">
-            ← Back
-          </Link>
-          <h1 className="mt-2 text-2xl font-semibold">Book a session</h1>
-          <p className="text-sm text-slate-500">
+    <Page width="narrow">
+      <PageHeader
+        title="Book"
+        description={
+          <>
             Times shown in {tz}. Available credits:{' '}
             <span className="font-medium text-slate-800">
               {me.credits?.current_credits ?? 0}
             </span>
-          </p>
-        </div>
+          </>
+        }
+      />
 
-        {loadError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
-            {loadError}
+      {loadError && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {loadError}
+        </div>
+      )}
+
+      {/* Offering picker */}
+      <Card>
+        <StepLabel>Step 1 · What would you like to book?</StepLabel>
+        {offerings === null ? (
+          <p className="mt-3 text-sm text-slate-400">loading…</p>
+        ) : offerings.length === 0 ? (
+          <div className="mt-3 rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
+            No member-bookable offerings configured yet.
+          </div>
+        ) : (
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {offerings.map((o) => (
+              <button
+                key={o.id}
+                onClick={() => setSelectedOfferingId(o.id)}
+                className={cn(
+                  'rounded-lg border px-3 py-2.5 text-left transition',
+                  selectedOfferingId === o.id
+                    ? 'border-brand-600 bg-brand-50 ring-1 ring-brand-600'
+                    : 'border-slate-200 bg-white hover:bg-slate-50',
+                )}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-slate-900">{o.name}</span>
+                  <Badge tone="brand">
+                    {o.credit_cost} credit
+                    {o.credit_cost === 1 ? '' : 's'}
+                  </Badge>
+                </div>
+                <div className="mt-0.5 text-xs text-slate-500">
+                  {o.duration_minutes} min
+                </div>
+              </button>
+            ))}
           </div>
         )}
+      </Card>
 
-        {/* Offering picker */}
-        <section>
-          <label className="block text-sm font-medium text-slate-700">
-            What would you like to book?
-          </label>
-          {offerings === null ? (
-            <p className="mt-2 text-sm text-slate-400">loading…</p>
-          ) : offerings.length === 0 ? (
-            <p className="mt-2 text-sm text-slate-500">
-              No member-bookable offerings configured yet.
-            </p>
-          ) : (
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
-              {offerings.map((o) => (
-                <button
-                  key={o.id}
-                  onClick={() => setSelectedOfferingId(o.id)}
-                  className={`text-left rounded border px-3 py-2 transition ${
-                    selectedOfferingId === o.id
-                      ? 'border-sky-700 bg-sky-50'
-                      : 'border-slate-200 bg-white hover:border-slate-400'
-                  }`}
-                >
-                  <div className="font-medium">{o.name}</div>
-                  <div className="text-xs text-slate-500">
-                    {o.duration_minutes} min · {o.credit_cost} credit
-                    {o.credit_cost === 1 ? '' : 's'}
+      {/* Resource picker — only if the offering has multiple resources */}
+      {selectedOffering && selectedOffering.resources.length > 1 && (
+        <Card>
+          <StepLabel>Step 2 · Which {selectedOffering.name}?</StepLabel>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {selectedOffering.resources.map((r) => (
+              <button
+                key={r.id}
+                onClick={() => setSelectedResourceId(r.id)}
+                className={cn(
+                  'rounded-lg border px-3 py-1.5 text-sm transition',
+                  selectedResourceId === r.id
+                    ? 'border-brand-600 bg-brand-50 ring-1 ring-brand-600'
+                    : 'border-slate-200 bg-white hover:bg-slate-50',
+                )}
+              >
+                {r.name}
+              </button>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {selectedOffering && selectedOffering.resources.length === 0 && (
+        <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
+          This offering isn't currently linked to any active resources.
+          Ask an admin to link one.
+        </div>
+      )}
+
+      {/* Date + slots */}
+      {selectedOffering && selectedResourceId && (
+        <Card>
+          <StepLabel>
+            Step {selectedOffering.resources.length > 1 ? 3 : 2} · Pick a time
+          </StepLabel>
+          <div className="mt-3 max-w-xs">
+            <Field label="Date">
+              <Input
+                id="booking-date"
+                type="date"
+                value={date}
+                min={tenantLocalDate(tz)}
+                onChange={(e) => setDate(e.target.value)}
+              />
+            </Field>
+          </div>
+
+          {date && (
+            <div className="mt-4">
+              <h3 className="text-sm font-medium text-slate-700">
+                Available times
+              </h3>
+              {loadingSlots ? (
+                <p className="mt-2 text-sm text-slate-400">loading…</p>
+              ) : slotsError ? (
+                <p className="mt-2 text-sm text-rose-700">{slotsError}</p>
+              ) : slots && slots.length === 0 ? (
+                <div className="mt-2 rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
+                  No open slots on this day.
+                  {slotsReason && (
+                    <span className="ml-1 text-slate-400">({slotsReason})</span>
+                  )}
+                </div>
+              ) : slots ? (
+                <>
+                  <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-4">
+                    {slots.map((s) => (
+                      <button
+                        key={s.start}
+                        disabled={submitting}
+                        onClick={() => setSelectedSlotStart(s.start)}
+                        className={cn(
+                          'rounded-full border px-2 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-50',
+                          selectedSlot?.start === s.start
+                            ? 'border-brand-600 bg-brand-600 text-white'
+                            : 'border-slate-300 bg-white hover:bg-slate-50',
+                        )}
+                      >
+                        {formatTimeLocal(s.start, tz)}
+                      </button>
+                    ))}
                   </div>
-                </button>
-              ))}
+                  {selectedSlot && (
+                    <div className="mt-4">
+                      <Button
+                        disabled={submitting}
+                        onClick={() => bookSlot(selectedSlot)}
+                      >
+                        {submitting
+                          ? 'Booking…'
+                          : `Confirm ${formatTimeLocal(selectedSlot.start, tz)}`}
+                      </Button>
+                    </div>
+                  )}
+                </>
+              ) : null}
             </div>
           )}
-        </section>
+        </Card>
+      )}
 
-        {/* Resource picker — only if the offering has multiple resources */}
-        {selectedOffering && selectedOffering.resources.length > 1 && (
-          <section>
-            <label className="block text-sm font-medium text-slate-700">
-              Which {selectedOffering.name}?
-            </label>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {selectedOffering.resources.map((r) => (
-                <button
-                  key={r.id}
-                  onClick={() => setSelectedResourceId(r.id)}
-                  className={`rounded border px-3 py-1 text-sm transition ${
-                    selectedResourceId === r.id
-                      ? 'border-sky-700 bg-sky-50'
-                      : 'border-slate-200 bg-white hover:border-slate-400'
-                  }`}
-                >
-                  {r.name}
-                </button>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* Date picker */}
-        {selectedOffering && selectedOffering.resources.length === 0 && (
-          <p className="text-sm text-slate-500">
-            This offering isn't currently linked to any active resources.
-            Ask an admin to link one.
-          </p>
-        )}
-
-        {selectedOffering && selectedResourceId && (
-          <section>
-            <label
-              htmlFor="booking-date"
-              className="block text-sm font-medium text-slate-700"
-            >
-              Date
-            </label>
-            <input
-              id="booking-date"
-              type="date"
-              value={date}
-              min={tenantLocalDate(tz)}
-              onChange={(e) => setDate(e.target.value)}
-              className="mt-2 rounded border border-slate-300 px-3 py-1 text-sm"
-            />
-          </section>
-        )}
-
-        {/* Slots */}
-        {selectedOffering && selectedResourceId && date && (
-          <section>
-            <h2 className="text-sm font-medium text-slate-700">
-              Available times
-            </h2>
-            {loadingSlots ? (
-              <p className="mt-2 text-sm text-slate-400">loading…</p>
-            ) : slotsError ? (
-              <p className="mt-2 text-sm text-rose-700">{slotsError}</p>
-            ) : slots && slots.length === 0 ? (
-              <p className="mt-2 text-sm text-slate-500">
-                No open slots on this day.
-                {slotsReason && (
-                  <span className="ml-1 text-slate-400">({slotsReason})</span>
-                )}
-              </p>
-            ) : slots ? (
-              <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-4">
-                {slots.map((s) => (
-                  <button
-                    key={s.start}
-                    disabled={submitting}
-                    onClick={() => bookSlot(s)}
-                    className="rounded border border-slate-300 bg-white px-2 py-2 text-sm hover:border-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {formatTimeLocal(s.start, tz)}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </section>
-        )}
-
-        {submitError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-800">
-            Booking failed: {submitError}
-          </div>
-        )}
-      </main>
-    </div>
+      {submitError && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          Booking failed: {submitError}
+        </div>
+      )}
+    </Page>
   );
 }

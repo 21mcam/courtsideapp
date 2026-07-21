@@ -26,8 +26,7 @@
 //     reachable from the "Cancelled" list under the grid.
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import Header from '../components/Header.jsx';
+import { Page, PageHeader, Button, Badge } from '../components/ui/index.js';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { bookingStatusBadge, formatSlotLocal, formatTimeLocal } from '../format.js';
@@ -180,35 +179,30 @@ export default function AdminCalendar() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Header />
-      <main className="max-w-[1600px] mx-auto p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <Link to="/" className="text-sm text-sky-700 hover:underline">
-              ← Back
-            </Link>
-            <h1 className="mt-1 text-xl font-semibold">Calendar</h1>
-            <div className="text-xs text-slate-500">
-              All times in {tz}.
-            </div>
-          </div>
-          <DateNav
-            dateStr={dateStr}
-            tz={tz}
-            onPrev={() => shiftDate(-1)}
-            onToday={() => setDateStr(todayLocalString(tz))}
-            onNext={() => shiftDate(1)}
-          />
-        </div>
+    <>
+      <Page width="full">
+        <div className="max-w-[1600px] mx-auto space-y-3">
+        <PageHeader
+          title="Calendar"
+          description={`All times in ${tz}.`}
+          actions={
+            <DateNav
+              dateStr={dateStr}
+              tz={tz}
+              onPrev={() => shiftDate(-1)}
+              onToday={() => setDateStr(todayLocalString(tz))}
+              onNext={() => shiftDate(1)}
+            />
+          }
+        />
 
         {loadError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+          <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
             {loadError}
           </div>
         )}
         {actionMessage && (
-          <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
             {actionMessage}
           </div>
         )}
@@ -286,7 +280,8 @@ export default function AdminCalendar() {
             )}
           </div>
         </div>
-      </main>
+        </div>
+      </Page>
 
       {selectedItem && (
         <DetailPanel
@@ -300,7 +295,7 @@ export default function AdminCalendar() {
           }}
         />
       )}
-    </div>
+    </>
   );
 }
 
@@ -322,25 +317,15 @@ function DateNav({ dateStr, tz, onPrev, onToday, onNext }) {
   });
   return (
     <div className="flex items-center gap-2">
-      <button
-        onClick={onPrev}
-        className="rounded border border-slate-300 px-2 py-1 text-sm hover:bg-slate-50"
-      >
+      <Button variant="secondary" size="sm" onClick={onPrev}>
         ←
-      </button>
-      <button
-        onClick={onToday}
-        disabled={isToday}
-        className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
-      >
+      </Button>
+      <Button variant="secondary" size="sm" onClick={onToday} disabled={isToday}>
         Today
-      </button>
-      <button
-        onClick={onNext}
-        className="rounded border border-slate-300 px-2 py-1 text-sm hover:bg-slate-50"
-      >
+      </Button>
+      <Button variant="secondary" size="sm" onClick={onNext}>
         →
-      </button>
+      </Button>
       <span className="ml-3 text-sm font-medium text-slate-700">
         {display}
       </span>
@@ -647,12 +632,12 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
                   ? `${item.member_first_name ?? ''} ${item.member_last_name ?? ''}`.trim()
                   : `${item.customer_first_name ?? ''} ${item.customer_last_name ?? ''}`.trim()}
                 {item.member_id ? (
-                  <span className="ml-2 text-xs rounded bg-sky-100 text-sky-900 px-1.5 py-0.5">
-                    member
+                  <span className="ml-2">
+                    <Badge tone="info">member</Badge>
                   </span>
                 ) : (
-                  <span className="ml-2 text-xs rounded bg-emerald-100 text-emerald-900 px-1.5 py-0.5">
-                    walk-in
+                  <span className="ml-2">
+                    <Badge tone="success">walk-in</Badge>
                   </span>
                 )}
               </dd>
@@ -696,32 +681,20 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
         <div className="mt-5 flex flex-col gap-2">
           {!isClass && item.status === 'confirmed' && (
             <>
-              <button
-                onClick={cancel}
-                disabled={busy}
-                className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-50"
-              >
+              <Button variant="secondary" onClick={cancel} disabled={busy}>
                 {busy ? 'cancelling…' : 'Cancel booking'}
-              </button>
+              </Button>
               {isPast && (
-                <button
-                  onClick={markNoShow}
-                  disabled={busy}
-                  className="rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm text-amber-900 hover:bg-amber-100 disabled:opacity-50"
-                >
+                <Button variant="danger" onClick={markNoShow} disabled={busy}>
                   Mark no-show
-                </button>
+                </Button>
               )}
             </>
           )}
           {isClass && !item.cancelled_at && (
-            <button
-              onClick={cancel}
-              disabled={busy}
-              className="rounded border border-rose-300 bg-rose-50 px-3 py-1.5 text-sm text-rose-800 hover:bg-rose-100 disabled:opacity-50"
-            >
+            <Button variant="danger" onClick={cancel} disabled={busy}>
               {busy ? 'cancelling…' : 'Cancel class (refund roster)'}
-            </button>
+            </Button>
           )}
         </div>
       </aside>
@@ -730,10 +703,8 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
 }
 
 function StatusBadge({ status }) {
-  const { label, className } = bookingStatusBadge(status);
-  return (
-    <span className={`text-xs rounded px-2 py-0.5 ${className}`}>{label}</span>
-  );
+  const { label, tone } = bookingStatusBadge(status);
+  return <Badge tone={tone}>{label}</Badge>;
 }
 
 // ============================================================

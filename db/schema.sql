@@ -83,6 +83,11 @@ CREATE TABLE tenants (
                                   CHECK (btrim(name) <> '' AND name = btrim(name)),
   timezone                        text NOT NULL
                                   CHECK (btrim(timezone) <> '' AND timezone = btrim(timezone)),
+  -- UI accent color, picked in admin Settings. Keys mirror ACCENTS in
+  -- client/src/theme.js. (Migration 019.)
+  theme_accent                    text NOT NULL DEFAULT 'indigo'
+                                  CHECK (theme_accent IN
+                                         ('indigo', 'sky', 'emerald', 'violet', 'rose', 'slate')),
   -- platform-side billing (what the tenant pays us). Privileged-only
   -- — never exposed via tenant_lookup view.
   platform_stripe_customer_id     text,
@@ -148,7 +153,8 @@ SELECT
       platform_subscription_status = 'trial'
       AND (trial_ends_at IS NULL OR trial_ends_at > now())
     )
-  ) AS is_billing_ok
+  ) AS is_billing_ok,
+  theme_accent
 FROM tenants;
 
 COMMENT ON VIEW tenant_lookup IS
