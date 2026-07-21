@@ -73,22 +73,21 @@ export function formatTimeLocal(iso, tz) {
   });
 }
 
-// Map a booking's status enum to a (label, tailwind-class) pair for
-// the badge component.
+// Map a booking's status enum to a label + tone for <Badge>.
 export function bookingStatusBadge(status) {
   switch (status) {
     case 'confirmed':
-      return { label: 'confirmed', className: 'bg-emerald-100 text-emerald-900' };
+      return { label: 'confirmed', tone: 'success' };
     case 'completed':
-      return { label: 'completed', className: 'bg-slate-100 text-slate-700' };
+      return { label: 'completed', tone: 'neutral' };
     case 'cancelled':
-      return { label: 'cancelled', className: 'bg-rose-100 text-rose-900' };
+      return { label: 'cancelled', tone: 'danger' };
     case 'no_show':
-      return { label: 'no-show', className: 'bg-amber-100 text-amber-900' };
+      return { label: 'no-show', tone: 'warning' };
     case 'pending_payment':
-      return { label: 'pending payment', className: 'bg-sky-100 text-sky-900' };
+      return { label: 'pending payment', tone: 'info' };
     default:
-      return { label: status || '—', className: 'bg-slate-100 text-slate-700' };
+      return { label: status || '—', tone: 'neutral' };
   }
 }
 

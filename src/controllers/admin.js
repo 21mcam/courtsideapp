@@ -498,3 +498,27 @@ export async function createAdminBooking(req, res, next) {
     next(err);
   }
 }
+
+// Accent keys mirror the CHECK constraint on tenants.theme_accent
+// (migration 019) and ACCENTS in client/src/theme.js.
+const themeSchema = z.object({
+  accent: z.enum(['indigo', 'sky', 'emerald', 'violet', 'rose', 'slate']),
+});
+
+export async function updateTenantTheme(req, res, next) {
+  try {
+    const parsed = themeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'invalid accent' });
+    }
+    // SECURITY DEFINER function — app_runtime has no UPDATE on the
+    // tenants root table. Guarded by the tenant GUC inside.
+    await req.db.query('SELECT set_tenant_theme($1, $2)', [
+      req.tenant.id,
+      parsed.data.accent,
+    ]);
+    res.json({ theme_accent: parsed.data.accent });
+  } catch (err) {
+    next(err);
+  }
+}

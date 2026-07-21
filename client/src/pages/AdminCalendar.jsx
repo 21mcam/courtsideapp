@@ -2,16 +2,16 @@
 //
 // Visual grid: one column per resource × hour rows. Bookings and
 // class instances render as positioned cards. Click a card to open
-// a detail panel with cancel / mark-no-show actions.
+// a detail panel with cancel / mark-no-show actions. Click or drag
+// on an open area to create a booking (15-min snap; drag defines a
+// custom-length window).
 //
-// No new backend endpoints — composes existing /api/admin/{resources,
-// bookings,class-instances} responses. Date filtering is generous
-// (±24h around the selected day) and the frontend filters by
-// tenant-local date so DST and midnight boundaries are handled
-// without tripping over UTC↔local conversion.
+// Date filtering is generous (±24h around the selected day) and the
+// frontend filters by tenant-local date so DST and midnight
+// boundaries are handled without tripping over UTC↔local conversion.
 //
 // Skipped for MVP: drag-to-move/resize, week view, real-time
-// updates. The screen is purely a read+act surface for staff.
+// updates.
 //
 // Layout rules:
 //   * Overlapping items on one resource split into side-by-side
@@ -26,8 +26,15 @@
 //     reachable from the "Cancelled" list under the grid.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import Header from '../components/Header.jsx';
+import {
+  Page,
+  PageHeader,
+  Button,
+  Badge,
+  Field,
+  Input,
+  Select,
+} from '../components/ui/index.js';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import {
@@ -191,36 +198,30 @@ export default function AdminCalendar() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Header />
-      <main className="max-w-[1600px] mx-auto p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <Link to="/" className="text-sm text-sky-700 hover:underline">
-              ← Back
-            </Link>
-            <h1 className="mt-1 text-xl font-semibold">Calendar</h1>
-            <div className="text-xs text-slate-500">
-              All times in {tz}. Click or drag on an open area to
-              create a booking.
-            </div>
-          </div>
-          <DateNav
-            dateStr={dateStr}
-            tz={tz}
-            onPrev={() => shiftDate(-1)}
-            onToday={() => setDateStr(todayLocalString(tz))}
-            onNext={() => shiftDate(1)}
-          />
-        </div>
+    <>
+      <Page width="full">
+        <div className="max-w-[1600px] mx-auto space-y-3">
+        <PageHeader
+          title="Calendar"
+          description={`All times in ${tz}. Click or drag on an open area to create a booking.`}
+          actions={
+            <DateNav
+              dateStr={dateStr}
+              tz={tz}
+              onPrev={() => shiftDate(-1)}
+              onToday={() => setDateStr(todayLocalString(tz))}
+              onNext={() => shiftDate(1)}
+            />
+          }
+        />
 
         {loadError && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+          <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
             {loadError}
           </div>
         )}
         {actionMessage && (
-          <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
             {actionMessage}
           </div>
         )}
@@ -299,7 +300,8 @@ export default function AdminCalendar() {
             )}
           </div>
         </div>
-      </main>
+        </div>
+      </Page>
 
       {selectedItem && (
         <DetailPanel
@@ -327,7 +329,7 @@ export default function AdminCalendar() {
           }}
         />
       )}
-    </div>
+    </>
   );
 }
 
@@ -349,25 +351,15 @@ function DateNav({ dateStr, tz, onPrev, onToday, onNext }) {
   });
   return (
     <div className="flex items-center gap-2">
-      <button
-        onClick={onPrev}
-        className="rounded border border-slate-300 px-2 py-1 text-sm hover:bg-slate-50"
-      >
+      <Button variant="secondary" size="sm" onClick={onPrev}>
         ←
-      </button>
-      <button
-        onClick={onToday}
-        disabled={isToday}
-        className="rounded border border-slate-300 px-3 py-1 text-sm hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
-      >
+      </Button>
+      <Button variant="secondary" size="sm" onClick={onToday} disabled={isToday}>
         Today
-      </button>
-      <button
-        onClick={onNext}
-        className="rounded border border-slate-300 px-2 py-1 text-sm hover:bg-slate-50"
-      >
+      </Button>
+      <Button variant="secondary" size="sm" onClick={onNext}>
         →
-      </button>
+      </Button>
       <span className="ml-3 text-sm font-medium text-slate-700">
         {display}
       </span>
@@ -491,6 +483,7 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
       </p>
     );
   }
+
   const totalHeight = (gridEnd - gridStart) * PX_PER_MIN;
   const hourLines = [];
   for (let m = gridStart; m <= gridEnd; m += 60) {
@@ -772,12 +765,12 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
                   ? `${item.member_first_name ?? ''} ${item.member_last_name ?? ''}`.trim()
                   : `${item.customer_first_name ?? ''} ${item.customer_last_name ?? ''}`.trim()}
                 {item.member_id ? (
-                  <span className="ml-2 text-xs rounded bg-sky-100 text-sky-900 px-1.5 py-0.5">
-                    member
+                  <span className="ml-2">
+                    <Badge tone="info">member</Badge>
                   </span>
                 ) : (
-                  <span className="ml-2 text-xs rounded bg-emerald-100 text-emerald-900 px-1.5 py-0.5">
-                    walk-in
+                  <span className="ml-2">
+                    <Badge tone="success">walk-in</Badge>
                   </span>
                 )}
               </dd>
@@ -821,32 +814,20 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
         <div className="mt-5 flex flex-col gap-2">
           {!isClass && item.status === 'confirmed' && (
             <>
-              <button
-                onClick={cancel}
-                disabled={busy}
-                className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-50"
-              >
+              <Button variant="secondary" onClick={cancel} disabled={busy}>
                 {busy ? 'cancelling…' : 'Cancel booking'}
-              </button>
+              </Button>
               {isPast && (
-                <button
-                  onClick={markNoShow}
-                  disabled={busy}
-                  className="rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm text-amber-900 hover:bg-amber-100 disabled:opacity-50"
-                >
+                <Button variant="danger" onClick={markNoShow} disabled={busy}>
                   Mark no-show
-                </button>
+                </Button>
               )}
             </>
           )}
           {isClass && !item.cancelled_at && (
-            <button
-              onClick={cancel}
-              disabled={busy}
-              className="rounded border border-rose-300 bg-rose-50 px-3 py-1.5 text-sm text-rose-800 hover:bg-rose-100 disabled:opacity-50"
-            >
+            <Button variant="danger" onClick={cancel} disabled={busy}>
               {busy ? 'cancelling…' : 'Cancel class (refund roster)'}
-            </button>
+            </Button>
           )}
         </div>
       </aside>
@@ -855,10 +836,8 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
 }
 
 function StatusBadge({ status }) {
-  const { label, className } = bookingStatusBadge(status);
-  return (
-    <span className={`text-xs rounded px-2 py-0.5 ${className}`}>{label}</span>
-  );
+  const { label, tone } = bookingStatusBadge(status);
+  return <Badge tone={tone}>{label}</Badge>;
 }
 
 // ============================================================
@@ -1033,7 +1012,7 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
         </p>
 
         {loadError && (
-          <div className="mb-3 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
             {loadError}
           </div>
         )}
@@ -1041,51 +1020,45 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
         <form onSubmit={submit} className="space-y-4">
           {/* Time window */}
           <div className="flex items-end gap-2">
-            <label className="block text-sm">
-              <span className="text-slate-700">Start</span>
-              <select
+            <Field label="Start">
+              <Select
                 value={startMin}
                 onChange={(e) => shiftStart(Number(e.target.value))}
-                className="mt-1 block rounded border border-slate-300 px-2 py-1.5 text-sm"
               >
                 {startOptions.map((m) => (
                   <option key={m} value={m}>
                     {minuteLabel(m)}
                   </option>
                 ))}
-              </select>
-            </label>
+              </Select>
+            </Field>
             <span className="pb-2 text-slate-400">–</span>
-            <label className="block text-sm">
-              <span className="text-slate-700">End</span>
-              <select
+            <Field label="End">
+              <Select
                 value={endMin}
                 onChange={(e) => {
                   setEndTouched(true);
                   setEndMin(Number(e.target.value));
                 }}
-                className="mt-1 block rounded border border-slate-300 px-2 py-1.5 text-sm"
               >
                 {endOptions.map((m) => (
                   <option key={m} value={m}>
                     {minuteLabel(m)}
                   </option>
                 ))}
-              </select>
-            </label>
+              </Select>
+            </Field>
             <span className="pb-2 text-xs text-slate-500">
               {durationMin} min
             </span>
           </div>
 
           {/* Offering */}
-          <label className="block text-sm">
-            <span className="text-slate-700">Offering</span>
-            <select
+          <Field label="Offering">
+            <Select
               value={offeringId}
               onChange={(e) => setOfferingId(e.target.value)}
               required
-              className="mt-1 block w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
             >
               <option value="">
                 {offerings === null ? 'loading…' : 'Select an offering…'}
@@ -1096,8 +1069,8 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
                   {formatCents(o.dollar_price)}
                 </option>
               ))}
-            </select>
-          </label>
+            </Select>
+          </Field>
           {isCustomLength && (
             <p className="text-xs text-amber-700">
               Custom length: {durationMin} min instead of the offering's{' '}
@@ -1129,12 +1102,11 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
 
             {who === 'member' ? (
               <div className="mt-2 space-y-1.5">
-                <input
+                <Input
                   type="search"
                   placeholder="Search members by name or email…"
                   value={memberQuery}
                   onChange={(e) => setMemberQuery(e.target.value)}
-                  className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
                 />
                 <div className="max-h-40 overflow-y-auto rounded border border-slate-200 divide-y divide-slate-100">
                   {members === null ? (
@@ -1148,7 +1120,7 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
                       <label
                         key={m.id}
                         className={`flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer ${
-                          memberId === m.id ? 'bg-sky-50' : 'hover:bg-slate-50'
+                          memberId === m.id ? 'bg-slate-100' : 'hover:bg-slate-50'
                         }`}
                       >
                         <input
@@ -1172,39 +1144,35 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
               </div>
             ) : (
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <input
+                <Input
                   placeholder="First name"
                   value={customer.first_name}
                   onChange={(e) =>
                     setCustomer({ ...customer, first_name: e.target.value })
                   }
-                  className="rounded border border-slate-300 px-3 py-1.5 text-sm"
                 />
-                <input
+                <Input
                   placeholder="Last name"
                   value={customer.last_name}
                   onChange={(e) =>
                     setCustomer({ ...customer, last_name: e.target.value })
                   }
-                  className="rounded border border-slate-300 px-3 py-1.5 text-sm"
                 />
-                <input
+                <Input
                   type="email"
                   placeholder="Email"
                   value={customer.email}
                   onChange={(e) =>
                     setCustomer({ ...customer, email: e.target.value })
                   }
-                  className="rounded border border-slate-300 px-3 py-1.5 text-sm"
                 />
-                <input
+                <Input
                   type="tel"
                   placeholder="Phone (optional)"
                   value={customer.phone}
                   onChange={(e) =>
                     setCustomer({ ...customer, phone: e.target.value })
                   }
-                  className="rounded border border-slate-300 px-3 py-1.5 text-sm"
                 />
               </div>
             )}
@@ -1239,26 +1207,18 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
           )}
 
           {error && (
-            <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
-              {error}
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              Booking failed: {error}
             </div>
           )}
 
           <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
-            >
+            <Button variant="secondary" type="button" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={!ready || submitting}
-              className="rounded bg-sky-700 px-4 py-1.5 text-sm text-white hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
-            >
+            </Button>
+            <Button type="submit" disabled={!ready || submitting}>
               {submitting ? 'Booking…' : 'Create booking'}
-            </button>
+            </Button>
           </div>
         </form>
       </div>

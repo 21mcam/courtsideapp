@@ -47,8 +47,11 @@ export async function resolveTenant(req, res, next) {
       return res.status(404).json({ error: 'invalid subdomain' });
     }
 
+    // SELECT * so newly-added view columns (e.g. theme_accent from
+    // migration 019) flow through without a deploy-order dependency —
+    // tenant_lookup exposes only routing-safe columns by design.
     const result = await pool.query(
-      'SELECT id, subdomain, name, timezone, is_billing_ok FROM tenant_lookup WHERE subdomain = $1',
+      'SELECT * FROM tenant_lookup WHERE subdomain = $1',
       [subdomain],
     );
 
