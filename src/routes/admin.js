@@ -16,6 +16,7 @@ import {
   createManualMember,
   adjustMemberCredits,
   listAllBookings,
+  createAdminBooking,
   updateTenantTheme,
 } from '../controllers/admin.js';
 import {
@@ -101,6 +102,7 @@ router.delete('/blackouts/:id', deleteBlackout);
 // bookings across the tenant with filter + cancel + mark-no-show
 // (mutations live on /api/bookings/:id/cancel and /:id/mark-no-show).
 router.get('/bookings', listAllBookings);
+router.post('/bookings', createAdminBooking);
 
 // Class instances (Phase 4 slice 1) — one-off creation, list, and
 // cancel-with-cascade.

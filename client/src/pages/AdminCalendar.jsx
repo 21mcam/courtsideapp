@@ -2,16 +2,16 @@
 //
 // Visual grid: one column per resource × hour rows. Bookings and
 // class instances render as positioned cards. Click a card to open
-// a detail panel with cancel / mark-no-show actions.
+// a detail panel with cancel / mark-no-show actions. Click or drag
+// on an open area to create a booking (15-min snap; drag defines a
+// custom-length window).
 //
-// No new backend endpoints — composes existing /api/admin/{resources,
-// bookings,class-instances} responses. Date filtering is generous
-// (±24h around the selected day) and the frontend filters by
-// tenant-local date so DST and midnight boundaries are handled
-// without tripping over UTC↔local conversion.
+// Date filtering is generous (±24h around the selected day) and the
+// frontend filters by tenant-local date so DST and midnight
+// boundaries are handled without tripping over UTC↔local conversion.
 //
 // Skipped for MVP: drag-to-move/resize, week view, real-time
-// updates. The screen is purely a read+act surface for staff.
+// updates.
 //
 // Layout rules:
 //   * Overlapping items on one resource split into side-by-side
@@ -25,16 +25,30 @@
 //     frees the slot — same as the DB exclusion semantics). They're
 //     reachable from the "Cancelled" list under the grid.
 
-import { useEffect, useMemo, useState } from 'react';
-import { Page, PageHeader, Button, Badge } from '../components/ui/index.js';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Page,
+  PageHeader,
+  Button,
+  Badge,
+  Field,
+  Input,
+  Select,
+} from '../components/ui/index.js';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import { bookingStatusBadge, formatSlotLocal, formatTimeLocal } from '../format.js';
+import {
+  bookingStatusBadge,
+  formatCents,
+  formatSlotLocal,
+  formatTimeLocal,
+} from '../format.js';
 import {
   assignLanes,
   effectiveEndMin,
   gridBounds,
 } from '../lib/calendarLayout.js';
+import { zonedTimeToUtc } from '../lib/tz.js';
 
 const PX_PER_MIN = 1.0; // 1px per minute → ~1020px tall grid by default
 
@@ -54,6 +68,11 @@ export default function AdminCalendar() {
   const [hiddenResourceIds, setHiddenResourceIds] = useState(() => new Set());
   const [actionMessage, setActionMessage] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null); // { kind, ...row }
+  // Click/drag creation draft: { resourceId, resourceName, startMin,
+  // endMin, dragged }. `dragged` distinguishes an explicit custom
+  // window (kept as-is) from a plain click (end snaps to the chosen
+  // offering's duration).
+  const [createDraft, setCreateDraft] = useState(null);
 
   // Compute UTC bounds. Generous (±24h) so we don't miss anything
   // near midnight; frontend filters by tenant-local date next.
@@ -184,7 +203,7 @@ export default function AdminCalendar() {
         <div className="max-w-[1600px] mx-auto space-y-3">
         <PageHeader
           title="Calendar"
-          description={`All times in ${tz}.`}
+          description={`All times in ${tz}. Click or drag on an open area to create a booking.`}
           actions={
             <DateNav
               dateStr={dateStr}
@@ -248,6 +267,7 @@ export default function AdminCalendar() {
                 resources={visibleResources}
                 itemsByResource={itemsByResource}
                 onItemClick={setSelectedItem}
+                onSelectRange={setCreateDraft}
               />
             </div>
 
@@ -295,6 +315,20 @@ export default function AdminCalendar() {
           }}
         />
       )}
+
+      {createDraft && (
+        <CreateBookingModal
+          draft={createDraft}
+          dateStr={dateStr}
+          tz={tz}
+          onClose={() => setCreateDraft(null)}
+          onCreated={(msg) => {
+            setActionMessage(msg);
+            setCreateDraft(null);
+            setRefreshKey((k) => k + 1);
+          }}
+        />
+      )}
     </>
   );
 }
@@ -337,7 +371,19 @@ function DateNav({ dateStr, tz, onPrev, onToday, onNext }) {
 // Grid (resource columns × hour rows)
 // ============================================================
 
-function Grid({ tz, loading, resources, itemsByResource, onItemClick }) {
+const SNAP_MIN = 15;
+const snapDown = (m) => Math.floor(m / SNAP_MIN) * SNAP_MIN;
+const snapUp = (m) => Math.ceil(m / SNAP_MIN) * SNAP_MIN;
+
+function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRange }) {
+  // Click/drag-to-create. `drag` drives the ghost overlay; dragRef
+  // mirrors it so the window-level mouseup handler reads the latest
+  // value without re-subscribing on every mousemove.
+  const [drag, setDrag] = useState(null); // { resourceId, resourceName, anchorMin, currentMin }
+  const dragRef = useRef(null);
+  const colRectRef = useRef(null);
+  const boundsRef = useRef({ startMin: 0, endMin: 1440 });
+
   // Normalize every visible item to tenant-local minutes once, then
   // derive the visible window (expanded to fit the data) and the
   // per-resource lane layout from that.
@@ -359,6 +405,75 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick }) {
     return { byResource, bounds: gridBounds(all) };
   }, [tz, resources, itemsByResource]);
 
+  const { startMin: gridStart, endMin: gridEnd } = layout.bounds;
+  boundsRef.current = layout.bounds;
+
+  // Y pixel → tenant-local minute-of-day, clamped to the visible grid.
+  function minuteFromY(clientY) {
+    const rect = colRectRef.current;
+    const { startMin, endMin } = boundsRef.current;
+    const raw = (clientY - rect.top - 30) / PX_PER_MIN + startMin;
+    return Math.max(startMin, Math.min(endMin, raw));
+  }
+
+  function beginDrag(e, resource) {
+    if (e.button !== 0) return;
+    // Presses on a booking/class card open the detail panel, not a draft.
+    if (e.target.closest('button')) return;
+    e.preventDefault(); // suppress text selection while dragging
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (e.clientY - rect.top < 30) return; // resource-name header row
+    colRectRef.current = rect;
+    const m = minuteFromY(e.clientY);
+    const next = {
+      resourceId: resource.id,
+      resourceName: resource.name,
+      anchorMin: m,
+      currentMin: m,
+    };
+    dragRef.current = next;
+    setDrag(next);
+  }
+
+  useEffect(() => {
+    if (!drag) return undefined;
+    function onMove(e) {
+      if (!dragRef.current) return;
+      const next = { ...dragRef.current, currentMin: minuteFromY(e.clientY) };
+      dragRef.current = next;
+      setDrag(next);
+    }
+    function onUp() {
+      const d = dragRef.current;
+      dragRef.current = null;
+      setDrag(null);
+      if (!d) return;
+      const a = Math.min(d.anchorMin, d.currentMin);
+      const b = Math.max(d.anchorMin, d.currentMin);
+      const dragged = b - a >= 8; // under ~8 minutes of travel = a click
+      const startMin = snapDown(a);
+      const endMin = dragged
+        ? Math.min(Math.max(snapUp(b), startMin + SNAP_MIN), 1440)
+        : Math.min(startMin + 60, 1440);
+      if (startMin >= endMin) return;
+      onSelectRange({
+        resourceId: d.resourceId,
+        resourceName: d.resourceName,
+        startMin,
+        endMin,
+        dragged,
+      });
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    // Subscribe once per drag gesture; handlers read dragRef for the
+    // latest position.
+  }, [drag !== null]);
+
   if (resources.length === 0) {
     return (
       <p className="p-6 text-sm text-slate-500">
@@ -369,7 +484,6 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick }) {
     );
   }
 
-  const { startMin: gridStart, endMin: gridEnd } = layout.bounds;
   const totalHeight = (gridEnd - gridStart) * PX_PER_MIN;
   const hourLines = [];
   for (let m = gridStart; m <= gridEnd; m += 60) {
@@ -400,7 +514,8 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick }) {
         return (
           <div
             key={r.id}
-            className="flex-1 min-w-[160px] border-r border-slate-200 relative"
+            onMouseDown={(e) => beginDrag(e, r)}
+            className="flex-1 min-w-[160px] border-r border-slate-200 relative cursor-crosshair select-none"
             style={{ height: totalHeight + 30 }}
           >
             {/* Header */}
@@ -445,6 +560,24 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick }) {
                 />
               );
             })}
+
+            {/* Drag-selection ghost */}
+            {drag && drag.resourceId === r.id && (() => {
+              const a = snapDown(Math.min(drag.anchorMin, drag.currentMin));
+              const b = Math.max(
+                snapUp(Math.max(drag.anchorMin, drag.currentMin)),
+                a + SNAP_MIN,
+              );
+              return (
+                <div
+                  className="absolute left-0.5 right-0.5 z-10 rounded border-2 border-dashed border-sky-400 bg-sky-100/60 pointer-events-none"
+                  style={{
+                    top: 30 + (a - gridStart) * PX_PER_MIN,
+                    height: (Math.min(b, gridEnd) - a) * PX_PER_MIN,
+                  }}
+                />
+              );
+            })()}
           </div>
         );
       })}
@@ -708,6 +841,392 @@ function StatusBadge({ status }) {
 }
 
 // ============================================================
+// Create-booking modal (calendar click/drag target)
+// ============================================================
+
+function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
+  const [offerings, setOfferings] = useState(null);
+  const [members, setMembers] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+
+  const [offeringId, setOfferingId] = useState('');
+  const [startMin, setStartMin] = useState(draft.startMin);
+  const [endMin, setEndMin] = useState(draft.endMin);
+  // A dragged window is an explicit choice — picking an offering must
+  // not overwrite it. A clicked start keeps following the offering's
+  // duration until the admin touches the end time herself.
+  const [endTouched, setEndTouched] = useState(draft.dragged);
+  const [who, setWho] = useState('member');
+  const [memberQuery, setMemberQuery] = useState('');
+  const [memberId, setMemberId] = useState('');
+  const [customer, setCustomer] = useState({
+    first_name: '',
+    last_name: '',
+    email: '',
+    phone: '',
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([
+      api('/api/admin/offerings').then(handle),
+      api('/api/admin/members').then(handle),
+    ])
+      .then(([o, m]) => {
+        if (!alive) return;
+        setOfferings(o.offerings ?? []);
+        setMembers(m.members ?? []);
+      })
+      .catch((err) => {
+        if (alive) setLoadError(err.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const rentals = useMemo(
+    () => (offerings ?? []).filter((o) => o.active && o.capacity === 1),
+    [offerings],
+  );
+  const selectedOffering = useMemo(
+    () => rentals.find((o) => o.id === offeringId) ?? null,
+    [rentals, offeringId],
+  );
+
+  // Clicked (not dragged) drafts: end follows the offering duration.
+  useEffect(() => {
+    if (!selectedOffering || endTouched) return;
+    setEndMin(Math.min(startMin + selectedOffering.duration_minutes, 1440));
+  }, [selectedOffering, startMin, endTouched]);
+
+  const filteredMembers = useMemo(() => {
+    const q = memberQuery.trim().toLowerCase();
+    const all = members ?? [];
+    const matches = q
+      ? all.filter((m) =>
+          `${m.first_name} ${m.last_name} ${m.email}`.toLowerCase().includes(q),
+        )
+      : all;
+    return matches.slice(0, 8);
+  }, [members, memberQuery]);
+  const selectedMember = (members ?? []).find((m) => m.id === memberId) ?? null;
+
+  const durationMin = endMin - startMin;
+  const isCustomLength =
+    selectedOffering && durationMin !== selectedOffering.duration_minutes;
+  const ready =
+    offeringId &&
+    (who === 'member'
+      ? memberId
+      : customer.first_name.trim() &&
+        customer.last_name.trim() &&
+        customer.email.trim());
+
+  function shiftStart(newStart) {
+    const len = endMin - startMin;
+    setStartMin(newStart);
+    setEndMin(Math.min(newStart + len, 1440));
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    if (submitting || !ready) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const start_time = zonedTimeToUtc(dateStr, minToHHMM(startMin), tz).toISOString();
+      const end_time =
+        endMin === 1440
+          ? zonedTimeToUtc(nextDateStr(dateStr), '00:00', tz).toISOString()
+          : zonedTimeToUtc(dateStr, minToHHMM(endMin), tz).toISOString();
+      const body = {
+        offering_id: offeringId,
+        resource_id: draft.resourceId,
+        start_time,
+        end_time,
+        ...(who === 'member'
+          ? { member_id: memberId }
+          : {
+              customer: {
+                first_name: customer.first_name.trim(),
+                last_name: customer.last_name.trim(),
+                email: customer.email.trim(),
+                ...(customer.phone.trim() ? { phone: customer.phone.trim() } : {}),
+              },
+            }),
+      };
+      const res = await api('/api/admin/bookings', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      const resBody = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(resBody.error || `HTTP ${res.status}`);
+      const whoLabel =
+        who === 'member'
+          ? `${selectedMember.first_name} ${selectedMember.last_name} (${resBody.balance_after ?? '—'} credits left)`
+          : `${customer.first_name.trim()} ${customer.last_name.trim()} — ${formatCents(selectedOffering.dollar_price)} due on arrival`;
+      onCreated(
+        `Booked ${selectedOffering.name} on ${draft.resourceName}, ${minuteLabel(startMin)}–${minuteLabel(endMin)} for ${whoLabel}`,
+      );
+    } catch (err) {
+      setError(err.message);
+      setSubmitting(false);
+    }
+  }
+
+  const startOptions = [];
+  for (let m = 0; m <= 1440 - SNAP_MIN; m += SNAP_MIN) startOptions.push(m);
+  const endOptions = [];
+  for (let m = startMin + SNAP_MIN; m <= 1440; m += SNAP_MIN) endOptions.push(m);
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
+      <div
+        className="absolute inset-0 bg-slate-900/30"
+        onClick={onClose}
+        aria-label="Close"
+      />
+      <div className="relative w-full max-w-lg rounded-lg bg-white shadow-xl border border-slate-200 p-5 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-lg font-semibold">New booking</h2>
+          <button
+            onClick={onClose}
+            className="text-slate-500 hover:text-slate-800 text-xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+        <p className="text-sm text-slate-500 mb-4">
+          {draft.resourceName} · {calendarDayLabel(dateStr)}
+        </p>
+
+        {loadError && (
+          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            {loadError}
+          </div>
+        )}
+
+        <form onSubmit={submit} className="space-y-4">
+          {/* Time window */}
+          <div className="flex items-end gap-2">
+            <Field label="Start">
+              <Select
+                value={startMin}
+                onChange={(e) => shiftStart(Number(e.target.value))}
+              >
+                {startOptions.map((m) => (
+                  <option key={m} value={m}>
+                    {minuteLabel(m)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <span className="pb-2 text-slate-400">–</span>
+            <Field label="End">
+              <Select
+                value={endMin}
+                onChange={(e) => {
+                  setEndTouched(true);
+                  setEndMin(Number(e.target.value));
+                }}
+              >
+                {endOptions.map((m) => (
+                  <option key={m} value={m}>
+                    {minuteLabel(m)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <span className="pb-2 text-xs text-slate-500">
+              {durationMin} min
+            </span>
+          </div>
+
+          {/* Offering */}
+          <Field label="Offering">
+            <Select
+              value={offeringId}
+              onChange={(e) => setOfferingId(e.target.value)}
+              required
+            >
+              <option value="">
+                {offerings === null ? 'loading…' : 'Select an offering…'}
+              </option>
+              {rentals.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name} · {o.duration_minutes} min · {o.credit_cost} cr /{' '}
+                  {formatCents(o.dollar_price)}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          {isCustomLength && (
+            <p className="text-xs text-amber-700">
+              Custom length: {durationMin} min instead of the offering's{' '}
+              {selectedOffering.duration_minutes} min. Price/credits stay
+              flat.
+            </p>
+          )}
+
+          {/* Who */}
+          <div>
+            <div className="flex gap-4 text-sm">
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="radio"
+                  checked={who === 'member'}
+                  onChange={() => setWho('member')}
+                />
+                Member
+              </label>
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="radio"
+                  checked={who === 'walkin'}
+                  onChange={() => setWho('walkin')}
+                />
+                Walk-in
+              </label>
+            </div>
+
+            {who === 'member' ? (
+              <div className="mt-2 space-y-1.5">
+                <Input
+                  type="search"
+                  placeholder="Search members by name or email…"
+                  value={memberQuery}
+                  onChange={(e) => setMemberQuery(e.target.value)}
+                />
+                <div className="max-h-40 overflow-y-auto rounded border border-slate-200 divide-y divide-slate-100">
+                  {members === null ? (
+                    <p className="px-3 py-2 text-sm text-slate-400">loading…</p>
+                  ) : filteredMembers.length === 0 ? (
+                    <p className="px-3 py-2 text-sm text-slate-500">
+                      No members match.
+                    </p>
+                  ) : (
+                    filteredMembers.map((m) => (
+                      <label
+                        key={m.id}
+                        className={`flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer ${
+                          memberId === m.id ? 'bg-slate-100' : 'hover:bg-slate-50'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          checked={memberId === m.id}
+                          onChange={() => setMemberId(m.id)}
+                        />
+                        <span className="truncate">
+                          {m.first_name} {m.last_name}
+                          <span className="ml-1 text-xs text-slate-400">
+                            {m.email}
+                          </span>
+                        </span>
+                        <span className="ml-auto shrink-0 text-xs text-slate-500 tabular-nums">
+                          {m.current_credits} cr
+                        </span>
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <Input
+                  placeholder="First name"
+                  value={customer.first_name}
+                  onChange={(e) =>
+                    setCustomer({ ...customer, first_name: e.target.value })
+                  }
+                />
+                <Input
+                  placeholder="Last name"
+                  value={customer.last_name}
+                  onChange={(e) =>
+                    setCustomer({ ...customer, last_name: e.target.value })
+                  }
+                />
+                <Input
+                  type="email"
+                  placeholder="Email"
+                  value={customer.email}
+                  onChange={(e) =>
+                    setCustomer({ ...customer, email: e.target.value })
+                  }
+                />
+                <Input
+                  type="tel"
+                  placeholder="Phone (optional)"
+                  value={customer.phone}
+                  onChange={(e) =>
+                    setCustomer({ ...customer, phone: e.target.value })
+                  }
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Price summary */}
+          {selectedOffering && (
+            <p className="text-sm text-slate-600">
+              {who === 'member' ? (
+                selectedMember ? (
+                  <>
+                    Will charge{' '}
+                    <span className="font-medium">
+                      {selectedOffering.credit_cost} credit
+                      {selectedOffering.credit_cost === 1 ? '' : 's'}
+                    </span>{' '}
+                    ({selectedMember.first_name} has{' '}
+                    {selectedMember.current_credits})
+                  </>
+                ) : (
+                  <>Select a member to charge {selectedOffering.credit_cost} credits.</>
+                )
+              ) : (
+                <>
+                  <span className="font-medium">
+                    {formatCents(selectedOffering.dollar_price)}
+                  </span>{' '}
+                  due — cash on arrival
+                </>
+              )}
+            </p>
+          )}
+
+          {error && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              Booking failed: {error}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" type="button" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!ready || submitting}>
+              {submitting ? 'Booking…' : 'Create booking'}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // helpers
 // ============================================================
 
@@ -773,4 +1292,36 @@ function formatHourLabel(min) {
   if (h === 12) return '12 PM';
   if (h < 12) return `${h} AM`;
   return `${h - 12} PM`;
+}
+
+// Minute-of-day → "2:15 PM". 1440 renders as "12:00 AM" (midnight at
+// the end of the day — only reachable as an end time).
+function minuteLabel(min) {
+  const h24 = Math.floor(min / 60) % 24;
+  const m = min % 60;
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${h24 < 12 ? 'AM' : 'PM'}`;
+}
+
+// Minute-of-day → "HH:MM" for zonedTimeToUtc.
+function minToHHMM(min) {
+  return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+}
+
+// YYYY-MM-DD + 1 day, in pure UTC math (no local-zone drift).
+function nextDateStr(dateStr) {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+// "Sat, Jul 18" for the modal subtitle. dateStr is already the
+// tenant-local calendar date; format at noon UTC so it can't drift.
+function calendarDayLabel(dateStr) {
+  return new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-US', {
+    timeZone: 'UTC',
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
 }
