@@ -372,6 +372,58 @@ export function renderAdminInviteEmail({
   return { subject, html, text };
 }
 
+// Purchase receipt for a one-time credit pack (credit-packs slice).
+// Sent by the Stripe webhook after the grant commits. Purchased
+// credits roll over week to week (unlike the weekly allotment), and
+// the copy says so — it's the pack's whole selling point.
+export function renderPackReceiptEmail({
+  tenantName,
+  accent,
+  firstName,
+  packName,
+  credits,
+  amountPaidCents,
+  balanceAfter = null,
+}) {
+  const greeting = firstName ? `Hi ${firstName},` : 'Hi,';
+  const creditsLabel = `${credits} credit${credits === 1 ? '' : 's'}`;
+  const rows = [
+    ['Pack', packName],
+    ['Credits added', creditsLabel],
+    ['Amount paid', formatMoney(amountPaidCents)],
+    [
+      'New balance',
+      balanceAfter == null
+        ? null
+        : `${balanceAfter} credit${balanceAfter === 1 ? '' : 's'}`,
+    ],
+  ];
+  const subject = `Receipt: ${packName}`;
+  const rolloverNote =
+    'Purchased credits roll over week to week until you use them.';
+  const html = renderLayout({
+    tenantName,
+    accent,
+    bodyHtml: `                <p style="margin:0 0 8px;font-size:17px;font-weight:700;">Thanks for your purchase</p>
+                <p style="margin:0;">${escapeHtml(greeting)} your credits have been added to your ${escapeHtml(tenantName)} account.</p>
+${detailRowsHtml(rows)}
+                <p style="margin:0 0 8px;">${escapeHtml(rolloverNote)}</p>
+                <p style="margin:0;color:#64748b;font-size:13px;">Questions? Reply to this email or contact the facility.</p>`,
+  });
+  const text = [
+    'Thanks for your purchase',
+    '',
+    `${greeting} your credits have been added to your ${tenantName} account.`,
+    '',
+    detailRowsText(rows),
+    '',
+    rolloverNote,
+    '',
+    'Questions? Reply to this email or contact the facility.',
+  ].join('\n');
+  return { subject, html, text };
+}
+
 // ---------- send layer ----------
 
 // In-memory record of sends skipped because RESEND_API_KEY is unset.
@@ -494,6 +546,28 @@ export function sendAdminInvite({ tenant, to, firstName, actionUrl, isNewUser })
     firstName,
     actionUrl,
     isNewUser,
+  });
+  return sendEmail({ to, subject, html, text, replyTo });
+}
+
+export function sendPackReceipt({
+  tenant,
+  to,
+  firstName,
+  packName,
+  credits,
+  amountPaidCents,
+  balanceAfter = null,
+}) {
+  const { tenantName, accent, replyTo } = tenantSendFields(tenant);
+  const { subject, html, text } = renderPackReceiptEmail({
+    tenantName,
+    accent,
+    firstName,
+    packName,
+    credits,
+    amountPaidCents,
+    balanceAfter,
   });
   return sendEmail({ to, subject, html, text, replyTo });
 }

@@ -48,6 +48,7 @@ import ResetPasswordPage from './pages/ResetPasswordPage.jsx';
 import AdminMembers from './pages/AdminMembers.jsx';
 import AdminMemberDetail from './pages/AdminMemberDetail.jsx';
 import AdminStaff from './pages/AdminStaff.jsx';
+import AdminPacks from './pages/AdminPacks.jsx';
 
 export default function App() {
   return (
@@ -93,6 +94,7 @@ function Shell() {
           <Route path="/admin/members" element={<AdminMembers />} />
           <Route path="/admin/members/:id" element={<AdminMemberDetail />} />
           <Route path="/admin/staff" element={<AdminStaff />} />
+          <Route path="/admin/packs" element={<AdminPacks />} />
           <Route path="/admin/stripe" element={<AdminStripe />} />
           <Route path="/admin/settings" element={<AdminSettings />} />
           <Route path="/admin/settings/hours" element={<AdminHours />} />

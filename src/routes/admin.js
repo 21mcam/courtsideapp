@@ -64,6 +64,11 @@ import {
 } from '../controllers/stripeConnect.js';
 import { runTenantCleanup } from '../controllers/cleanup.js';
 import { listWaiverSignatures } from '../controllers/waivers.js';
+import {
+  listPacksAdmin,
+  createPack,
+  updatePack,
+} from '../controllers/packs.js';
 
 const router = express.Router();
 
@@ -103,6 +108,13 @@ router.get('/plans', listPlans);
 router.post('/plans', createPlan);
 router.patch('/plans/:id', updatePlan);
 router.post('/plans/:id/stripe-sync', syncPlanToStripe);
+
+// Credit packs (credit-packs slice). One-time purchasable credit
+// bundles; PATCH covers partial update + soft activate/deactivate.
+// The member storefront + checkout live on /api/packs.
+router.get('/packs', listPacksAdmin);
+router.post('/packs', createPack);
+router.patch('/packs/:id', updatePack);
 
 // Operating hours + booking policies (Phase 3 prep; bulk-replace
 // added for the admin hours editor — PUT swaps a resource's whole

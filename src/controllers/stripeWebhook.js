@@ -23,6 +23,7 @@ import { pool } from '../db/pool.js';
 import {
   sendBookingConfirmation,
   sendMemberWelcome,
+  sendPackReceipt,
 } from '../services/email.js';
 
 export async function handleStripeWebhook(req, res, next) {
@@ -218,6 +219,12 @@ async function handleCheckoutSessionCompleted(event, accountId) {
     return;
   }
   if (session.mode === 'payment') {
+    // mode='payment' covers two flows — branch on the metadata type
+    // stamped at session creation.
+    if ((session.metadata ?? {}).courtside_type === 'pack_purchase') {
+      // Member bought a one-time credit pack (credit-packs slice).
+      return handlePackPurchasePaid(session, accountId);
+    }
     // Walk-in / one-off booking payment (slice 7).
     return handleCustomerBookingPaid(session, accountId);
   }
@@ -405,6 +412,127 @@ async function handleCheckoutSessionCompleted(event, accountId) {
         firstName: welcome.first_name,
       }).catch((err) =>
         console.error('[email] member welcome send failed:', err),
+      );
+    }
+  }
+}
+
+// checkout.session.completed (mode='payment',
+// metadata.courtside_type='pack_purchase') — credit-packs slice.
+//
+// Member paid for a one-time credit pack on Stripe-hosted Checkout.
+// Grant the credits via apply_credit_change (reason 'pack_purchase'),
+// which also increments credit_balances.purchased_credits so the
+// weekly reset preserves them (draw-down order documented in
+// CLAUDE.md).
+//
+// Credits granted = the snapshot taken at checkout time
+// (metadata.courtside_credits) — an admin editing the pack while the
+// member sits on the Stripe page can't change what they paid for.
+// The pack row is only consulted for its name (ledger note + receipt
+// copy) and may even be deactivated by now; the paid-for grant still
+// lands.
+//
+// Idempotency: the stripe_webhook_events dedup at the dispatcher
+// boundary — a redelivered event id never reaches this handler, so
+// credits can't be granted twice.
+async function handlePackPurchasePaid(session, accountId) {
+  const md = session.metadata ?? {};
+  const tenantIdFromMd = md.courtside_tenant_id;
+  const packId = md.courtside_pack_id;
+  const memberId = md.courtside_member_id;
+  const credits = Number.parseInt(md.courtside_credits, 10);
+  if (
+    !tenantIdFromMd ||
+    !packId ||
+    !memberId ||
+    !Number.isInteger(credits) ||
+    credits <= 0
+  ) {
+    console.warn(
+      'checkout.session.completed (pack_purchase): missing/invalid courtside metadata; skipping',
+      {
+        has_tenant: !!tenantIdFromMd,
+        has_pack: !!packId,
+        has_member: !!memberId,
+        credits: md.courtside_credits,
+      },
+    );
+    return;
+  }
+
+  const tenantId = await resolveTenantFromAccount(
+    accountId,
+    'checkout.session.completed (pack_purchase)',
+  );
+  if (!tenantId) return;
+  if (tenantId !== tenantIdFromMd) {
+    console.error(
+      `checkout.session.completed (pack_purchase): tenant mismatch ` +
+        `(account=${tenantId}, metadata=${tenantIdFromMd})`,
+    );
+    return;
+  }
+
+  // Grant inside a tenant-scoped transaction (RLS +
+  // apply_credit_change's GUC check). Receipt details come back out
+  // for the post-commit email.
+  const receipt = await withTenantContextById(tenantId, async (client) => {
+    const memberRes = await client.query(
+      `SELECT email, first_name FROM members
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, memberId],
+    );
+    if (memberRes.rows.length === 0) {
+      // Member deleted between checkout and webhook. The money moved
+      // on Stripe; ops must reconcile manually — log loudly.
+      console.error(
+        `checkout.session.completed (pack_purchase): member ${memberId} not found; payment held without credit grant`,
+      );
+      return null;
+    }
+    const member = memberRes.rows[0];
+
+    const packRes = await client.query(
+      `SELECT name FROM credit_packs WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, packId],
+    );
+    const packName = packRes.rows[0]?.name ?? 'Credit pack';
+
+    const grantRes = await client.query(
+      `SELECT balance_after FROM apply_credit_change(
+         $1, $2, $3, 'pack_purchase', $4, NULL, NULL, NULL
+       )`,
+      [tenantId, memberId, credits, `pack purchase: ${packName}`],
+    );
+
+    return {
+      email: member.email,
+      first_name: member.first_name,
+      pack_name: packName,
+      credits,
+      amount_paid_cents: session.amount_total ?? 0,
+      balance_after: grantRes.rows[0].balance_after,
+    };
+  });
+
+  // Post-commit: purchase receipt. Fire-and-forget — a lost receipt
+  // must never fail the webhook (the dedup log blocks a retry from
+  // re-granting anyway).
+  // TODO: outbox for reliability-critical delivery.
+  if (receipt?.email) {
+    const tenantCtx = await loadTenantEmailContext(tenantId);
+    if (tenantCtx) {
+      sendPackReceipt({
+        tenant: tenantCtx,
+        to: receipt.email,
+        firstName: receipt.first_name,
+        packName: receipt.pack_name,
+        credits: receipt.credits,
+        amountPaidCents: receipt.amount_paid_cents,
+        balanceAfter: receipt.balance_after,
+      }).catch((err) =>
+        console.error('[email] pack receipt send failed:', err),
       );
     }
   }

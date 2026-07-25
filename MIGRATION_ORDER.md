@@ -260,6 +260,32 @@ Liability waivers v1 (Tier-A sell-readiness slice).
   but never rewrite or remove them (011's default privileges would
   otherwise grant full CRUD).
 
+### 024_credit_packs.sql
+
+One-time credit packs ("buy a 10-pack, no subscription" — Tier-A
+sell-readiness slice) + purchased-credit protection for the weekly
+reset.
+
+- `credit_packs` table — tenant-defined pack catalog (`name`,
+  `credits > 0`, `price_cents > 0`, `active`). Standard tenant
+  conventions: CASCADE FK, `UNIQUE (tenant_id, id)`,
+  `set_updated_at` trigger, RLS enabled + forced +
+  tenant_isolation policy. Grants: 011's default privileges give
+  app_runtime full CRUD (correct — admin CRUD writes rows directly).
+- `credit_balances.purchased_credits` — how many of
+  `current_credits` came from packs and are still unspent. CHECKs:
+  `>= 0` and `<= current_credits` (both named).
+- `'pack_purchase'` added to
+  `credit_ledger_entries_reason_check` (drop/recreate, same pattern
+  as 017).
+- `apply_credit_change` replaced: maintains `purchased_credits`
+  (increment on `pack_purchase`, clamp to the new balance on any
+  negative change — i.e. subscription credits spend first, purchased
+  last) and rejects non-positive `pack_purchase` amounts.
+- `run_weekly_credit_resets` replaced: reset target is
+  `credits_per_week + purchased_credits`, so purchased credits roll
+  over until spent.
+
 ## Application of migrations
 
 For each migration file:

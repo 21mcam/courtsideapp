@@ -619,11 +619,24 @@ CREATE TABLE credit_balances (
   tenant_id        uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   member_id        uuid NOT NULL,
   current_credits  integer NOT NULL DEFAULT 0 CHECK (current_credits >= 0),
+  -- How many of current_credits came from pack purchases and are
+  -- still unspent (migration 024). Maintained exclusively by
+  -- apply_credit_change: incremented on pack_purchase, clamped to the
+  -- new balance on negative changes (subscription credits spend
+  -- first, purchased last). The weekly reset preserves this amount on
+  -- top of the plan allotment.
+  purchased_credits integer NOT NULL DEFAULT 0
+    CONSTRAINT credit_balances_purchased_nonnegative
+    CHECK (purchased_credits >= 0),
   last_reset_at    timestamptz,
   created_at       timestamptz NOT NULL DEFAULT now(),
   updated_at       timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, member_id),
-  FOREIGN KEY (tenant_id, member_id) REFERENCES members(tenant_id, id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id, member_id) REFERENCES members(tenant_id, id) ON DELETE CASCADE,
+  -- Purchased credits are a subset of the total balance, never a
+  -- separate pool.
+  CONSTRAINT credit_balances_purchased_within_balance
+    CHECK (purchased_credits <= current_credits)
 );
 
 CREATE TRIGGER credit_balances_set_updated_at
@@ -662,7 +675,7 @@ CREATE TABLE credit_ledger_entries (
   reason          text NOT NULL
                   CHECK (reason IN ('weekly_reset', 'admin_adjustment', 'signup_bonus',
                                     'booking_spend', 'booking_refund', 'plan_change',
-                                    'manual', 'migration')),
+                                    'manual', 'migration', 'pack_purchase')),
   note            text,
   granted_by      uuid,         -- user_id of admin (if any). No FK so historical entries
                                 -- survive admin user deletion.
@@ -701,11 +714,47 @@ CREATE POLICY credit_ledger_entries_tenant_isolation ON credit_ledger_entries
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
 -- ----------------------------------------------------------
--- Weekly credit reset (migration 022). Every Monday 00:00 in the
--- TENANT's timezone, each member with an active subscription has
--- their balance SET to their plan's credits_per_week (non-rollover:
--- unused credits are lost; balances above the allotment are reset
--- down too — purchased-credit protection arrives with credit packs).
+-- One-time credit packs (migration 024). "Buy a 10-pack, no
+-- subscription." Members purchase via Stripe Checkout
+-- (mode='payment' on the tenant's connected account); the webhook
+-- grants credits through apply_credit_change (reason
+-- 'pack_purchase'), which also increments
+-- credit_balances.purchased_credits so the weekly reset preserves
+-- them. Soft-delete via active=false — never DELETEd by the app.
+CREATE TABLE credit_packs (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id    uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name         text NOT NULL CHECK (btrim(name) <> ''),
+  credits      integer NOT NULL CHECK (credits > 0),
+  price_cents  integer NOT NULL CHECK (price_cents > 0),
+  active       boolean NOT NULL DEFAULT true,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, id)
+);
+
+-- Member storefront query: active packs, cheapest first.
+CREATE INDEX credit_packs_tenant_active_idx
+  ON credit_packs (tenant_id, active, price_cents);
+
+CREATE TRIGGER credit_packs_set_updated_at
+  BEFORE UPDATE ON credit_packs
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE credit_packs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE credit_packs FORCE ROW LEVEL SECURITY;
+CREATE POLICY credit_packs_tenant_isolation ON credit_packs
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+-- ----------------------------------------------------------
+-- Weekly credit reset (migration 022; purchased-credit protection in
+-- migration 024). Every Monday 00:00 in the TENANT's timezone, each
+-- member with an active subscription has their balance SET to their
+-- plan's credits_per_week + still-unspent purchased credits
+-- (non-rollover for the subscription bucket: unused weekly credits
+-- are lost and admin grants above the allotment are reset down too;
+-- purchased credits roll over until spent).
 -- All writes go through apply_credit_change (reason 'weekly_reset')
 -- so the ledger invariant holds.
 --
@@ -725,6 +774,7 @@ DECLARE
   m            record;
   v_week_start timestamptz;
   v_current    integer;
+  v_purchased  integer;
   v_delta      integer;
   v_count      integer;
 BEGIN
@@ -769,15 +819,19 @@ BEGIN
       LOOP
         -- Lock the balance row BEFORE computing the delta so a
         -- concurrent booking spend can't slip in between.
-        SELECT cb.current_credits INTO v_current
+        SELECT cb.current_credits, cb.purchased_credits
+          INTO v_current, v_purchased
           FROM credit_balances cb
          WHERE cb.tenant_id = t.id AND cb.member_id = m.member_id
            FOR UPDATE;
         IF NOT FOUND THEN
           v_current := 0;
+          v_purchased := 0;
         END IF;
 
-        v_delta := m.credits_per_week - v_current;
+        -- SET semantics on the SUBSCRIPTION bucket only: purchased
+        -- credits roll over until spent.
+        v_delta := (m.credits_per_week + v_purchased) - v_current;
         IF v_delta <> 0 THEN
           PERFORM apply_credit_change(
             t.id, m.member_id, v_delta, 'weekly_reset',
@@ -805,9 +859,9 @@ $$;
 COMMENT ON FUNCTION run_weekly_credit_resets() IS
   'Weekly credit reset: for each tenant whose local clock crossed '
   'Monday 00:00 since last_weekly_reset_at, SET every active '
-  'subscriber''s balance to their plan''s credits_per_week (reason '
-  'weekly_reset, via apply_credit_change). Idempotent; safe to run '
-  'hourly from pg_cron and/or the Node fallback scheduler.';
+  'subscriber''s balance to credits_per_week + unspent purchased '
+  'credits (reason weekly_reset, via apply_credit_change). Idempotent; '
+  'safe to run hourly from pg_cron and/or the Node fallback scheduler.';
 
 REVOKE ALL ON FUNCTION run_weekly_credit_resets() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION run_weekly_credit_resets() TO app_runtime;
