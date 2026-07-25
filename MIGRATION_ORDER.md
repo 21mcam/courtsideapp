@@ -207,6 +207,37 @@ Staff invites (people-flows slice).
   password-reset-token infrastructure (013) for the set-password link.
 - Named CHECK `users_password_hash_not_empty` (NULL or non-blank).
 
+### 022_weekly_credit_reset.sql
+
+Weekly credit reset (credit-correctness slice).
+
+- `tenants.last_weekly_reset_at` — `NOT NULL DEFAULT now()`, so
+  existing tenants start their cycle at apply time (first reset the
+  following Monday 00:00 tenant-local; no mid-week clawback).
+- `run_weekly_credit_resets()` SECURITY DEFINER function: loops
+  tenants whose local clock crossed Monday 00:00 since their last
+  reset, sets the tenant GUC per iteration, SETs each active
+  subscriber's balance to their plan's `credits_per_week` through
+  `apply_credit_change` (reason `weekly_reset`), stamps
+  `last_weekly_reset_at`. Idempotent; `FOR UPDATE SKIP LOCKED`
+  guards against concurrent runners. EXECUTE granted to
+  `app_runtime`.
+- pg_cron hourly schedule, GUARDED: the `cron.schedule` call only
+  runs when the pg_cron extension is installed. **CI's postgres:15
+  and the local test DB don't have pg_cron — that's expected (a
+  NOTICE is raised). On Supabase: enable pg_cron under Database →
+  Extensions, then re-run**
+  `SELECT cron.schedule('weekly-credit-resets', '7 * * * *',
+  'SELECT run_weekly_credit_resets()');`
+  Until then, the Node fallback scheduler in `src/server.js`
+  (hourly `setInterval`, disabled with `SCHEDULER_ENABLED=false`)
+  covers every environment.
+- Ships alongside an application change: monthly Stripe invoice
+  renewals (`invoice.payment_succeeded`, `subscription_cycle`) no
+  longer grant credits — the weekly reset owns replenishment.
+  Initial activation (`checkout.session.completed`) still grants
+  the first week.
+
 ## Application of migrations
 
 For each migration file:

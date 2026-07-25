@@ -99,6 +99,11 @@ CREATE TABLE tenants (
                                       AND reply_to_email !~ '\s'
                                     )
                                   ),
+  -- Weekly credit reset bookkeeping: when run_weekly_credit_resets()
+  -- last completed for this tenant. Default now() starts the cycle
+  -- at tenant creation, so the first reset fires the following
+  -- Monday 00:00 tenant-local. (Migration 022.)
+  last_weekly_reset_at            timestamptz NOT NULL DEFAULT now(),
   -- platform-side billing (what the tenant pays us). Privileged-only
   -- — never exposed via tenant_lookup view.
   platform_stripe_customer_id     text,
@@ -694,6 +699,118 @@ ALTER TABLE credit_ledger_entries FORCE ROW LEVEL SECURITY;
 CREATE POLICY credit_ledger_entries_tenant_isolation ON credit_ledger_entries
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+-- ----------------------------------------------------------
+-- Weekly credit reset (migration 022). Every Monday 00:00 in the
+-- TENANT's timezone, each member with an active subscription has
+-- their balance SET to their plan's credits_per_week (non-rollover:
+-- unused credits are lost; balances above the allotment are reset
+-- down too — purchased-credit protection arrives with credit packs).
+-- All writes go through apply_credit_change (reason 'weekly_reset')
+-- so the ledger invariant holds.
+--
+-- Scheduled hourly via pg_cron when available (guarded in migration
+-- 022 — enable pg_cron in Supabase, then re-run the schedule
+-- statement) with a Node setInterval fallback in src/server.js.
+-- Idempotent per tenant-week via tenants.last_weekly_reset_at;
+-- FOR UPDATE SKIP LOCKED prevents concurrent double-application.
+CREATE OR REPLACE FUNCTION run_weekly_credit_resets()
+RETURNS TABLE (reset_tenant_id uuid, members_reset integer)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  t            record;
+  m            record;
+  v_week_start timestamptz;
+  v_current    integer;
+  v_delta      integer;
+  v_count      integer;
+BEGIN
+  FOR t IN
+    SELECT id, timezone, last_weekly_reset_at
+      FROM tenants
+     ORDER BY id
+       FOR UPDATE SKIP LOCKED
+  LOOP
+    -- Per-tenant subtransaction: one tenant's failure (e.g. a bad
+    -- timezone string) must not block resets for everyone else.
+    BEGIN
+      -- Most recent Monday 00:00 on the tenant's local clock, as an
+      -- absolute instant.
+      v_week_start :=
+        date_trunc('week', now() AT TIME ZONE t.timezone)
+          AT TIME ZONE t.timezone;
+
+      IF t.last_weekly_reset_at >= v_week_start THEN
+        CONTINUE; -- this tenant-week is already done — idempotency
+      END IF;
+
+      -- Tenant context: RLS + apply_credit_change's cross-tenant
+      -- guard both key off the GUC (webhook escape-hatch pattern).
+      PERFORM set_config('app.current_tenant_id', t.id::text, true);
+
+      v_count := 0;
+      -- Active subscriptions only; past_due members recover first,
+      -- reset next Monday.
+      FOR m IN
+        SELECT s.member_id, p.credits_per_week
+          FROM subscriptions s
+          JOIN subscription_plan_periods spp
+            ON spp.tenant_id = s.tenant_id
+           AND spp.subscription_id = s.id
+           AND spp.ended_at IS NULL
+          JOIN plans p
+            ON p.tenant_id = spp.tenant_id
+           AND p.id = spp.plan_id
+         WHERE s.tenant_id = t.id
+           AND s.status = 'active'
+      LOOP
+        -- Lock the balance row BEFORE computing the delta so a
+        -- concurrent booking spend can't slip in between.
+        SELECT cb.current_credits INTO v_current
+          FROM credit_balances cb
+         WHERE cb.tenant_id = t.id AND cb.member_id = m.member_id
+           FOR UPDATE;
+        IF NOT FOUND THEN
+          v_current := 0;
+        END IF;
+
+        v_delta := m.credits_per_week - v_current;
+        IF v_delta <> 0 THEN
+          PERFORM apply_credit_change(
+            t.id, m.member_id, v_delta, 'weekly_reset',
+            NULL, NULL, NULL, NULL
+          );
+        END IF;
+        v_count := v_count + 1;
+      END LOOP;
+
+      UPDATE tenants
+         SET last_weekly_reset_at = now()
+       WHERE id = t.id;
+
+      reset_tenant_id := t.id;
+      members_reset := v_count;
+      RETURN NEXT;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'run_weekly_credit_resets: tenant % failed: %',
+        t.id, SQLERRM;
+    END;
+  END LOOP;
+END;
+$$;
+
+COMMENT ON FUNCTION run_weekly_credit_resets() IS
+  'Weekly credit reset: for each tenant whose local clock crossed '
+  'Monday 00:00 since last_weekly_reset_at, SET every active '
+  'subscriber''s balance to their plan''s credits_per_week (reason '
+  'weekly_reset, via apply_credit_change). Idempotent; safe to run '
+  'hourly from pg_cron and/or the Node fallback scheduler.';
+
+REVOKE ALL ON FUNCTION run_weekly_credit_resets() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION run_weekly_credit_resets() TO app_runtime;
 
 -- ============================================================
 -- LAYER 4: OPERATIONAL

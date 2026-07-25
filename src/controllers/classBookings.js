@@ -11,8 +11,9 @@
 //     double-booking
 //
 // We translate the resulting Postgres error codes into clean HTTP
-// responses. Plan-allowed-categories is NOT enforced — same comment
-// as createMemberBooking; lands with subscriptions in phase 5.
+// responses. Plan-allowed-categories IS enforced (shared helper in
+// bookings.js): a member on a restricted plan gets a 403 when the
+// class offering's category isn't whitelisted.
 //
 // Endpoints:
 //   GET   /api/class-instances           list bookable instances
@@ -22,6 +23,8 @@
 //   POST  /api/class-bookings/:id/mark-no-show   admin-only
 
 import { z } from 'zod';
+
+import { findPlanCategoryRestriction } from './bookings.js';
 
 // ============================================================
 // GET /api/class-instances — member-readable upcoming list
@@ -129,6 +132,7 @@ export async function createMemberClassBooking(req, res, next) {
     const ciRes = await db.query(
       `SELECT ci.id, ci.start_time, ci.cancelled_at,
               ci.capacity, o.duration_minutes, o.credit_cost,
+              o.category,
               o.active AS offering_active,
               o.allow_member_booking
          FROM class_instances ci
@@ -154,6 +158,19 @@ export async function createMemberClassBooking(req, res, next) {
     if (new Date(ci.start_time).getTime() <= Date.now()) {
       return res.status(409).json({
         error: 'cannot book a class instance whose start time has passed',
+      });
+    }
+
+    // Plan category whitelist — same rule as the rental flow.
+    const restriction = await findPlanCategoryRestriction(
+      db,
+      tenant.id,
+      member_id,
+      ci.category,
+    );
+    if (restriction) {
+      return res.status(403).json({
+        error: `your plan "${restriction.plan_name}" does not include the "${restriction.category}" category`,
       });
     }
 

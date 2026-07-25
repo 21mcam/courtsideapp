@@ -367,9 +367,11 @@ async function handleCheckoutSessionCompleted(event, accountId) {
       [tenantId, subscriptionId, plan.id],
     );
 
-    // Grant initial week of credits if the plan has any. Reason
-    // 'weekly_reset' bumps last_reset_at so the (future) weekly
-    // resetter knows when this member's clock starts. Grant uses
+    // Grant the initial week of credits if the plan has any. Reason
+    // 'weekly_reset' bumps last_reset_at so this reads as the
+    // member's first weekly allotment; every subsequent replenishment
+    // comes from run_weekly_credit_resets() (Monday 00:00
+    // tenant-local), NOT from invoice renewals. Grant uses
     // member.user_id as granted_by — but webhooks don't have a
     // user_id, so use NULL. apply_credit_change accepts NULL there.
     if (plan.credits_per_week > 0) {
@@ -610,16 +612,16 @@ async function handleSubscriptionDeleted(event, accountId) {
 
 // invoice.payment_succeeded — Phase 5 slice 4b.
 //
-// Stripe fires this for every successful invoice. Two flavors that
-// matter for us:
-//   * billing_reason='subscription_create' — first invoice, fires
-//     alongside checkout.session.completed. We DON'T grant credits
-//     here because slice 4a's checkout handler already did. We DO
-//     reconcile period bounds in case they drifted.
-//   * billing_reason='subscription_cycle' — recurring renewal each
-//     month. Grant a fresh week of credits via apply_credit_change.
-//
-// Skipped reasons: subscription_update, manual, etc. — log + ignore.
+// Stripe fires this for every successful invoice. We reconcile
+// period bounds from it and flip past_due subscriptions back to
+// active. We do NOT grant credits here — not for
+// billing_reason='subscription_create' (the checkout.session.
+// completed handler grants the first week) and not for
+// 'subscription_cycle' either: credit replenishment is owned by the
+// weekly reset (run_weekly_credit_resets(), migration 022), which
+// SETs each active subscriber's balance to their plan's
+// credits_per_week every Monday 00:00 tenant-local. Monthly renewal
+// grants would double-pay and drift off the weekly cadence.
 async function handleInvoicePaymentSucceeded(event, accountId) {
   const invoice = event.data?.object;
   if (!invoice) return;
@@ -631,22 +633,11 @@ async function handleInvoicePaymentSucceeded(event, accountId) {
   if (!tenantId) return;
 
   await withTenantContextById(tenantId, async (client) => {
-    // Resolve our subscription + member + active plan in one pass.
-    // The active plan_period (ended_at IS NULL) gives us the plan
-    // for the current cycle.
     const subRes = await client.query(
-      `SELECT s.id AS subscription_id, s.member_id,
-              p.id AS plan_id, p.credits_per_week
-         FROM subscriptions s
-         LEFT JOIN subscription_plan_periods spp
-           ON spp.tenant_id = s.tenant_id
-          AND spp.subscription_id = s.id
-          AND spp.ended_at IS NULL
-         LEFT JOIN plans p
-           ON p.tenant_id = spp.tenant_id
-          AND p.id = spp.plan_id
-        WHERE s.tenant_id = $1
-          AND s.stripe_subscription_id = $2`,
+      `SELECT id AS subscription_id
+         FROM subscriptions
+        WHERE tenant_id = $1
+          AND stripe_subscription_id = $2`,
       [tenantId, subscriptionId],
     );
     if (subRes.rows.length === 0) {
@@ -671,23 +662,6 @@ async function handleInvoicePaymentSucceeded(event, accountId) {
                 status = CASE WHEN status = 'past_due' THEN 'active' ELSE status END
           WHERE tenant_id = $3 AND id = $4`,
         [periodStart, periodEnd, tenantId, row.subscription_id],
-      );
-    }
-
-    // Credit grant: only on subscription_cycle (recurring renewal).
-    // The first-invoice case (subscription_create) is handled by
-    // checkout.session.completed in slice 4a — granting again here
-    // would double the initial credits.
-    if (
-      invoice.billing_reason === 'subscription_cycle' &&
-      row.credits_per_week > 0 &&
-      row.member_id
-    ) {
-      await client.query(
-        `SELECT entry_id FROM apply_credit_change(
-           $1, $2, $3, 'weekly_reset', NULL, NULL, NULL, NULL
-         )`,
-        [tenantId, row.member_id, row.credits_per_week],
       );
     }
   });

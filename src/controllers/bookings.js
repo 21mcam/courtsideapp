@@ -35,9 +35,11 @@
 // (status <> 'cancelled', overlapping time_range on same resource)
 // will reject the second INSERT.
 //
-// Plan-allowed-categories check is intentionally NOT enforced here
-// — Phase 5 ships subscriptions and that's where it lands. For
-// Phase 3 a member with admin-granted credits can book anything.
+// Plan-allowed-categories IS enforced here (and in the class-booking
+// flow): a member whose current plan whitelists categories gets a 403
+// when the offering's category isn't in the whitelist. Members with
+// no current subscription (admin-granted credits) are unrestricted.
+// Walk-in/cash flows are unaffected.
 
 import { z } from 'zod';
 
@@ -45,6 +47,46 @@ import {
   sendBookingConfirmation,
   sendBookingCancellation,
 } from '../services/email.js';
+
+// Enforce plans.allowed_categories for a member booking. Returns null
+// when the booking may proceed, or { plan_name, category } when the
+// member's current plan whitelists categories and `category` isn't in
+// the whitelist (callers turn that into a 403). The member's current
+// plan is the active plan period of their (at most one, by partial
+// unique index) non-terminal subscription; NULL allowed_categories
+// means "all categories allowed". Members with no current
+// subscription — admin-granted or leftover credits — are
+// unrestricted. Shared by the rental flow here and the class flow in
+// classBookings.js.
+export async function findPlanCategoryRestriction(
+  db,
+  tenantId,
+  memberId,
+  category,
+) {
+  const r = await db.query(
+    `SELECT p.name AS plan_name,
+            p.allowed_categories::text[] AS allowed_categories
+       FROM subscriptions s
+       JOIN subscription_plan_periods spp
+         ON spp.tenant_id = s.tenant_id
+        AND spp.subscription_id = s.id
+        AND spp.ended_at IS NULL
+       JOIN plans p
+         ON p.tenant_id = spp.tenant_id
+        AND p.id = spp.plan_id
+      WHERE s.tenant_id = $1
+        AND s.member_id = $2
+        AND s.status IN ('pending', 'active', 'past_due', 'incomplete')
+      ORDER BY s.created_at DESC
+      LIMIT 1`,
+    [tenantId, memberId],
+  );
+  const plan = r.rows[0];
+  if (!plan?.allowed_categories) return null;
+  if (plan.allowed_categories.includes(category)) return null;
+  return { plan_name: plan.plan_name, category };
+}
 
 const createBookingSchema = z.object({
   offering_id: z.string().uuid(),
@@ -94,6 +136,21 @@ export async function createMemberBooking(req, res, next) {
     }
     if (!offering.allow_member_booking) {
       return res.status(403).json({ error: 'offering does not allow member bookings' });
+    }
+
+    // 1a. Plan category whitelist. A member on a restricted plan
+    //     (e.g. Class Pack: allowed_categories = ['classes']) can't
+    //     spend credits outside the whitelist.
+    const restriction = await findPlanCategoryRestriction(
+      db,
+      tenant.id,
+      member_id,
+      offering.category,
+    );
+    if (restriction) {
+      return res.status(403).json({
+        error: `your plan "${restriction.plan_name}" does not include the "${restriction.category}" category`,
+      });
     }
 
     // 2. Offering↔resource link
@@ -625,9 +682,10 @@ export async function markBookingNoShow(req, res, next) {
 // booking, plus the list of active resources each is offered on.
 // The booking UI uses this to populate the offering picker.
 //
-// Plan-allowed-categories filtering is intentionally NOT applied —
-// see createMemberBooking comment. When subscriptions ship in
-// Phase 5 we'll filter here too.
+// Plan-allowed-categories filtering is NOT applied to this listing —
+// enforcement happens at booking time (createMemberBooking 403s).
+// Filtering the catalog view down to the member's whitelist is a
+// future UI polish, not a correctness gate.
 export async function listBookableOfferings(req, res, next) {
   try {
     const result = await req.db.query(

@@ -156,7 +156,22 @@ and TypeScript types use the canonical word.
   `incomplete`. Translation happens at the webhook boundary —
   Stripe's "canceled" becomes our "cancelled."
 - **`credit_balance`** — singleton current count for a member. PK is
-  `(tenant_id, member_id)`.
+  `(tenant_id, member_id)`. **Weekly reset semantics:** every Monday
+  00:00 in the TENANT's timezone, each member with an `active`
+  subscription has their balance SET (not added) to their plan's
+  `credits_per_week` — reason `weekly_reset`, written through
+  `apply_credit_change` so the ledger invariant holds. Non-rollover:
+  unused credits are lost, and balances above the allotment (admin
+  grants) are reset down too. There is no subscription-vs-purchased
+  credit distinction yet; purchased-credit protection arrives with
+  credit packs (future reason `pack_purchase`) — do not build it
+  speculatively. Mechanism: `run_weekly_credit_resets()` (migration
+  022) + `tenants.last_weekly_reset_at`, scheduled hourly by pg_cron
+  (once enabled in Supabase) and by the Node fallback in
+  `src/server.js` (`SCHEDULER_ENABLED`). `past_due` members are
+  skipped until payment recovers. Initial subscription activation
+  grants the first week (checkout webhook); monthly invoice renewals
+  do NOT grant credits — the weekly reset owns replenishment.
 - **`credit_ledger_entries`** — append-only ledger. Every balance
   mutation writes a row. Invariant: `credit_balances.current_credits`
   equals the most recent ledger row's `balance_after` for that
