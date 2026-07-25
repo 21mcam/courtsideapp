@@ -17,6 +17,8 @@
 
 import { z } from 'zod';
 
+import { isUuid } from './catalog.js';
+
 // ============================================================
 // operating_hours
 // ============================================================
@@ -99,6 +101,96 @@ export async function createOperatingHours(req, res, next) {
         return res
           .status(400)
           .json({ error: 'resource not found in this tenant' });
+      }
+      if (err.code === '23514') {
+        return res
+          .status(400)
+          .json({ error: 'invalid hours: schema CHECK failed' });
+      }
+      throw err;
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
+// PUT /api/admin/resources/:id/operating-hours — bulk-replace the
+// full weekly schedule for one resource. The admin hours editor
+// edits a whole week at a time; replacing atomically (DELETE +
+// re-INSERT inside req.db's transaction) avoids the transient
+// overlap 409s that row-by-row delete/create would hit when a
+// window is being narrowed/moved. An empty `hours` array clears the
+// schedule (resource becomes unbookable every day).
+const operatingHoursWindowSchema = z
+  .object({
+    day_of_week: z.number().int().min(0).max(6),
+    open_time: z.string().regex(TIME_REGEX, 'open_time must be HH:MM or HH:MM:SS'),
+    close_time: z.string().regex(TIME_REGEX, 'close_time must be HH:MM or HH:MM:SS'),
+  })
+  .refine((d) => d.close_time > d.open_time, {
+    message: 'close_time must be after open_time',
+  });
+
+const operatingHoursReplaceSchema = z.object({
+  hours: z.array(operatingHoursWindowSchema).max(200),
+});
+
+export async function replaceOperatingHours(req, res, next) {
+  try {
+    const resourceId = req.params.id;
+    if (!isUuid(resourceId)) {
+      return res.status(404).json({ error: 'resource not found' });
+    }
+    const parsed = operatingHoursReplaceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const { hours } = parsed.data;
+
+    // Confirm the resource exists in this tenant BEFORE deleting —
+    // also gives a clean 404 for the empty-hours case (no INSERT
+    // would otherwise touch the FK).
+    const resource = await req.db.query(
+      `SELECT id FROM resources WHERE tenant_id = $1 AND id = $2`,
+      [req.tenant.id, resourceId],
+    );
+    if (resource.rows.length === 0) {
+      return res.status(404).json({ error: 'resource not found' });
+    }
+
+    try {
+      await req.db.query(
+        `DELETE FROM operating_hours
+          WHERE tenant_id = $1 AND resource_id = $2`,
+        [req.tenant.id, resourceId],
+      );
+      const inserted = [];
+      for (const w of hours) {
+        const result = await req.db.query(
+          `INSERT INTO operating_hours
+             (tenant_id, resource_id, day_of_week, open_time, close_time)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, resource_id, day_of_week, open_time, close_time,
+                     created_at, updated_at`,
+          [req.tenant.id, resourceId, w.day_of_week, w.open_time, w.close_time],
+        );
+        inserted.push(result.rows[0]);
+      }
+      inserted.sort(
+        (a, b) =>
+          a.day_of_week - b.day_of_week ||
+          (a.open_time < b.open_time ? -1 : a.open_time > b.open_time ? 1 : 0),
+      );
+      // withTenantContext ROLLBACKs on status >= 400, so the DELETE
+      // above never lands unless every INSERT succeeded.
+      res.json({ operating_hours: inserted });
+    } catch (err) {
+      if (err.code === '23P01') {
+        return res.status(409).json({
+          error: 'overlapping hours in the submitted set for this resource',
+        });
       }
       if (err.code === '23514') {
         return res

@@ -7,6 +7,7 @@ import { Check } from 'lucide-react';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { ACCENTS, DEFAULT_ACCENT } from '../theme.js';
+import SettingsNav from '../components/SettingsNav.jsx';
 import {
   Badge,
   Button,
@@ -83,6 +84,7 @@ export default function AdminSettings() {
         title="Settings"
         description="Appearance and facility details."
       />
+      <SettingsNav />
 
       <Card title="Appearance">
         <p className="mb-4 text-sm text-slate-500">

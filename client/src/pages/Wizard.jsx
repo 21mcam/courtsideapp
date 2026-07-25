@@ -524,11 +524,14 @@ function StepDone({ state, onReset }) {
         Next up: give your new resource operating hours and review the
         cancellation policy — then it's bookable.
       </p>
-      <div className="mt-8 flex gap-3">
-        <Button as={Link} to="/" onClick={onReset}>
+      <div className="mt-8 flex flex-wrap gap-3">
+        <Button as={Link} to="/admin/settings/hours" onClick={onReset}>
+          Set operating hours
+        </Button>
+        <Button as={Link} to="/" variant="secondary" onClick={onReset}>
           Go to admin home
         </Button>
-        <Button variant="secondary" onClick={onReset}>
+        <Button variant="ghost" onClick={onReset}>
           Run wizard again
         </Button>
       </div>

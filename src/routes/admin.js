@@ -35,6 +35,7 @@ import {
 import {
   listOperatingHours,
   createOperatingHours,
+  replaceOperatingHours,
   deleteOperatingHours,
   getBookingPolicies,
   upsertBookingPolicies,
@@ -96,10 +97,13 @@ router.post('/plans', createPlan);
 router.patch('/plans/:id', updatePlan);
 router.post('/plans/:id/stripe-sync', syncPlanToStripe);
 
-// Operating hours + booking policies (Phase 3 prep)
+// Operating hours + booking policies (Phase 3 prep; bulk-replace
+// added for the admin hours editor — PUT swaps a resource's whole
+// weekly schedule atomically).
 router.get('/operating-hours', listOperatingHours);
 router.post('/operating-hours', createOperatingHours);
 router.delete('/operating-hours/:id', deleteOperatingHours);
+router.put('/resources/:id/operating-hours', replaceOperatingHours);
 router.get('/booking-policies', getBookingPolicies);
 router.put('/booking-policies', upsertBookingPolicies);
 

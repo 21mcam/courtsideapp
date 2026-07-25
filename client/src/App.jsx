@@ -30,6 +30,9 @@ import AdminStripe from './pages/AdminStripe.jsx';
 import AdminCalendar from './pages/AdminCalendar.jsx';
 import MemberPlans from './pages/MemberPlans.jsx';
 import AdminSettings from './pages/AdminSettings.jsx';
+import AdminHours from './pages/AdminHours.jsx';
+import AdminBlackouts from './pages/AdminBlackouts.jsx';
+import AdminPolicies from './pages/AdminPolicies.jsx';
 import WalkInPage from './pages/WalkInPage.jsx';
 import WalkInSuccessPage from './pages/WalkInSuccessPage.jsx';
 
@@ -73,6 +76,9 @@ function Shell() {
           <Route path="/admin/calendar" element={<AdminCalendar />} />
           <Route path="/admin/stripe" element={<AdminStripe />} />
           <Route path="/admin/settings" element={<AdminSettings />} />
+          <Route path="/admin/settings/hours" element={<AdminHours />} />
+          <Route path="/admin/settings/blackouts" element={<AdminBlackouts />} />
+          <Route path="/admin/settings/policies" element={<AdminPolicies />} />
         </Route>
       </Route>
 
