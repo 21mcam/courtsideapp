@@ -77,6 +77,14 @@ export function __getPricesForAccount(acct) {
     .map(([, v]) => v);
 }
 
+export function __getPrice(acct, priceId) {
+  return _fakePrices.get(`${acct}:${priceId}`) ?? null;
+}
+
+export function __getProduct(acct, productId) {
+  return _fakeProducts.get(`${acct}:${productId}`) ?? null;
+}
+
 // Slice 4a additions: simulate a Checkout Session "completing".
 // Behavior depends on mode:
 //   * subscription → spawn a fake subscription on the connected
@@ -209,11 +217,29 @@ function testFake() {
         const row = {
           id,
           name: params?.name,
+          description: params?.description ?? null,
           metadata: params?.metadata ?? {},
           active: params?.active ?? true,
           stripe_account: acct, // for test introspection only
         };
         _fakeProducts.set(`${acct}:${id}`, row);
+        return row;
+      },
+      async update(id, params, opts) {
+        const acct = acctFromOptions(opts);
+        const row = _fakeProducts.get(`${acct}:${id}`);
+        if (!row) {
+          const err = new Error(`No such product: ${id}`);
+          err.code = 'resource_missing';
+          err.statusCode = 404;
+          throw err;
+        }
+        if (params?.name !== undefined) row.name = params.name;
+        if (params?.description !== undefined) row.description = params.description;
+        if (params?.active !== undefined) row.active = params.active;
+        if (params?.metadata !== undefined) {
+          row.metadata = { ...row.metadata, ...params.metadata };
+        }
         return row;
       },
     },
@@ -325,9 +351,43 @@ function testFake() {
           currency: params.currency ?? 'usd',
           recurring: params.recurring ?? null,
           active: params.active ?? true,
+          metadata: params.metadata ?? {},
           stripe_account: acct,
         };
         _fakePrices.set(`${acct}:${id}`, row);
+        return row;
+      },
+      async retrieve(id, opts) {
+        const acct = acctFromOptions(opts);
+        const row = _fakePrices.get(`${acct}:${id}`);
+        if (!row) {
+          const err = new Error(`No such price: ${id}`);
+          err.code = 'resource_missing';
+          err.statusCode = 404;
+          throw err;
+        }
+        return row;
+      },
+      // Stripe Prices are immutable except for `active` (archiving)
+      // and metadata — mirror that.
+      async update(id, params, opts) {
+        const acct = acctFromOptions(opts);
+        const row = _fakePrices.get(`${acct}:${id}`);
+        if (!row) {
+          const err = new Error(`No such price: ${id}`);
+          err.code = 'resource_missing';
+          err.statusCode = 404;
+          throw err;
+        }
+        if (params?.unit_amount !== undefined) {
+          const err = new Error('fake stripe: prices are immutable (only active/metadata)');
+          err.statusCode = 400;
+          throw err;
+        }
+        if (params?.active !== undefined) row.active = params.active;
+        if (params?.metadata !== undefined) {
+          row.metadata = { ...row.metadata, ...params.metadata };
+        }
         return row;
       },
     },

@@ -23,8 +23,10 @@ import {
 import {
   listResources,
   createResource,
+  updateResource,
   listOfferings,
   createOffering,
+  updateOffering,
   listOfferingResources,
   linkResourceToOffering,
   listPlans,
@@ -55,6 +57,7 @@ import {
   startOnboarding,
   getConnection,
   syncPlanToStripe,
+  updatePlan,
 } from '../controllers/stripeConnect.js';
 import { runTenantCleanup } from '../controllers/cleanup.js';
 
@@ -71,17 +74,26 @@ router.post('/members', createManualMember);
 router.post('/members/:id/credit-adjustments', adjustMemberCredits);
 router.get('/admins', listAdmins);
 
-// Catalog (Phase 2 slice 2)
+// Catalog (Phase 2 slice 2; update + deactivate in the Tier-A
+// sell-readiness slice). PATCH accepts partial bodies and an
+// `active` flag for soft activate/deactivate; offerings also
+// accept `resource_ids` to reconcile resource associations.
 router.get('/resources', listResources);
 router.post('/resources', createResource);
+router.patch('/resources/:id', updateResource);
 router.get('/offerings', listOfferings);
 router.post('/offerings', createOffering);
+router.patch('/offerings/:id', updateOffering);
 router.get('/offerings/:id/resources', listOfferingResources);
 router.post('/offerings/:id/resources', linkResourceToOffering);
 
-// Plans (Phase 2 slice 3 + Phase 5 slice 3 sync)
+// Plans (Phase 2 slice 3 + Phase 5 slice 3 sync). PATCH lives in
+// stripeConnect.js — re-pricing a synced plan rotates the Stripe
+// Price (new price for new signups; existing members keep their
+// current rate).
 router.get('/plans', listPlans);
 router.post('/plans', createPlan);
+router.patch('/plans/:id', updatePlan);
 router.post('/plans/:id/stripe-sync', syncPlanToStripe);
 
 // Operating hours + booking policies (Phase 3 prep)

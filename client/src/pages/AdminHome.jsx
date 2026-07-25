@@ -1,16 +1,20 @@
-// Admin home — dashboard overview: stats, catalog read views,
-// booking policies, members + admins (Phase 1 slice 4).
+// Admin home — dashboard overview: stats, catalog views, booking
+// policies, members + admins (Phase 1 slice 4).
 //
-// Read-only views for everything the admin can configure. Edit /
-// create flows for catalog items live in the wizard for now;
-// inline CRUD lands when admins demand it (probably during Phase 3
-// when ops staff need to tweak hours/policies frequently).
+// Create flows for catalog items live in the wizard; edit +
+// activate/deactivate live here via per-row Edit modals (Tier-A
+// sell-readiness slice — see CatalogEditModals.jsx).
 
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { Page, PageHeader, Card, Button, Badge } from '../components/ui/index.js';
+import {
+  ResourceEditModal,
+  OfferingEditModal,
+  PlanEditModal,
+} from './CatalogEditModals.jsx';
 import {
   dayOfWeekLabel,
   formatAllowedCategories,
@@ -32,6 +36,8 @@ export default function AdminHome() {
   const [loadError, setLoadError] = useState(null);
   const [syncMessage, setSyncMessage] = useState(null);
   const [syncingPlanId, setSyncingPlanId] = useState(null);
+  // Which catalog item is being edited: { type, item } or null.
+  const [editing, setEditing] = useState(null);
 
   useEffect(() => {
     load();
@@ -86,6 +92,28 @@ export default function AdminHome() {
     } finally {
       setSyncingPlanId(null);
     }
+  }
+
+  function editSaved() {
+    setEditing(null);
+    load();
+  }
+
+  // One shared per-row Edit action column for the catalog sections.
+  function editColumn(type) {
+    return {
+      key: 'actions',
+      label: '',
+      render: (item) => (
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => setEditing({ type, item })}
+        >
+          Edit
+        </Button>
+      ),
+    };
   }
 
   // Setup is incomplete until the catalog has at least one of each.
@@ -145,6 +173,7 @@ export default function AdminHome() {
             render: (r) => <ActiveBadge active={r.active} />,
           },
           { key: 'order', label: 'Order', render: (r) => r.display_order },
+          editColumn('resource'),
         ]}
       />
 
@@ -184,6 +213,7 @@ export default function AdminHome() {
             label: 'Status',
             render: (o) => <ActiveBadge active={o.active} />,
           },
+          editColumn('offering'),
         ]}
       />
 
@@ -238,8 +268,32 @@ export default function AdminHome() {
             label: 'Status',
             render: (p) => <ActiveBadge active={p.active} />,
           },
+          editColumn('plan'),
         ]}
       />
+
+      {editing?.type === 'resource' && (
+        <ResourceEditModal
+          resource={editing.item}
+          onClose={() => setEditing(null)}
+          onSaved={editSaved}
+        />
+      )}
+      {editing?.type === 'offering' && (
+        <OfferingEditModal
+          offering={editing.item}
+          resources={resources ?? []}
+          onClose={() => setEditing(null)}
+          onSaved={editSaved}
+        />
+      )}
+      {editing?.type === 'plan' && (
+        <PlanEditModal
+          plan={editing.item}
+          onClose={() => setEditing(null)}
+          onSaved={editSaved}
+        />
+      )}
 
       <ListSection
         title="Operating hours"

@@ -64,6 +64,15 @@ before(async () => {
     [tenant_id, u.rows[0].id],
   );
 
+  // This file signs events with FIXED ids (evt_test_*). The dedup
+  // table stripe_webhook_events is global (no tenant_id — see
+  // migration 016) so those rows survive the tenant teardown below,
+  // and a rerun against the same DB would treat every event as a
+  // duplicate and skip the handlers. Clear our fixed ids up front.
+  await privilegedPool.query(
+    `DELETE FROM stripe_webhook_events WHERE event_id LIKE 'evt_test_%'`,
+  );
+
   // Pre-seed a stripe_connections row. This is what the webhook
   // looks up to bootstrap tenant context.
   stripe_account_id = `acct_test_${randomUUID().slice(0, 8)}`;
