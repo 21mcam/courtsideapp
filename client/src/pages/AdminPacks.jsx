@@ -16,6 +16,7 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDialog,
   Field,
   Input,
   Page,
@@ -207,6 +208,7 @@ function PackEditModal({ pack, onClose, onSaved }) {
   const [price, setPrice] = useState(pack.price_cents / 100);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [confirmingActive, setConfirmingActive] = useState(false);
 
   async function patch(body) {
     const res = await api(`/api/admin/packs/${pack.id}`, {
@@ -235,11 +237,8 @@ function PackEditModal({ pack, onClose, onSaved }) {
     }
   }
 
+  // Runs after the admin confirms in the ConfirmDialog.
   async function toggleActive() {
-    const confirmText = pack.active
-      ? `Deactivate "${pack.name}"? Members won't be able to buy it. Credits already purchased are untouched. You can reactivate it anytime.`
-      : `Reactivate "${pack.name}"? Members will be able to buy it again.`;
-    if (!window.confirm(confirmText)) return;
     setBusy(true);
     setError(null);
     try {
@@ -317,7 +316,7 @@ function PackEditModal({ pack, onClose, onSaved }) {
               type="button"
               size="sm"
               variant={pack.active ? 'danger' : 'secondary'}
-              onClick={toggleActive}
+              onClick={() => setConfirmingActive(true)}
               disabled={busy}
             >
               {pack.active ? 'Deactivate pack' : 'Reactivate'}
@@ -327,6 +326,23 @@ function PackEditModal({ pack, onClose, onSaved }) {
             </Button>
           </div>
         </form>
+        {confirmingActive && (
+          <ConfirmDialog
+            title={pack.active ? 'Deactivate pack?' : 'Reactivate pack?'}
+            message={
+              pack.active
+                ? `Deactivate "${pack.name}"? Members won't be able to buy it. Credits already purchased are untouched. You can reactivate it anytime.`
+                : `Reactivate "${pack.name}"? Members will be able to buy it again.`
+            }
+            confirmLabel={pack.active ? 'Deactivate' : 'Reactivate'}
+            variant={pack.active ? 'danger' : 'neutral'}
+            onConfirm={() => {
+              setConfirmingActive(false);
+              toggleActive();
+            }}
+            onClose={() => setConfirmingActive(false)}
+          />
+        )}
       </div>
     </div>
   );

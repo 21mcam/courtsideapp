@@ -18,7 +18,17 @@ import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { addDays, localDateString, todayLocalString, zonedDayStartIso } from '../lib/tz.js';
 import { bookingStatusBadge, formatSlotLocal } from '../format.js';
-import { Badge, Button, Card, Field, Input, Page, PageHeader } from '../components/ui/index.js';
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  Field,
+  Input,
+  InputDialog,
+  Page,
+  PageHeader,
+} from '../components/ui/index.js';
 
 const DEFAULT_STATUS_FILTERS = ['confirmed', 'pending_payment'];
 const ALL_STATUSES = [
@@ -49,6 +59,8 @@ export default function AdminBookings() {
   const [bookings, setBookings] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [actionMessage, setActionMessage] = useState(null);
+  const [cancelTarget, setCancelTarget] = useState(null); // booking pending cancel
+  const [noShowTarget, setNoShowTarget] = useState(null); // booking pending no-show
 
   function load() {
     setLoadError(null);
@@ -76,13 +88,9 @@ export default function AdminBookings() {
     );
   }
 
-  async function cancel(b) {
+  // Runs after the admin submits the cancel InputDialog.
+  async function cancel(b, reason) {
     setActionMessage(null);
-    const reason = window.prompt(
-      `Cancel "${b.offering_name}" on ${formatSlotLocal(b.start_time, tz)}?\nOptional reason:`,
-      '',
-    );
-    if (reason === null) return; // user dismissed prompt
     try {
       const res = await api(`/api/bookings/${b.id}/cancel`, {
         method: 'POST',
@@ -102,15 +110,9 @@ export default function AdminBookings() {
     }
   }
 
+  // Runs after the admin confirms in the no-show ConfirmDialog.
   async function markNoShow(b) {
     setActionMessage(null);
-    if (
-      !window.confirm(
-        `Mark ${b.member_first_name ?? 'customer'} as no-show for "${b.offering_name}" at ${formatSlotLocal(b.start_time, tz)}?`,
-      )
-    ) {
-      return;
-    }
     try {
       const res = await api(`/api/bookings/${b.id}/mark-no-show`, {
         method: 'POST',
@@ -193,9 +195,40 @@ export default function AdminBookings() {
       <BookingTable
         bookings={bookings}
         tz={tz}
-        onCancel={cancel}
-        onNoShow={markNoShow}
+        onCancel={setCancelTarget}
+        onNoShow={setNoShowTarget}
       />
+
+      {cancelTarget && (
+        <InputDialog
+          title="Cancel booking?"
+          message={`Cancel "${cancelTarget.offering_name}" on ${formatSlotLocal(cancelTarget.start_time, tz)}?`}
+          label="Reason (optional)"
+          confirmLabel="Cancel booking"
+          cancelLabel="Keep booking"
+          variant="danger"
+          onSubmit={(reason) => {
+            const b = cancelTarget;
+            setCancelTarget(null);
+            cancel(b, reason);
+          }}
+          onClose={() => setCancelTarget(null)}
+        />
+      )}
+
+      {noShowTarget && (
+        <ConfirmDialog
+          title="Mark no-show?"
+          message={`Mark ${noShowTarget.member_first_name ?? 'customer'} as no-show for "${noShowTarget.offering_name}" at ${formatSlotLocal(noShowTarget.start_time, tz)}?`}
+          confirmLabel="Mark no-show"
+          onConfirm={() => {
+            const b = noShowTarget;
+            setNoShowTarget(null);
+            markNoShow(b);
+          }}
+          onClose={() => setNoShowTarget(null)}
+        />
+      )}
     </Page>
   );
 }

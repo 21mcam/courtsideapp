@@ -12,7 +12,13 @@
 
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
-import { Button, Field, Input, Textarea } from '../components/ui/index.js';
+import {
+  Button,
+  ConfirmDialog,
+  Field,
+  Input,
+  Textarea,
+} from '../components/ui/index.js';
 
 async function patch(path, body) {
   const res = await api(path, {
@@ -58,14 +64,26 @@ function ErrorBanner({ message }) {
   );
 }
 
-function ModalFooter({ item, busy, onToggleActive, deactivateLabel }) {
+// Footer with the deactivate/reactivate action. The styled
+// ConfirmDialog (replacing the old window.confirm) lives here so all
+// three modals get the same confirm flow; `onToggleActive` only fires
+// after the admin confirms.
+function ModalFooter({
+  item,
+  busy,
+  onToggleActive,
+  deactivateLabel,
+  confirmTitle,
+  confirmMessage,
+}) {
+  const [confirming, setConfirming] = useState(false);
   return (
     <div className="mt-6 flex items-center justify-between border-t border-slate-100 pt-4">
       <Button
         type="button"
         size="sm"
         variant={item.active ? 'danger' : 'secondary'}
-        onClick={onToggleActive}
+        onClick={() => setConfirming(true)}
         disabled={busy}
       >
         {item.active ? deactivateLabel : 'Reactivate'}
@@ -73,6 +91,19 @@ function ModalFooter({ item, busy, onToggleActive, deactivateLabel }) {
       <Button type="submit" disabled={busy}>
         {busy ? 'Saving…' : 'Save changes'}
       </Button>
+      {confirming && (
+        <ConfirmDialog
+          title={confirmTitle}
+          message={confirmMessage}
+          confirmLabel={item.active ? 'Deactivate' : 'Reactivate'}
+          variant={item.active ? 'danger' : 'neutral'}
+          onConfirm={() => {
+            setConfirming(false);
+            onToggleActive();
+          }}
+          onClose={() => setConfirming(false)}
+        />
+      )}
     </div>
   );
 }
@@ -105,10 +136,6 @@ export function ResourceEditModal({ resource, onClose, onSaved }) {
   }
 
   async function toggleActive() {
-    const confirmText = resource.active
-      ? `Deactivate "${resource.name}"? It will be hidden from booking and availability. Existing bookings are untouched. You can reactivate it anytime.`
-      : `Reactivate "${resource.name}"? It will be bookable again wherever it has operating hours.`;
-    if (!window.confirm(confirmText)) return;
     setBusy(true);
     setError(null);
     try {
@@ -149,6 +176,14 @@ export function ResourceEditModal({ resource, onClose, onSaved }) {
           busy={busy}
           onToggleActive={toggleActive}
           deactivateLabel="Deactivate resource"
+          confirmTitle={
+            resource.active ? 'Deactivate resource?' : 'Reactivate resource?'
+          }
+          confirmMessage={
+            resource.active
+              ? `Deactivate "${resource.name}"? It will be hidden from booking and availability. Existing bookings are untouched. You can reactivate it anytime.`
+              : `Reactivate "${resource.name}"? It will be bookable again wherever it has operating hours.`
+          }
         />
       </form>
     </ModalShell>
@@ -235,10 +270,6 @@ export function OfferingEditModal({ offering, resources, onClose, onSaved }) {
   }
 
   async function toggleActive() {
-    const confirmText = offering.active
-      ? `Deactivate "${offering.name}"? Members and walk-ins won't be able to book it. Existing bookings keep their original price and credits. You can reactivate it anytime.`
-      : `Reactivate "${offering.name}"? It will be bookable again on its linked resources.`;
-    if (!window.confirm(confirmText)) return;
     setBusy(true);
     setError(null);
     try {
@@ -377,6 +408,14 @@ export function OfferingEditModal({ offering, resources, onClose, onSaved }) {
           busy={busy}
           onToggleActive={toggleActive}
           deactivateLabel="Deactivate offering"
+          confirmTitle={
+            offering.active ? 'Deactivate offering?' : 'Reactivate offering?'
+          }
+          confirmMessage={
+            offering.active
+              ? `Deactivate "${offering.name}"? Members and walk-ins won't be able to book it. Existing bookings keep their original price and credits. You can reactivate it anytime.`
+              : `Reactivate "${offering.name}"? It will be bookable again on its linked resources.`
+          }
         />
       </form>
     </ModalShell>
@@ -425,10 +464,6 @@ export function PlanEditModal({ plan, onClose, onSaved }) {
   }
 
   async function toggleActive() {
-    const confirmText = plan.active
-      ? `Deactivate "${plan.name}"? It will be hidden from new signups. Existing members keep their current subscription and rate. You can reactivate it anytime.`
-      : `Reactivate "${plan.name}"? Members will be able to subscribe to it again.`;
-    if (!window.confirm(confirmText)) return;
     setBusy(true);
     setError(null);
     try {
@@ -504,6 +539,12 @@ export function PlanEditModal({ plan, onClose, onSaved }) {
           busy={busy}
           onToggleActive={toggleActive}
           deactivateLabel="Deactivate plan"
+          confirmTitle={plan.active ? 'Deactivate plan?' : 'Reactivate plan?'}
+          confirmMessage={
+            plan.active
+              ? `Deactivate "${plan.name}"? It will be hidden from new signups. Existing members keep their current subscription and rate. You can reactivate it anytime.`
+              : `Reactivate "${plan.name}"? Members will be able to subscribe to it again.`
+          }
         />
       </form>
     </ModalShell>

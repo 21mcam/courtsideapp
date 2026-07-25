@@ -201,6 +201,20 @@ export default function WalkInPage() {
       if (!res.ok) {
         throw new Error(body.error || `HTTP ${res.status}`);
       }
+      // Success-page context: the server appends booking_id to the
+      // Checkout success_url; the email needed for the lookup rides
+      // in sessionStorage so it never appears in a URL. Same tab
+      // through Stripe and back, so sessionStorage survives.
+      try {
+        sessionStorage.setItem(
+          'courtside_walkin_email',
+          contact.email.trim().toLowerCase(),
+        );
+        sessionStorage.setItem('courtside_walkin_booking_id', body.booking.id);
+      } catch {
+        // Storage unavailable (private mode) — the success page asks
+        // for the email instead.
+      }
       // Off to Stripe Checkout; the webhook confirms the booking.
       window.location.assign(body.checkout_url);
     } catch (err) {

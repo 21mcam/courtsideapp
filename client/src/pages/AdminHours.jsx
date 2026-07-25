@@ -22,6 +22,7 @@ import SettingsNav from '../components/SettingsNav.jsx';
 import {
   Button,
   Card,
+  ConfirmDialog,
   Field,
   Input,
   Page,
@@ -118,11 +119,12 @@ export default function AdminHours() {
     if (selectedId) loadWeek(selectedId);
   }, [selectedId, loadWeek]);
 
+  // Switching with unsaved edits routes through a ConfirmDialog
+  // (pendingSwitchId holds the destination until confirmed).
+  const [pendingSwitchId, setPendingSwitchId] = useState(null);
   function switchResource(id) {
-    if (
-      dirty &&
-      !window.confirm('Discard unsaved changes to this schedule?')
-    ) {
+    if (dirty) {
+      setPendingSwitchId(id);
       return;
     }
     setSelectedId(id);
@@ -294,6 +296,21 @@ export default function AdminHours() {
             />
           )}
         </>
+      )}
+
+      {pendingSwitchId && (
+        <ConfirmDialog
+          title="Discard unsaved changes?"
+          message="This schedule has unsaved edits. Switching resources will discard them."
+          confirmLabel="Discard changes"
+          cancelLabel="Keep editing"
+          onConfirm={() => {
+            const id = pendingSwitchId;
+            setPendingSwitchId(null);
+            setSelectedId(id);
+          }}
+          onClose={() => setPendingSwitchId(null)}
+        />
       )}
     </Page>
   );

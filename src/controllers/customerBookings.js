@@ -320,6 +320,15 @@ export async function createCustomerBooking(req, res, next) {
     // 9. Create Checkout Session in mode='payment' on the connected
     //    account. price_data is inline so we don't have to mint a
     //    Stripe Product per offering.
+    //
+    //    The booking id is appended to the success_url so the success
+    //    page can show a reference code + slot details (via the
+    //    email-gated POST /api/customers/bookings/lookup). A booking
+    //    UUID is unguessable and not personal data, so it's safe in a
+    //    URL; the email needed to read details never rides in the URL.
+    const successUrl = new URL(success_url);
+    successUrl.searchParams.set('booking_id', booking.id);
+
     let session;
     try {
       session = await getStripe().checkout.sessions.create(
@@ -338,7 +347,7 @@ export async function createCustomerBooking(req, res, next) {
               quantity: 1,
             },
           ],
-          success_url,
+          success_url: successUrl.toString(),
           cancel_url,
           // Critical: the webhook reads these to find which booking
           // to flip. courtside_tenant_id is duplicated for the
@@ -419,6 +428,86 @@ export async function listPublicOfferings(req, res, next) {
       [req.tenant.id],
     );
     res.json({ offerings: result.rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ---------- POST /api/customers/bookings/lookup ----------
+//
+// Public, unauthenticated booking lookup for the walk-in success
+// page. A walk-in has no credential, so the gate is knowledge of BOTH
+// the booking id (an unguessable UUID, carried on the Checkout
+// success_url) AND the email the booking was made with. A wrong email
+// returns the same 404 as an unknown id, so the endpoint can't be
+// used to enumerate bookings or confirm emails. POST (not GET) keeps
+// the email out of URLs and access logs.
+
+const lookupSchema = z.object({
+  booking_id: z.string().uuid(),
+  email: z
+    .string()
+    .email()
+    .transform((s) => s.toLowerCase().trim()),
+});
+
+// Human-friendly short reference derived from the booking UUID. Shown
+// on the success page + read out at the front desk. First 8 hex chars
+// uppercased — collision odds within one facility's active bookings
+// are negligible, and the full UUID remains the real key.
+export function bookingReference(bookingId) {
+  return bookingId.slice(0, 8).toUpperCase();
+}
+
+export async function lookupCustomerBooking(req, res, next) {
+  try {
+    const parsed = lookupSchema.safeParse(req.body);
+    if (!parsed.success) {
+      // Malformed UUIDs get the same 404 as unknown ones (no
+      // enumeration hints); genuinely malformed bodies get a 400.
+      const bookingIdIssue = parsed.error.issues.some(
+        (i) => i.path[0] === 'booking_id',
+      );
+      if (bookingIdIssue && typeof req.body?.booking_id === 'string') {
+        return res.status(404).json({ error: 'booking not found' });
+      }
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const { booking_id, email } = parsed.data;
+    const { tenant, db } = req;
+
+    const result = await db.query(
+      `SELECT b.id, b.status, b.start_time, b.end_time,
+              b.amount_due_cents, b.amount_paid_cents, b.payment_status,
+              o.name AS offering_name,
+              r.name AS resource_name
+         FROM bookings b
+         JOIN offerings o ON o.tenant_id = b.tenant_id AND o.id = b.offering_id
+         JOIN resources r ON r.tenant_id = b.tenant_id AND r.id = b.resource_id
+        WHERE b.tenant_id = $1 AND b.id = $2 AND b.customer_email = $3`,
+      [tenant.id, booking_id, email],
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'booking not found' });
+    }
+    const b = result.rows[0];
+
+    res.json({
+      booking: {
+        id: b.id,
+        reference: bookingReference(b.id),
+        status: b.status,
+        start_time: b.start_time,
+        end_time: b.end_time,
+        offering_name: b.offering_name,
+        resource_name: b.resource_name,
+        amount_due_cents: b.amount_due_cents,
+        amount_paid_cents: b.amount_paid_cents,
+        payment_status: b.payment_status,
+      },
+    });
   } catch (err) {
     next(err);
   }

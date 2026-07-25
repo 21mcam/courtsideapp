@@ -31,8 +31,10 @@ import {
   PageHeader,
   Button,
   Badge,
+  ConfirmDialog,
   Field,
   Input,
+  InputDialog,
   Select,
 } from '../components/ui/index.js';
 import { api } from '../api.js';
@@ -644,15 +646,16 @@ function Card({ item, tz, top, height, lane, laneCount, onClick }) {
 
 function DetailPanel({ item, tz, onClose, onActionSuccess }) {
   const [busy, setBusy] = useState(false);
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [confirmingNoShow, setConfirmingNoShow] = useState(false);
   const isClass = item.kind === 'class';
   // Match AdminBookings: no-show only offered once the slot's start
   // time has passed — you can't no-show someone who isn't late yet.
   const isPast = new Date(item.start_time).getTime() <= Date.now();
 
-  async function cancel() {
+  // Runs after the admin submits the cancel InputDialog.
+  async function cancel(reason) {
     if (busy) return;
-    const reason = window.prompt('Cancel reason (optional):', '');
-    if (reason === null) return;
     setBusy(true);
     try {
       let path;
@@ -679,9 +682,9 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
     }
   }
 
+  // Runs after the admin confirms in the no-show ConfirmDialog.
   async function markNoShow() {
     if (busy) return;
-    if (!window.confirm('Mark this booking as no-show?')) return;
     setBusy(true);
     try {
       const res = await api(`/api/bookings/${item.id}/mark-no-show`, {
@@ -814,23 +817,68 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
         <div className="mt-5 flex flex-col gap-2">
           {!isClass && item.status === 'confirmed' && (
             <>
-              <Button variant="secondary" onClick={cancel} disabled={busy}>
+              <Button
+                variant="secondary"
+                onClick={() => setConfirmingCancel(true)}
+                disabled={busy}
+              >
                 {busy ? 'cancelling…' : 'Cancel booking'}
               </Button>
               {isPast && (
-                <Button variant="danger" onClick={markNoShow} disabled={busy}>
+                <Button
+                  variant="danger"
+                  onClick={() => setConfirmingNoShow(true)}
+                  disabled={busy}
+                >
                   Mark no-show
                 </Button>
               )}
             </>
           )}
           {isClass && !item.cancelled_at && (
-            <Button variant="danger" onClick={cancel} disabled={busy}>
+            <Button
+              variant="danger"
+              onClick={() => setConfirmingCancel(true)}
+              disabled={busy}
+            >
               {busy ? 'cancelling…' : 'Cancel class (refund roster)'}
             </Button>
           )}
         </div>
       </aside>
+
+      {confirmingCancel && (
+        <InputDialog
+          title={isClass ? 'Cancel class?' : 'Cancel booking?'}
+          message={
+            isClass
+              ? 'Cancel this class? The entire roster is cancelled and members are refunded 100%.'
+              : 'Cancel this booking? Members are refunded per the cancellation policy.'
+          }
+          label="Reason (optional)"
+          confirmLabel={isClass ? 'Cancel class' : 'Cancel booking'}
+          cancelLabel="Keep it"
+          variant="danger"
+          onSubmit={(reason) => {
+            setConfirmingCancel(false);
+            cancel(reason);
+          }}
+          onClose={() => setConfirmingCancel(false)}
+        />
+      )}
+
+      {confirmingNoShow && (
+        <ConfirmDialog
+          title="Mark no-show?"
+          message="Mark this booking as no-show?"
+          confirmLabel="Mark no-show"
+          onConfirm={() => {
+            setConfirmingNoShow(false);
+            markNoShow();
+          }}
+          onClose={() => setConfirmingNoShow(false)}
+        />
+      )}
     </div>
   );
 }
