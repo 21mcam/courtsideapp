@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
+  BarChart3,
   BookOpenCheck,
   CalendarDays,
   CreditCard,
@@ -35,6 +36,7 @@ const ADMIN_NAV = [
   { to: '/admin/members', label: 'Members', icon: UsersRound },
   { to: '/admin/staff', label: 'Staff', icon: UserCog },
   { to: '/admin/packs', label: 'Credit packs', icon: Package },
+  { to: '/admin/reports', label: 'Reports', icon: BarChart3 },
   { to: '/admin/stripe', label: 'Payments', icon: CreditCard },
   { to: '/admin/settings', label: 'Settings', icon: Settings },
   { to: '/wizard', label: 'Setup wizard', icon: Wand2 },

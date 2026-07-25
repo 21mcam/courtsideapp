@@ -148,9 +148,9 @@ export default function AdminHome() {
 
       {catalogLoaded && (
         <div className="grid grid-cols-3 gap-4">
-          <StatCard label="Resources" value={resources.length} />
-          <StatCard label="Offerings" value={offerings.length} />
-          <StatCard label="Plans" value={plans.length} />
+          <StatCard label="Resources" value={resources.length} to="/admin/reports" />
+          <StatCard label="Offerings" value={offerings.length} to="/admin/reports" />
+          <StatCard label="Plans" value={plans.length} to="/admin/reports" />
         </div>
       )}
 
@@ -378,15 +378,19 @@ async function handle(res) {
   return res.json();
 }
 
-function StatCard({ label, value }) {
-  return (
-    <Card>
+// With `to`, the tile is a link (dashboard counts link through to the
+// Reports page for the full numbers + CSV exports).
+function StatCard({ label, value, to }) {
+  const body = (
+    <Card className={to ? 'transition-colors hover:border-brand-300' : undefined}>
       <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
         {label}
       </div>
       <div className="mt-1 text-3xl font-semibold text-slate-900">{value}</div>
+      {to && <div className="mt-0.5 text-xs text-brand-600">View reports →</div>}
     </Card>
   );
+  return to ? <Link to={to}>{body}</Link> : body;
 }
 
 function BookingPoliciesCard({ policies, error }) {

@@ -18,6 +18,7 @@
 //   /admin/calendar → multi-resource day view (visual ops calendar)
 //   /admin/members + /admin/members/:id → member management
 //   /admin/staff    → staff roster + invites
+//   /admin/reports  → summary stats + CSV exports
 //
 // Wrapping AuthProvider so any page can read tenant + me state.
 
@@ -49,6 +50,7 @@ import AdminMembers from './pages/AdminMembers.jsx';
 import AdminMemberDetail from './pages/AdminMemberDetail.jsx';
 import AdminStaff from './pages/AdminStaff.jsx';
 import AdminPacks from './pages/AdminPacks.jsx';
+import AdminReports from './pages/AdminReports.jsx';
 
 export default function App() {
   return (
@@ -95,6 +97,7 @@ function Shell() {
           <Route path="/admin/members/:id" element={<AdminMemberDetail />} />
           <Route path="/admin/staff" element={<AdminStaff />} />
           <Route path="/admin/packs" element={<AdminPacks />} />
+          <Route path="/admin/reports" element={<AdminReports />} />
           <Route path="/admin/stripe" element={<AdminStripe />} />
           <Route path="/admin/settings" element={<AdminSettings />} />
           <Route path="/admin/settings/hours" element={<AdminHours />} />

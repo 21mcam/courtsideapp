@@ -69,6 +69,11 @@ import {
   createPack,
   updatePack,
 } from '../controllers/packs.js';
+import {
+  getReportsSummary,
+  exportMembersCsv,
+  exportBookingsCsv,
+} from '../controllers/reports.js';
 
 const router = express.Router();
 
@@ -136,6 +141,14 @@ router.put('/reply-to-email', updateTenantReplyTo);
 // booking_policies (PUT above bumps waiver_version on text change);
 // this is the read-only roster of who signed which version.
 router.get('/waiver-signatures', listWaiverSignatures);
+
+// Reports + CSV exports (Tier-A sell-readiness slice). Summary
+// numbers for the Reports page; buffered CSV downloads with
+// formula-injection-safe escaping. bookings.csv accepts ?from=&to=
+// (tenant-local YYYY-MM-DD, default last 90 days).
+router.get('/reports/summary', getReportsSummary);
+router.get('/reports/members.csv', exportMembersCsv);
+router.get('/reports/bookings.csv', exportBookingsCsv);
 
 // Blackouts (Phase 3 prep)
 router.get('/blackouts', listBlackouts);
