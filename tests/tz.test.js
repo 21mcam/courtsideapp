@@ -86,3 +86,53 @@ test('round trip: instant → tenant date → tenant day start contains the inst
   const end = new Date(zonedDayStartIso(addDays(day, 1), NY)).getTime();
   assert.ok(start <= instant.getTime() && instant.getTime() < end);
 });
+
+// ============================================================
+// client/server parity
+// ============================================================
+//
+// src/lib/tz.js is a deliberate backend duplicate of the client
+// helpers (the server must never import from client/src — a client
+// refactor would crash the API at module load). These checks fail
+// loudly if the two copies drift.
+
+import * as serverTz from '../src/lib/tz.js';
+
+test('server copy of tz helpers agrees with the client copy', () => {
+  const cases = [
+    ['2026-07-18', '18:00', NY],
+    ['2026-01-15', '18:00', NY],
+    ['2026-03-08', '02:30', NY], // spring-forward gap
+    ['2026-11-01', '01:30', NY], // fall-back overlap
+    ['2026-07-18', '09:00', TOKYO],
+  ];
+  for (const [d, t, tz] of cases) {
+    assert.equal(
+      serverTz.zonedTimeToUtc(d, t, tz).toISOString(),
+      zonedTimeToUtc(d, t, tz).toISOString(),
+      `zonedTimeToUtc(${d}, ${t}, ${tz})`,
+    );
+  }
+  const instants = [
+    '2026-07-18T22:00:00.000Z',
+    '2026-01-16T04:59:00.000Z',
+    '2026-12-31T23:30:00.000Z',
+  ];
+  for (const iso of instants) {
+    for (const tz of [NY, TOKYO]) {
+      assert.equal(
+        serverTz.localDateString(iso, tz),
+        localDateString(iso, tz),
+        `localDateString(${iso}, ${tz})`,
+      );
+    }
+  }
+  for (const [d, n] of [
+    ['2026-02-28', 1],
+    ['2026-12-31', 1],
+    ['2026-01-31', -31],
+    ['2026-03-15', -90],
+  ]) {
+    assert.equal(serverTz.addDays(d, n), addDays(d, n), `addDays(${d}, ${n})`);
+  }
+});

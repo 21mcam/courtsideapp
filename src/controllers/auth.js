@@ -19,6 +19,17 @@ import { sendMemberWelcome } from '../services/email.js';
 const TOKEN_EXPIRY = '7d';
 const BCRYPT_ROUNDS = 10;
 
+// Fixed hash compared against in login's early-exit branches (unknown
+// email, invited-but-not-activated user) so those paths cost the same
+// ~bcrypt-compare as a wrong-password attempt. Without it, response
+// timing distinguishes "no such account / no password set" from
+// "wrong password" — a user-enumeration oracle. Computed once at
+// module load; the plaintext is irrelevant (nothing ever matches it).
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync(
+  'timing-equalizer-dummy-password',
+  BCRYPT_ROUNDS,
+);
+
 const registerMemberSchema = z.object({
   email: z.string().email().toLowerCase().trim(),
   password: z.string().min(8, 'password must be at least 8 characters'),
@@ -126,16 +137,20 @@ export async function login(req, res, next) {
     );
 
     // Same response on missing user as wrong password — no user-
-    // enumeration via login error.
+    // enumeration via login error. The dummy compare keeps the
+    // timing indistinguishable too (see DUMMY_PASSWORD_HASH).
     if (userResult.rows.length === 0) {
+      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
       return res.status(401).json({ error: 'invalid credentials' });
     }
 
     const { id: user_id, password_hash } = userResult.rows[0];
 
     // NULL hash = invited user who hasn't set a password yet
-    // (migration 021). Same 401 as a wrong password — no signal.
+    // (migration 021). Same 401 as a wrong password — no signal,
+    // including in the timing (dummy compare).
     if (!password_hash) {
+      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
       return res.status(401).json({ error: 'invalid credentials' });
     }
 

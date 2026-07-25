@@ -3,7 +3,10 @@
 // Covers:
 //   * Booking auto-completion (new in this slice, part of both the
 //     manual POST /api/admin/cleanup and the 10-minute sweep):
-//     - confirmed booking with past end_time → completed
+//     - confirmed booking whose end_time passed more than
+//       AUTO_COMPLETE_AFTER_HOURS (24h) ago → completed
+//     - recently-ended confirmed booking untouched (grace window so
+//       staff can still mark no-shows at end of day)
 //     - future confirmed booking untouched
 //     - no_show / cancelled bookings untouched (no_show stays a
 //       manual admin action; the sweep never creates or clears it)
@@ -218,9 +221,10 @@ async function bookingStatus(id) {
 // booking auto-completion (manual endpoint)
 // ============================================================
 
-test('cleanup completes confirmed bookings whose end_time has passed', { skip }, async () => {
-  // Ended 2h ago (start -3h, end -2h).
-  const past = await syntheticBooking({ startHoursFromNow: -3, status: 'confirmed' });
+test('cleanup completes confirmed bookings past the 24h grace window', { skip }, async () => {
+  // Ended 47h ago (start -48h, end -47h) — beyond
+  // AUTO_COMPLETE_AFTER_HOURS, so the sweep settles it.
+  const past = await syntheticBooking({ startHoursFromNow: -48, status: 'confirmed' });
 
   const res = await adminFetch('/api/admin/cleanup', { method: 'POST' });
   assert.equal(res.status, 200);
@@ -228,6 +232,17 @@ test('cleanup completes confirmed bookings whose end_time has passed', { skip },
   assert.ok(body.bookings_completed >= 1);
 
   assert.equal(await bookingStatus(past.id), 'completed');
+});
+
+test('recently-ended confirmed bookings stay confirmed (no-show window)', { skip }, async () => {
+  // Ended 2h ago — INSIDE the 24h grace window. Must stay 'confirmed'
+  // so the front desk's end-of-day pass can still mark no-shows
+  // (markBookingNoShow only accepts confirmed rows).
+  const recent = await syntheticBooking({ startHoursFromNow: -3, status: 'confirmed' });
+
+  await adminFetch('/api/admin/cleanup', { method: 'POST' });
+
+  assert.equal(await bookingStatus(recent.id), 'confirmed');
 });
 
 test('cleanup leaves future confirmed bookings alone', { skip }, async () => {
@@ -285,7 +300,7 @@ test('expired pending_payment holds are cancelled, not completed', { skip }, asy
 // ============================================================
 
 test('runCleanupSweep completes past bookings via the runtime pool', { skip }, async () => {
-  const past = await syntheticBooking({ startHoursFromNow: -12, status: 'confirmed' });
+  const past = await syntheticBooking({ startHoursFromNow: -60, status: 'confirmed' });
 
   const results = await runCleanupSweep({ tenantId: tenant_id });
   assert.equal(results.length, 1);

@@ -1,18 +1,15 @@
-// Tenant-timezone date math. Pure functions, no React — unit-tested
-// from tests/tz.test.js (same pattern as lib/calendarLayout.js).
+// Tenant-timezone date math for the BACKEND. Pure functions, no
+// dependencies.
 //
-// NOTE: zonedTimeToUtc / localDateString / addDays are DELIBERATELY
-// DUPLICATED in src/lib/tz.js for the backend (server code must not
-// import from client/src). If you change them here, change them there;
-// tests/tz.test.js asserts the two stay in agreement.
+// DELIBERATE DUPLICATE of client/src/lib/tz.js: the server must never
+// import from client/src (a client-side refactor — moving lib/, a TS
+// conversion, bundler-only syntax — would crash the API server at
+// module load). The two files are kept in sync by hand; tests/tz.test.js
+// exercises both and asserts they agree. If you change one, change the
+// other.
 //
 // THE RULE (CLAUDE.md gotcha #6): every wall-clock time in the product
-// belongs to the TENANT's timezone, never the viewer's browser zone.
-// `new Date('YYYY-MM-DDTHH:MM')`, `Date.prototype.setHours(0,...)`,
-// and `toLocaleString()` without a timeZone all silently use the
-// browser zone — which looks correct exactly when the developer's
-// browser matches the tenant (how PR #40 shipped) and is wrong for
-// everyone else.
+// belongs to the TENANT's timezone, never the server's zone.
 
 // Offset (ms) of `tz` from UTC at the moment `utcDate`, via Intl.
 function tzOffsetMs(tz, utcDate) {
@@ -42,12 +39,7 @@ function tzOffsetMs(tz, utcDate) {
 
 // Interpret a wall-clock date + time as a moment in `tz` and return
 // the corresponding Date (UTC instant). Two-pass so a first guess
-// that lands on the wrong side of a DST transition self-corrects;
-// for the nonexistent 02:00–03:00 spring-forward hour this resolves
-// to the post-transition offset, which is the pragmatic choice for a
-// booking tool.
-//   zonedTimeToUtc('2026-07-18', '18:00', 'America/New_York')
-//     → 2026-07-18T22:00:00.000Z
+// that lands on the wrong side of a DST transition self-corrects.
 export function zonedTimeToUtc(dateStr, timeStr, tz) {
   const [y, mo, d] = dateStr.split('-').map(Number);
   const [h, mi] = (timeStr || '00:00').split(':').map(Number);
@@ -55,11 +47,6 @@ export function zonedTimeToUtc(dateStr, timeStr, tz) {
   let offset = tzOffsetMs(tz, new Date(wallAsUtc));
   offset = tzOffsetMs(tz, new Date(wallAsUtc - offset));
   return new Date(wallAsUtc - offset);
-}
-
-// ISO instant of midnight (start of day) in `tz` for a YYYY-MM-DD.
-export function zonedDayStartIso(dateStr, tz) {
-  return zonedTimeToUtc(dateStr, '00:00', tz).toISOString();
 }
 
 // YYYY-MM-DD of an instant, rendered in `tz`. (en-CA formats as
@@ -71,11 +58,6 @@ export function localDateString(isoOrDate, tz) {
     month: '2-digit',
     day: '2-digit',
   }).format(new Date(isoOrDate));
-}
-
-// "Today" in `tz`, as YYYY-MM-DD.
-export function todayLocalString(tz) {
-  return localDateString(new Date(), tz);
 }
 
 // YYYY-MM-DD that is `days` calendar days after the given YYYY-MM-DD.

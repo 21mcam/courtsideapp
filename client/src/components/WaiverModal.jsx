@@ -22,14 +22,16 @@ export default function WaiverModal({ onClose, onSigned }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
+  async function loadWaiver() {
+    const res = await api('/api/waivers/current');
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    return body;
+  }
+
   useEffect(() => {
     let alive = true;
-    api('/api/waivers/current')
-      .then(async (res) => {
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-        return body;
-      })
+    loadWaiver()
       .then((body) => {
         if (alive) setWaiver(body);
       })
@@ -51,13 +53,28 @@ export default function WaiverModal({ onClose, onSigned }) {
         method: 'POST',
         body: JSON.stringify({
           signer_name: signerName.trim(),
+          // Echo the version whose text we displayed — the server
+          // 409s (waiver_version_mismatch) if an admin changed the
+          // waiver while this modal was open.
+          waiver_version: waiver?.waiver_version,
           ...(isMinor
             ? { is_minor: true, guardian_name: guardianName.trim() }
             : {}),
         }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        if (body.code === 'waiver_version_mismatch') {
+          // Reload the new text so the retry signs what it shows.
+          const fresh = await loadWaiver().catch(() => null);
+          if (fresh) setWaiver(fresh);
+          setAgreed(false);
+          throw new Error(
+            'The waiver was updated while you were reading it — please review the new version and sign again.',
+          );
+        }
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
       onSigned();
     } catch (err) {
       setError(err.message);

@@ -184,6 +184,10 @@ export default function WalkInPage() {
             ? {
                 waiver: {
                   signer_name: waiverForm.signer_name.trim(),
+                  // Echo the version whose text the form rendered —
+                  // the server 409s (waiver_version_mismatch) if the
+                  // waiver changed after the page loaded.
+                  waiver_version: waiver?.waiver_version,
                   ...(waiverForm.is_minor
                     ? {
                         is_minor: true,
@@ -199,6 +203,18 @@ export default function WalkInPage() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (body.code === 'waiver_version_mismatch') {
+          // Admin updated the waiver text after the page loaded —
+          // reload the new text, clear the agreement, re-prompt.
+          const fresh = await api('/api/waivers/current')
+            .then(async (r) => (r.ok ? r.json() : null))
+            .catch(() => null);
+          if (fresh) setWaiver(fresh);
+          setWaiverForm((f) => ({ ...f, agreed: false }));
+          throw new Error(
+            'The waiver was updated — please review the new version and agree again.',
+          );
+        }
         throw new Error(body.error || `HTTP ${res.status}`);
       }
       // Success-page context: the server appends booking_id to the

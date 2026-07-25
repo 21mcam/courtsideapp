@@ -31,6 +31,13 @@ import { z } from 'zod';
 // waiver modal (a plain 409 message would be ambiguous).
 export const WAIVER_REQUIRED_CODE = 'waiver_signature_required';
 
+// Returned when a signature payload echoes a waiver_version that is
+// no longer current — the admin edited the waiver text after the
+// client rendered it. The client must re-fetch the text and re-prompt
+// (recording the signature anyway would create a "signed" record for
+// text the signer never saw).
+export const WAIVER_VERSION_MISMATCH_CODE = 'waiver_version_mismatch';
+
 // Read the tenant's waiver config off the booking_policies singleton.
 // Tenants that predate the row (or migration 023) get the schema
 // defaults: waiver off.
@@ -74,12 +81,18 @@ export async function findMissingWaiverSignature(
 
 // Shared zod shape for a signature payload. Used by POST
 // /api/waivers/sign (members) and embedded in the walk-in booking
-// body (customerBookings.js).
+// body (customerBookings.js). waiver_version is REQUIRED: the client
+// echoes the version whose text it displayed, and the server 409s
+// (WAIVER_VERSION_MISMATCH_CODE) when that version is no longer
+// current — otherwise a signature could be recorded against text the
+// signer never read (the version could bump between the GET that
+// rendered the waiver and the POST that signs it).
 export const waiverSignatureSchema = z
   .object({
     signer_name: z.string().trim().min(1).max(300),
     guardian_name: z.string().trim().min(1).max(300).optional(),
     is_minor: z.boolean().optional(),
+    waiver_version: z.number().int().positive(),
   })
   .refine((d) => !d.is_minor || d.guardian_name, {
     message: 'guardian_name is required when signing on behalf of a minor',
@@ -112,10 +125,13 @@ export async function getCurrentWaiver(req, res, next) {
 // POST /api/waivers/sign — member records a signature
 // ============================================================
 //
-// Body: { signer_name, guardian_name?, is_minor? }. Records a row at
-// the CURRENT waiver_version. Signing when the waiver isn't required
-// is a 409 (nothing to sign). Re-signing an already-signed version is
-// allowed (append-only; harmless duplicate).
+// Body: { signer_name, guardian_name?, is_minor?, waiver_version }.
+// Records a row at the CURRENT waiver_version, which the client must
+// echo — a mismatch (admin edited the text mid-signing) is a 409 with
+// WAIVER_VERSION_MISMATCH_CODE so the client re-renders and
+// re-prompts. Signing when the waiver isn't required is a 409
+// (nothing to sign). Re-signing an already-signed version is allowed
+// (append-only; harmless duplicate).
 export async function signWaiver(req, res, next) {
   try {
     if (!req.user?.member_id) {
@@ -131,13 +147,22 @@ export async function signWaiver(req, res, next) {
         .status(400)
         .json({ error: 'invalid input', details: parsed.error.flatten() });
     }
-    const { signer_name, guardian_name, is_minor } = parsed.data;
+    const { signer_name, guardian_name, is_minor, waiver_version } =
+      parsed.data;
 
     const config = await getWaiverConfig(db, tenant.id);
     if (!config.waiver_required) {
       return res
         .status(409)
         .json({ error: 'this facility does not require a waiver' });
+    }
+    if (waiver_version !== config.waiver_version) {
+      return res.status(409).json({
+        error:
+          'the waiver was updated after it was displayed; reload it and sign again',
+        code: WAIVER_VERSION_MISMATCH_CODE,
+        waiver_version: config.waiver_version,
+      });
     }
 
     const result = await db.query(

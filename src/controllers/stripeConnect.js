@@ -176,6 +176,15 @@ export async function syncPlanToStripe(req, res, next) {
 // plan pointing at an archived price. If the archive call itself
 // fails, both prices stay active on Stripe — harmless, the old one
 // is simply unreferenced. TODO: move to the outbox once it exists.
+//
+// Lock discipline (CLAUDE.md "what NOT to do during a tenant
+// transaction"): the Stripe calls run against an UNLOCKED read of the
+// plan row — no FOR UPDATE is held across Stripe latency, so
+// concurrent plan reads/edits never queue behind a slow Stripe API.
+// Instead of a lock, the price rotation uses an optimistic guard: the
+// final UPDATE requires stripe_price_id to still equal the value we
+// read. If a concurrent edit rotated it first, we 409, archive the
+// price we just created (now orphaned), and let the admin retry.
 const CATEGORY_REGEX = /^[a-z0-9][a-z0-9-]*$/;
 
 const planUpdateSchema = z.object({
@@ -218,11 +227,12 @@ export async function updatePlan(req, res, next) {
       return res.status(400).json({ error: 'no editable fields provided' });
     }
 
+    // Plain read — deliberately NOT FOR UPDATE (see header: no row
+    // lock may be held across the Stripe calls below).
     const curRes = await db.query(
       `SELECT id, name, description, monthly_price_cents, stripe_price_id, active
          FROM plans
-        WHERE tenant_id = $1 AND id = $2
-        FOR UPDATE`,
+        WHERE tenant_id = $1 AND id = $2`,
       [tenant.id, planId],
     );
     if (curRes.rows.length === 0) {
@@ -316,16 +326,48 @@ export async function updatePlan(req, res, next) {
       stripe_price_id: newPriceId,
     });
 
+    // Optimistic guard replaces the row lock: when we minted a
+    // replacement Price (or pushed name/description to Stripe based
+    // on the stripe_price_id we read), the UPDATE only lands if
+    // stripe_price_id is still what we read. 0 rows = concurrent
+    // rotation → clean up our now-orphaned Price and 409.
+    const guarded = priceChanging || productChanging;
+    const guardClause = guarded
+      ? ` AND stripe_price_id = $${nextIndex + 2}`
+      : '';
     let updated;
     try {
       const result = await db.query(
         `UPDATE plans
             SET ${clauses.join(', ')}
-          WHERE tenant_id = $${nextIndex} AND id = $${nextIndex + 1}
+          WHERE tenant_id = $${nextIndex} AND id = $${nextIndex + 1}${guardClause}
           ${PLAN_RETURNING}`,
-        [...values, tenant.id, planId],
+        [
+          ...values,
+          tenant.id,
+          planId,
+          ...(guarded ? [plan.stripe_price_id] : []),
+        ],
       );
       updated = result.rows[0];
+      if (guarded && !updated) {
+        if (newPriceId) {
+          // Archive the price we created for an update that lost the
+          // race — fire-and-forget, same failure tolerance as the
+          // post-commit archive below.
+          getStripe()
+            .prices.update(newPriceId, { active: false }, { stripeAccount: stripeAccountId })
+            .catch((archiveErr) =>
+              console.error(
+                `failed to archive orphaned Stripe price ${newPriceId}:`,
+                archiveErr,
+              ),
+            );
+        }
+        return res.status(409).json({
+          error: 'plan was modified concurrently; reload and retry',
+        });
+      }
     } catch (err) {
       if (err.code === '23505') {
         // plans_active_name_unique (rename / reactivate collision)

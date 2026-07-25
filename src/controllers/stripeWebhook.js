@@ -73,6 +73,15 @@ export async function handleStripeWebhook(req, res, next) {
     // idempotent (account.updated just sets current state) and
     // would survive a duplicate without harm — but applying the
     // dedup uniformly means handlers don't have to think about it.
+    //
+    // The row commits BEFORE the handler runs (autocommit), so a
+    // handler failure must NOT leave it behind: Stripe's retry would
+    // be answered "deduped" without the work ever having happened —
+    // for money paths (pack purchase → credit grant, walk-in payment
+    // → confirmation) that's a permanently lost, paid-for effect. The
+    // catch below deletes the dedup row on handler error so the retry
+    // re-drives the handler; handlers stay individually idempotent
+    // (unique indexes / status guards) for the partial-commit cases.
     const dedupRes = await pool.query(
       `INSERT INTO stripe_webhook_events (event_id, event_type, account_id)
        VALUES ($1, $2, $3)
@@ -86,28 +95,45 @@ export async function handleStripeWebhook(req, res, next) {
         .json({ received: true, type: event.type, deduped: true });
     }
 
-    switch (event.type) {
-      case 'account.updated':
-        await handleAccountUpdated(event, accountId);
-        break;
-      case 'checkout.session.completed':
-        await handleCheckoutSessionCompleted(event, accountId);
-        break;
-      case 'invoice.payment_succeeded':
-        await handleInvoicePaymentSucceeded(event, accountId);
-        break;
-      case 'customer.subscription.updated':
-        await handleSubscriptionUpdated(event, accountId);
-        break;
-      case 'customer.subscription.deleted':
-        await handleSubscriptionDeleted(event, accountId);
-        break;
-      default:
-        // Quietly ignore. This is a well-trodden Stripe webhook
-        // pattern — the same endpoint handles every subscription,
-        // invoice, payment, account event Stripe might send. We
-        // only react to types we've explicitly wired up.
-        break;
+    try {
+      switch (event.type) {
+        case 'account.updated':
+          await handleAccountUpdated(event, accountId);
+          break;
+        case 'checkout.session.completed':
+          await handleCheckoutSessionCompleted(event, accountId);
+          break;
+        case 'invoice.payment_succeeded':
+          await handleInvoicePaymentSucceeded(event, accountId);
+          break;
+        case 'customer.subscription.updated':
+          await handleSubscriptionUpdated(event, accountId);
+          break;
+        case 'customer.subscription.deleted':
+          await handleSubscriptionDeleted(event, accountId);
+          break;
+        default:
+          // Quietly ignore. This is a well-trodden Stripe webhook
+          // pattern — the same endpoint handles every subscription,
+          // invoice, payment, account event Stripe might send. We
+          // only react to types we've explicitly wired up.
+          break;
+      }
+    } catch (handlerErr) {
+      // Release the dedup slot so Stripe's retry re-runs the handler
+      // (we're about to 500). If this DELETE itself fails the event
+      // is stuck deduped — log loudly for manual reconciliation.
+      await pool
+        .query(`DELETE FROM stripe_webhook_events WHERE event_id = $1`, [
+          event.id,
+        ])
+        .catch((delErr) =>
+          console.error(
+            `stripe webhook ${event.id}: handler failed AND dedup row could not be released — event will not be retried:`,
+            delErr,
+          ),
+        );
+      throw handlerErr;
     }
 
     res.status(200).json({ received: true, type: event.type });
@@ -400,8 +426,8 @@ async function handleCheckoutSessionCompleted(event, accountId) {
 
   // Post-commit: welcome the member on their first subscription.
   // Fire-and-forget — a lost welcome email must never fail the
-  // webhook (Stripe would retry and the dedup log blocks the retry
-  // from re-running the handler anyway).
+  // webhook (failing here would release the dedup row and make
+  // Stripe redeliver an event whose DB work already committed).
   // TODO: outbox for reliability-critical delivery.
   if (welcome) {
     const tenantCtx = await loadTenantEmailContext(tenantId);
@@ -434,8 +460,11 @@ async function handleCheckoutSessionCompleted(event, accountId) {
 // lands.
 //
 // Idempotency: the stripe_webhook_events dedup at the dispatcher
-// boundary — a redelivered event id never reaches this handler, so
-// credits can't be granted twice.
+// boundary — a SUCCESSFULLY handled event id never reaches this
+// handler again, so credits can't be granted twice. If the grant
+// transaction fails, the dispatcher releases the dedup row and
+// Stripe's retry re-drives the grant (at-least-once, with the grant
+// itself atomic in one transaction).
 async function handlePackPurchasePaid(session, accountId) {
   const md = session.metadata ?? {};
   const tenantIdFromMd = md.courtside_tenant_id;
@@ -517,8 +546,8 @@ async function handlePackPurchasePaid(session, accountId) {
   });
 
   // Post-commit: purchase receipt. Fire-and-forget — a lost receipt
-  // must never fail the webhook (the dedup log blocks a retry from
-  // re-granting anyway).
+  // must never fail the webhook (failing here would release the
+  // dedup row and a retry would re-grant already-granted credits).
   // TODO: outbox for reliability-critical delivery.
   if (receipt?.email) {
     const tenantCtx = await loadTenantEmailContext(tenantId);
@@ -546,8 +575,12 @@ async function handlePackPurchasePaid(session, accountId) {
 //
 // Status guard: WHERE status = 'pending_payment' means a booking
 // that was cancelled in the meantime (admin override, hold expiry
-// janitor) won't get re-confirmed. If we paid an expired booking,
-// we'll need to refund — slice 6 / future hardening.
+// janitor) won't get re-confirmed. When that happens the customer's
+// money moved on Stripe for a booking we can't honor (the slot may
+// already be re-booked) — refund the payment_intent immediately and
+// stamp the refund on the booking row. A refund failure throws so
+// the dispatcher releases the dedup row and Stripe's retry re-drives
+// the refund.
 async function handleCustomerBookingPaid(session, accountId) {
   const md = session.metadata ?? {};
   const tenantIdFromMd = md.courtside_tenant_id;
@@ -597,11 +630,9 @@ async function handleCustomerBookingPaid(session, accountId) {
       if (r.rows.length === 0) {
         // Booking moved out of pending_payment between our INSERT and
         // the payment landing. Most likely: admin cancelled, or hold
-        // expired and a janitor closed it. Slice 6 / hardening will
-        // add a refund flow for this edge.
-        console.warn(
-          `checkout.session.completed (payment): booking ${bookingId} not in pending_payment state; payment held without confirmation`,
-        );
+        // expired and the janitor sweep closed it. Refunded below,
+        // after this transaction ends (no external calls inside an
+        // open tx — CLAUDE.md gotcha #9).
         return null;
       }
       const booking = r.rows[0];
@@ -619,6 +650,11 @@ async function handleCustomerBookingPaid(session, accountId) {
       return { ...booking, ...(namesRes.rows[0] ?? {}) };
     },
   );
+
+  if (!confirmed) {
+    await refundUnconfirmablePayment(session, tenantIdFromAcct, bookingId, accountId);
+    return;
+  }
 
   // Post-commit: confirm to the walk-in customer. Fire-and-forget —
   // email failure must never fail the webhook.
@@ -638,6 +674,61 @@ async function handleCustomerBookingPaid(session, accountId) {
         console.error('[email] walk-in booking confirmation send failed:', err),
       );
     }
+  }
+}
+
+// A walk-in paid for a booking that is no longer in pending_payment
+// (janitor-cancelled expired hold, or admin cancel while they sat on
+// the Stripe-hosted page). Refund the payment on the connected
+// account and stamp the refund on the booking row so the money trail
+// is admin-visible. Called OUTSIDE any open transaction.
+//
+// Failure semantics: a refund error is rethrown → the webhook 500s →
+// the dispatcher releases the dedup row → Stripe redelivers and the
+// refund is retried. An already-refunded charge (retry after a
+// partial failure) is treated as success.
+async function refundUnconfirmablePayment(session, tenantId, bookingId, accountId) {
+  console.warn(
+    `checkout.session.completed (payment): booking ${bookingId} not in pending_payment state; refunding payment ${session.payment_intent ?? '(none)'}`,
+  );
+  if (!session.payment_intent) {
+    // Nothing refundable on the session — should not happen for a
+    // completed mode='payment' session. Manual reconciliation.
+    console.error(
+      `checkout.session.completed (payment): booking ${bookingId} paid but session has no payment_intent; manual reconciliation required`,
+    );
+    return;
+  }
+
+  try {
+    await getStripe().refunds.create(
+      { payment_intent: session.payment_intent },
+      { stripeAccount: accountId },
+    );
+  } catch (err) {
+    if (err?.code !== 'charge_already_refunded') throw err;
+  }
+
+  // Record the refund on the booking (fresh tenant transaction — the
+  // Stripe call above ran outside any open tx). payment_status
+  // 'refunded' requires paid == refunded > 0 per the schema CHECK;
+  // the guard on 'pending' keeps this idempotent across retries.
+  const amount = session.amount_total ?? 0;
+  if (amount > 0) {
+    await withTenantContextById(tenantId, async (client) => {
+      await client.query(
+        `UPDATE bookings
+            SET amount_paid_cents = $1,
+                amount_refunded_cents = $1,
+                payment_status = 'refunded',
+                stripe_payment_intent_id = $2
+          WHERE tenant_id = $3
+            AND id = $4
+            AND status <> 'pending_payment'
+            AND payment_status = 'pending'`,
+        [amount, session.payment_intent, tenantId, bookingId],
+      );
+    });
   }
 }
 

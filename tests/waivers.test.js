@@ -359,7 +359,10 @@ test('member rental booking: 409 with waiver code → sign → retry succeeds', 
   assert.equal(blockedBody.code, 'waiver_signature_required');
   assert.equal(blockedBody.waiver_version, policies.waiver_version);
 
-  const signed = await signWaiver(m.token, { signer_name: 'Waiver Member' });
+  const signed = await signWaiver(m.token, {
+    signer_name: 'Waiver Member',
+    waiver_version: policies.waiver_version,
+  });
   assert.equal(signed.status, 201);
   const { signature } = await signed.json();
   assert.equal(signature.member_id, m.member_id);
@@ -381,7 +384,7 @@ test('member rental booking: 409 with waiver code → sign → retry succeeds', 
 });
 
 test('member class booking: gated by the same waiver code', { skip }, async () => {
-  await setPolicies({ waiver_required: true });
+  const policies = await setPolicies({ waiver_required: true });
   const m = await newMember();
   await grantCredits(m.member_id, 10);
   const ci = await newClassInstance('2027-03-03T15:00:00.000Z');
@@ -393,7 +396,10 @@ test('member class booking: gated by the same waiver code', { skip }, async () =
   assert.equal(blocked.status, 409);
   assert.equal((await blocked.json()).code, 'waiver_signature_required');
 
-  const signed = await signWaiver(m.token, { signer_name: 'Class Member' });
+  const signed = await signWaiver(m.token, {
+    signer_name: 'Class Member',
+    waiver_version: policies.waiver_version,
+  });
   assert.equal(signed.status, 201);
 
   const retry = await memberFetch(m.token, '/api/class-bookings', {
@@ -408,12 +414,13 @@ test('member class booking: gated by the same waiver code', { skip }, async () =
 // ============================================================
 
 test('signing for a minor requires guardian_name; records both when given', { skip }, async () => {
-  await setPolicies({ waiver_required: true });
+  const policies = await setPolicies({ waiver_required: true });
   const m = await newMember();
 
   const missing = await signWaiver(m.token, {
     signer_name: 'Junior Member',
     is_minor: true,
+    waiver_version: policies.waiver_version,
   });
   assert.equal(missing.status, 400);
 
@@ -421,6 +428,7 @@ test('signing for a minor requires guardian_name; records both when given', { sk
     signer_name: 'Junior Member',
     is_minor: true,
     guardian_name: 'Guardian Adult',
+    waiver_version: policies.waiver_version,
   });
   assert.equal(ok.status, 201);
   const { signature } = await ok.json();
@@ -431,8 +439,41 @@ test('signing for a minor requires guardian_name; records both when given', { sk
 test('signing when the waiver is not required → 409', { skip }, async () => {
   await setPolicies({ waiver_required: false });
   const m = await newMember();
-  const res = await signWaiver(m.token, { signer_name: 'Eager Signer' });
+  const res = await signWaiver(m.token, {
+    signer_name: 'Eager Signer',
+    waiver_version: 1,
+  });
   assert.equal(res.status, 409);
+});
+
+test('signing with a stale waiver_version → 409 waiver_version_mismatch', { skip }, async () => {
+  const policies = await setPolicies({ waiver_required: true });
+  const m = await newMember();
+
+  // Client rendered version N, admin bumped to N+1 before the POST.
+  const res = await signWaiver(m.token, {
+    signer_name: 'Stale Signer',
+    waiver_version: policies.waiver_version + 1,
+  });
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.equal(body.code, 'waiver_version_mismatch');
+  assert.equal(body.waiver_version, policies.waiver_version);
+
+  // No signature row was recorded for the mismatched attempt.
+  const r = await privilegedPool.query(
+    `SELECT count(*)::int AS n FROM waiver_signatures
+      WHERE tenant_id = $1 AND member_id = $2`,
+    [tenant_id, m.member_id],
+  );
+  assert.equal(r.rows[0].n, 0);
+});
+
+test('signing without waiver_version → 400 (version echo is required)', { skip }, async () => {
+  await setPolicies({ waiver_required: true });
+  const m = await newMember();
+  const res = await signWaiver(m.token, { signer_name: 'No Version' });
+  assert.equal(res.status, 400);
 });
 
 test('admin-only token (no member_id) cannot sign → 403', { skip }, async () => {
@@ -456,7 +497,10 @@ test('editing waiver_text bumps the version and invalidates existing signatures'
   const m = await newMember();
   await grantCredits(m.member_id, 10);
 
-  await signWaiver(m.token, { signer_name: 'Re-signer' });
+  await signWaiver(m.token, {
+    signer_name: 'Re-signer',
+    waiver_version: p1.waiver_version,
+  });
   const first = await bookSlot(m.token, '2027-03-04T15:00:00.000Z');
   assert.equal(first.status, 201);
 
@@ -477,7 +521,10 @@ test('editing waiver_text bumps the version and invalidates existing signatures'
   assert.equal(p3.waiver_version, p2.waiver_version);
 
   // Re-sign at the new version → booking flows again.
-  const reSigned = await signWaiver(m.token, { signer_name: 'Re-signer' });
+  const reSigned = await signWaiver(m.token, {
+    signer_name: 'Re-signer',
+    waiver_version: p2.waiver_version,
+  });
   assert.equal(reSigned.status, 201);
   assert.equal((await reSigned.json()).signature.waiver_version, p2.waiver_version);
   const retry = await bookSlot(m.token, '2027-03-05T15:00:00.000Z');
@@ -521,7 +568,7 @@ test('walk-in booking without inline waiver → 409 with waiver code', { skip },
   assert.equal(body.code, 'waiver_signature_required');
 });
 
-test('walk-in inline waiver records the signature with the booking; repeats skip it', { skip }, async () => {
+test('walk-in inline waiver records the signature with the booking; repeats dedupe it', { skip }, async () => {
   const policies = await setPolicies({ waiver_required: true });
   const email = `walkin-${randomUUID()}@example.com`;
 
@@ -530,7 +577,10 @@ test('walk-in inline waiver records the signature with the booking; repeats skip
     body: JSON.stringify(
       walkInBody('2027-03-10T15:00:00.000Z', {
         email,
-        waiver: { signer_name: 'Walkin Signer' },
+        waiver: {
+          signer_name: 'Walkin Signer',
+          waiver_version: policies.waiver_version,
+        },
       }),
     ),
   });
@@ -546,10 +596,30 @@ test('walk-in inline waiver records the signature with the booking; repeats skip
   assert.equal(r.rows[0].signer_name, 'Walkin Signer');
   assert.equal(r.rows[0].waiver_version, policies.waiver_version);
 
-  // Second visit, same email, NO waiver payload — already covered.
-  const res2 = await publicFetch('/api/customers/bookings', {
+  // Second visit, same email, NO waiver payload — still 409. The gate
+  // keys on config alone, NOT on prior-signature existence: branching
+  // on "already signed" would let an unauthenticated caller probe
+  // arbitrary emails for visit history (enumeration oracle).
+  const resNoWaiver = await publicFetch('/api/customers/bookings', {
     method: 'POST',
     body: JSON.stringify(walkInBody('2027-03-11T15:00:00.000Z', { email })),
+  });
+  assert.equal(resNoWaiver.status, 409);
+  assert.equal((await resNoWaiver.json()).code, 'waiver_signature_required');
+
+  // Second visit WITH the waiver payload again (the form always
+  // renders it): booking succeeds, but no duplicate signature row.
+  const res2 = await publicFetch('/api/customers/bookings', {
+    method: 'POST',
+    body: JSON.stringify(
+      walkInBody('2027-03-11T15:00:00.000Z', {
+        email,
+        waiver: {
+          signer_name: 'Walkin Signer',
+          waiver_version: policies.waiver_version,
+        },
+      }),
+    ),
   });
   assert.equal(res2.status, 201);
   const r2 = await privilegedPool.query(
@@ -558,16 +628,38 @@ test('walk-in inline waiver records the signature with the booking; repeats skip
     [tenant_id, email],
   );
   assert.equal(r2.rows[0].n, 1, 'no duplicate signature on repeat visit');
+
+  // Stale version echo (admin edited the waiver after the form
+  // rendered) → 409 mismatch, nothing recorded.
+  const resStale = await publicFetch('/api/customers/bookings', {
+    method: 'POST',
+    body: JSON.stringify(
+      walkInBody('2027-03-12T15:00:00.000Z', {
+        email,
+        waiver: {
+          signer_name: 'Walkin Signer',
+          waiver_version: policies.waiver_version + 1,
+        },
+      }),
+    ),
+  });
+  assert.equal(resStale.status, 409);
+  assert.equal((await resStale.json()).code, 'waiver_version_mismatch');
 });
 
 test('failed walk-in booking rolls back the inline signature (same transaction)', { skip }, async () => {
-  await setPolicies({ waiver_required: true });
-  const slot = '2027-03-12T15:00:00.000Z';
+  const policies = await setPolicies({ waiver_required: true });
+  const slot = '2027-03-14T15:00:00.000Z';
 
   const first = await publicFetch('/api/customers/bookings', {
     method: 'POST',
     body: JSON.stringify(
-      walkInBody(slot, { waiver: { signer_name: 'Slot Holder' } }),
+      walkInBody(slot, {
+        waiver: {
+          signer_name: 'Slot Holder',
+          waiver_version: policies.waiver_version,
+        },
+      }),
     ),
   });
   assert.equal(first.status, 201);
@@ -580,7 +672,10 @@ test('failed walk-in booking rolls back the inline signature (same transaction)'
     body: JSON.stringify(
       walkInBody(slot, {
         email: loserEmail,
-        waiver: { signer_name: 'Slot Loser' },
+        waiver: {
+          signer_name: 'Slot Loser',
+          waiver_version: policies.waiver_version,
+        },
       }),
     ),
   });
@@ -595,12 +690,16 @@ test('failed walk-in booking rolls back the inline signature (same transaction)'
 });
 
 test('walk-in inline waiver for a minor without guardian_name → 400', { skip }, async () => {
-  await setPolicies({ waiver_required: true });
+  const policies = await setPolicies({ waiver_required: true });
   const res = await publicFetch('/api/customers/bookings', {
     method: 'POST',
     body: JSON.stringify(
       walkInBody('2027-03-13T15:00:00.000Z', {
-        waiver: { signer_name: 'Junior Walkin', is_minor: true },
+        waiver: {
+          signer_name: 'Junior Walkin',
+          is_minor: true,
+          waiver_version: policies.waiver_version,
+        },
       }),
     ),
   });

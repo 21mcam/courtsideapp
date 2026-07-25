@@ -15,6 +15,15 @@
 // bookings.js): a member on a restricted plan gets a 403 when the
 // class offering's category isn't whitelisted.
 //
+// KNOWN SCOPE CUT (email slice): class bookings send NO confirmation
+// or cancellation emails. The transactional-email slice wired the
+// four core sends into the RENTAL flows only (createMemberBooking,
+// cancelMemberBooking, createAdminBooking, walk-in webhook); classes
+// were deferred to keep that slice bounded. A member booking a cage
+// gets an email, the same member booking a class doesn't — accepted
+// asymmetry for now. v1.1: add sendBookingConfirmation /
+// sendBookingCancellation here mirroring bookings.js.
+//
 // Endpoints:
 //   GET   /api/class-instances           list bookable instances
 //   POST  /api/class-bookings            book a spot

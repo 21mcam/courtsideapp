@@ -10,11 +10,11 @@
 //                                tenant-local dates; default last 90 days)
 //
 // Week/month boundaries are computed in the TENANT's timezone
-// (CLAUDE.md gotcha #6) by reusing the pure tz helpers in
-// client/src/lib/tz.js — the same DST-safe functions the frontend and
-// tests/tz.test.js already exercise. The product's week convention is
-// Monday 00:00 tenant-local (matching run_weekly_credit_resets(),
-// migration 022).
+// (CLAUDE.md gotcha #6) via the pure tz helpers in src/lib/tz.js —
+// the backend's copy of the same DST-safe functions the frontend uses
+// (client/src/lib/tz.js), kept in sync by tests/tz.test.js. The
+// product's week convention is Monday 00:00 tenant-local (matching
+// run_weekly_credit_resets(), migration 022).
 //
 // ---------------------------------------------------------------
 // REVENUE METHOD (read before trusting the number)
@@ -48,11 +48,7 @@
 
 import { z } from 'zod';
 
-import {
-  addDays,
-  localDateString,
-  zonedTimeToUtc,
-} from '../../client/src/lib/tz.js';
+import { addDays, localDateString, zonedTimeToUtc } from '../lib/tz.js';
 
 // Non-terminal subscription statuses (glossary: everything except
 // 'cancelled'). Mirrors subscriptions_one_active_per_member.
@@ -315,7 +311,9 @@ const bookingsCsvQuerySchema = z.object({
 
 // Buffered export cap. A busy single-resource facility books ~500
 // slots/month, so 20k rows covers 90 days for even large multi-
-// resource tenants; beyond that, narrow the date range.
+// resource tenants; beyond that, narrow the date range. Exceeding the
+// cap is a 400 (never a silently truncated file — an admin would
+// reconcile revenue against incomplete data without knowing it).
 const BOOKINGS_CSV_MAX_ROWS = 20000;
 
 export async function exportBookingsCsv(req, res, next) {
@@ -360,9 +358,18 @@ export async function exportBookingsCsv(req, res, next) {
           AND b.start_time >= $2
           AND b.start_time <  $3
         ORDER BY b.start_time ASC
-        LIMIT ${BOOKINGS_CSV_MAX_ROWS}`,
+        LIMIT ${BOOKINGS_CSV_MAX_ROWS + 1}`,
       [tenant.id, fromTs, toTs],
     );
+
+    // LIMIT cap+1 detects overflow: refuse rather than silently
+    // truncate (see BOOKINGS_CSV_MAX_ROWS comment).
+    if (result.rows.length > BOOKINGS_CSV_MAX_ROWS) {
+      return res.status(400).json({
+        error: `export exceeds ${BOOKINGS_CSV_MAX_ROWS} rows; narrow the from/to date range`,
+        max_rows: BOOKINGS_CSV_MAX_ROWS,
+      });
+    }
 
     const header = [
       'booking_id',

@@ -17,23 +17,35 @@
 //      booking to status='confirmed', payment_status='paid', stamps
 //      stripe_payment_intent_id and amount_paid_cents.
 //   4. If user abandons, the hold expires at start_time bound (or our
-//      app-level 15min cap). A future janitor cleans stale rows;
-//      until then, manual cleanup or the partial GiST exclusion will
-//      reject conflicting bookings until cancellation runs through.
+//      app-level 30min cap) and the janitor sweep (cleanup.js)
+//      cancels the row.
 //
-// The 15min hold is a CHECK that hold_expires_at <= start_time, so
-// for slots starting in <15min the hold is shorter (clamped). Same
+// The 30min hold is a CHECK that hold_expires_at <= start_time, so
+// for slots starting in <30min the hold is shorter (clamped). Same
 // behavior the schema explicitly designs.
+//
+// Hold duration is 30 minutes because that's Stripe Checkout's
+// MINIMUM session expires_at. We set expires_at on the session to
+// the same instant the hold expires (clamped up to Stripe's 30min
+// floor), so the janitor cancelling an expired hold and the customer
+// still being able to pay can barely overlap. The residual race
+// (slot starting in <30min: hold clamps to start_time, session lives
+// the full 30min) is closed by the webhook auto-refunding payments
+// that land on a booking no longer in pending_payment.
 
 import { z } from 'zod';
 import { getStripe } from '../services/stripe.js';
 import {
+  getWaiverConfig,
   findMissingWaiverSignature,
   waiverSignatureSchema,
   WAIVER_REQUIRED_CODE,
+  WAIVER_VERSION_MISMATCH_CODE,
 } from './waivers.js';
 
-const HOLD_DURATION_MS = 15 * 60 * 1000;
+// Stripe's minimum Checkout session lifetime is 30 minutes; the DB
+// hold matches so the two expire together (see header).
+const HOLD_DURATION_MS = 30 * 60 * 1000;
 
 const createSchema = z.object({
   offering_id: z.string().uuid(),
@@ -75,22 +87,46 @@ export async function createCustomerBooking(req, res, next) {
     } = parsed.data;
     const { tenant, db } = req;
 
-    // 0. Liability waiver gate. When required and this email has no
-    //    CURRENT-version signature, the request must carry the inline
-    //    waiver fields (the walk-in form renders them; this 409 is
-    //    the backstop for clients that skip it). The signature row is
-    //    inserted AFTER the booking INSERT succeeds — same
-    //    transaction, so it commits iff the booking commits.
+    // 0. Liability waiver gate. When the tenant requires a waiver,
+    //    EVERY walk-in booking request must carry the inline waiver
+    //    fields (the walk-in form always renders them; this 409 is
+    //    the backstop for clients that skip it). Deliberately keyed
+    //    on config alone, NOT on whether this email already signed —
+    //    branching on prior-signature existence would let an
+    //    unauthenticated caller probe arbitrary emails for "has this
+    //    person visited since the last waiver edit" (the lookup
+    //    endpoint was carefully made non-enumerating; this one must
+    //    not leak either). Duplicate signatures are simply not
+    //    re-inserted (step 8b). The signature row is inserted AFTER
+    //    the booking INSERT succeeds — same transaction, so it
+    //    commits iff the booking commits.
+    const waiverConfig = await getWaiverConfig(db, tenant.id);
+    if (waiverConfig.waiver_required) {
+      if (!waiver) {
+        return res.status(409).json({
+          error: 'a signed liability waiver is required before booking',
+          code: WAIVER_REQUIRED_CODE,
+          waiver_version: waiverConfig.waiver_version,
+        });
+      }
+      // The client must echo the version it rendered: if the admin
+      // edited the waiver text after the form loaded, the signature
+      // would cover text the signer never saw. 409 → re-render.
+      if (waiver.waiver_version !== waiverConfig.waiver_version) {
+        return res.status(409).json({
+          error:
+            'the waiver was updated after it was displayed; reload it and sign again',
+          code: WAIVER_VERSION_MISMATCH_CODE,
+          waiver_version: waiverConfig.waiver_version,
+        });
+      }
+    }
+    // Insert-dedupe check (NOT observable in any response): only
+    // record a signature when this email has none at the current
+    // version.
     const missingWaiver = await findMissingWaiverSignature(db, tenant.id, {
       customerEmail: customer.email,
     });
-    if (missingWaiver && !waiver) {
-      return res.status(409).json({
-        error: 'a signed liability waiver is required before booking',
-        code: WAIVER_REQUIRED_CODE,
-        waiver_version: missingWaiver.waiver_version,
-      });
-    }
 
     // 1. Offering must allow public booking + capacity 1.
     const offerRes = await db.query(
@@ -240,9 +276,9 @@ export async function createCustomerBooking(req, res, next) {
     }
     const conn = connRes.rows[0];
 
-    // 7. Compute hold_expires_at: min(now+15min, start_time). Schema
+    // 7. Compute hold_expires_at: min(now+30min, start_time). Schema
     //    CHECK enforces hold_expires_at <= start_time as the upper
-    //    bound; we tighten with the app-level 15min cap.
+    //    bound; we tighten with the app-level 30min cap.
     const hold = new Date(
       Math.min(Date.now() + HOLD_DURATION_MS, start.getTime()),
     );
@@ -251,7 +287,7 @@ export async function createCustomerBooking(req, res, next) {
     //    Stripe so the slot is locked under our exclusion constraint.
     //    If the Stripe call fails afterwards the booking row stays
     //    in pending_payment until the hold expires (at which point
-    //    a future janitor cancels it). Worst case: a 15-minute slot
+    //    the janitor cancels it). Worst case: a 30-minute slot
     //    hold for a customer who walked away. Acceptable.
     let booking;
     try {
@@ -357,11 +393,19 @@ export async function createCustomerBooking(req, res, next) {
             courtside_tenant_id: tenant.id,
             courtside_booking_id: booking.id,
           },
-          // Stripe's `expires_at` requires >= 30min ahead, but our
-          // DB-side hold is often shorter. Don't set it; rely on
-          // Stripe's 24h default + the webhook checking the booking
-          // status when it flips it ('pending_payment' guard means
-          // a cancelled-meanwhile booking won't get re-confirmed).
+          // Expire the Stripe session in step with our DB hold so
+          // the janitor can't cancel a booking whose payment page is
+          // still live. Stripe's floor is 30min ahead — for slots
+          // starting sooner, the hold clamps to start_time while the
+          // session keeps the 30min minimum; that residual window is
+          // covered by the webhook's auto-refund of payments landing
+          // on a non-pending booking. The +31min floor (not exactly
+          // 30) keeps clock skew / request latency from tripping
+          // Stripe's ">= 30 minutes in the future" validation.
+          expires_at: Math.max(
+            Math.floor(hold.getTime() / 1000),
+            Math.floor(Date.now() / 1000) + 31 * 60,
+          ),
         },
         { stripeAccount: conn.stripe_account_id },
       );

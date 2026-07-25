@@ -107,8 +107,13 @@ export async function forgotPassword(req, res, next) {
     const resetUrl = tenantUrl(req.tenant.subdomain, `/reset?token=${rawToken}`);
 
     // Dev affordance: keyless environments (local dev, tests) skip
-    // the send, so the console line stays the local hand-off.
-    console.log(`[password-reset] ${resetUrl}`);
+    // the send, so the console line is the local hand-off — but ONLY
+    // there. When RESEND_API_KEY is set (production), the raw token
+    // must never hit the logs: the URL is account-takeover-capable
+    // for anyone with log access (Railway dashboard, log drains).
+    if (!process.env.RESEND_API_KEY) {
+      console.log(`[password-reset] ${resetUrl}`);
+    }
 
     // Send AFTER the transaction commits — res 'finish' fires after
     // withTenantContext's COMMIT flushes. Fire-and-forget.

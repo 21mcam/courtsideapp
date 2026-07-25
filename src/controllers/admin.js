@@ -541,6 +541,13 @@ export async function inviteAdmin(req, res, next) {
 //     walk-ins go straight to confirmed with the offering's dollar
 //     price recorded as cash due on arrival (payment_status 'pending',
 //     no Stripe involved).
+//   * The liability-waiver gate is DELIBERATELY not enforced here
+//     (unlike the member/class/walk-in self-serve flows): the person
+//     is standing at the front desk, where staff hand over the paper
+//     waiver as part of the same interaction. The AdminWaivers roster
+//     therefore only covers digitally-captured signatures — desk-
+//     booked customers may be covered on paper only. v1.1 candidate:
+//     flag unsigned emails in the admin booking UI.
 
 const MAX_ADMIN_BOOKING_MINUTES = 24 * 60;
 

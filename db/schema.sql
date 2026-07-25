@@ -610,10 +610,11 @@ CREATE POLICY subscription_plan_periods_tenant_isolation ON subscription_plan_pe
 
 -- ----------------------------------------------------------
 -- Singleton-per-member current balance.
--- Mutations go through apply_credit_change() (TODO Phase 2) which
+-- Mutations go through apply_credit_change() (defined below; shipped
+-- in migration 014, purchased-credit-aware since migration 024) which
 -- writes both this row AND a credit_ledger_entries row in one
 -- transaction. Direct UPDATE on this table is forbidden — privileges
--- will be revoked from the runtime DB role; only SECURITY DEFINER
+-- are revoked from the runtime DB role; only the SECURITY DEFINER
 -- function can write.
 CREATE TABLE credit_balances (
   tenant_id        uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
@@ -712,6 +713,140 @@ ALTER TABLE credit_ledger_entries FORCE ROW LEVEL SECURITY;
 CREATE POLICY credit_ledger_entries_tenant_isolation ON credit_ledger_entries
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+-- ----------------------------------------------------------
+-- apply_credit_change — THE credit mutation primitive (migration 014,
+-- rewritten in migration 024 for purchased-credit awareness). Every
+-- balance change in the system goes through here: it locks the
+-- balance row, computes and rejects-below-zero, maintains
+-- purchased_credits (the draw-down rule lives in step 5), updates the
+-- balance, and appends the ledger row — one transaction, enforcing
+-- the invariant that credit_balances.current_credits always equals
+-- the latest ledger balance_after.
+--
+-- SECURITY DEFINER with pinned search_path; verifies the caller's
+-- tenant GUC matches p_tenant_id so even a privileged caller can't
+-- cross tenants. The runtime role has EXECUTE here but NO direct
+-- INSERT/UPDATE on credit_balances / credit_ledger_entries.
+CREATE OR REPLACE FUNCTION apply_credit_change(
+  p_tenant_id        uuid,
+  p_member_id        uuid,
+  p_amount           integer,
+  p_reason           text,
+  p_note             text DEFAULT NULL,
+  p_granted_by       uuid DEFAULT NULL,
+  p_booking_id       uuid DEFAULT NULL,
+  p_class_booking_id uuid DEFAULT NULL
+)
+RETURNS TABLE (entry_id uuid, balance_after integer)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_guc_tenant    uuid;
+  v_current       integer;
+  v_purchased     integer;
+  v_new           integer;
+  v_new_purchased integer;
+  v_existed       boolean;
+  v_entry_id      uuid;
+BEGIN
+  -- 1. Cross-tenant defense: even SECURITY DEFINER callers must operate
+  --    within the GUC tenant.
+  v_guc_tenant := current_setting('app.current_tenant_id', true)::uuid;
+  IF v_guc_tenant IS NULL OR v_guc_tenant <> p_tenant_id THEN
+    RAISE EXCEPTION
+      'tenant context mismatch: GUC=%, p_tenant_id=%',
+      v_guc_tenant, p_tenant_id
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  -- 2. Amount sanity.
+  IF p_amount = 0 THEN
+    RAISE EXCEPTION 'amount must be non-zero'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF p_reason = 'pack_purchase' AND p_amount <= 0 THEN
+    RAISE EXCEPTION 'pack_purchase amount must be positive'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  -- 3. Lock the balance row (if any). Serialization point per member.
+  SELECT current_credits, purchased_credits
+    INTO v_current, v_purchased
+  FROM credit_balances
+  WHERE tenant_id = p_tenant_id AND member_id = p_member_id
+  FOR UPDATE;
+  v_existed := FOUND;
+
+  IF NOT v_existed THEN
+    v_current := 0;
+    v_purchased := 0;
+  END IF;
+
+  v_new := v_current + p_amount;
+
+  -- 4. Reject if would go negative.
+  IF v_new < 0 THEN
+    RAISE EXCEPTION 'insufficient credits: have %, change %',
+      v_current, p_amount
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  -- 5. Purchased-credit bookkeeping (draw-down order lives here):
+  --    pack_purchase grants add to the purchased bucket; every other
+  --    reason clamps purchased to the new balance — a no-op for
+  --    positive changes, and for spends it means subscription-week
+  --    credits drain FIRST, purchased credits LAST.
+  IF p_reason = 'pack_purchase' THEN
+    v_new_purchased := v_purchased + p_amount;
+  ELSE
+    v_new_purchased := LEAST(v_purchased, v_new);
+  END IF;
+
+  -- 6. Apply the balance change. last_reset_at only moves on
+  --    weekly_reset reasons.
+  IF v_existed THEN
+    UPDATE credit_balances
+       SET current_credits = v_new,
+           purchased_credits = v_new_purchased,
+           last_reset_at = CASE
+             WHEN p_reason = 'weekly_reset' THEN now()
+             ELSE last_reset_at
+           END
+     WHERE tenant_id = p_tenant_id AND member_id = p_member_id;
+  ELSE
+    INSERT INTO credit_balances (
+      tenant_id, member_id, current_credits, purchased_credits, last_reset_at
+    ) VALUES (
+      p_tenant_id, p_member_id, v_new, v_new_purchased,
+      CASE WHEN p_reason = 'weekly_reset' THEN now() ELSE NULL END
+    );
+  END IF;
+
+  -- 7. Append the ledger row (table CHECKs validate the rest).
+  INSERT INTO credit_ledger_entries (
+    tenant_id, member_id, amount, balance_after, reason,
+    note, granted_by, booking_id, class_booking_id
+  ) VALUES (
+    p_tenant_id, p_member_id, p_amount, v_new, p_reason,
+    p_note, p_granted_by, p_booking_id, p_class_booking_id
+  ) RETURNING id INTO v_entry_id;
+
+  entry_id := v_entry_id;
+  balance_after := v_new;
+  RETURN NEXT;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION apply_credit_change(
+  uuid, uuid, integer, text, text, uuid, uuid, uuid
+) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION apply_credit_change(
+  uuid, uuid, integer, text, text, uuid, uuid, uuid
+) TO app_runtime;
 
 -- ----------------------------------------------------------
 -- One-time credit packs (migration 024). "Buy a 10-pack, no

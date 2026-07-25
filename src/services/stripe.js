@@ -46,6 +46,7 @@ const _fakePrices = new Map();          // `${acct}:${priceId}` → price
 const _fakeCustomers = new Map();       // `${acct}:${customerId}` → customer
 const _fakeCheckoutSessions = new Map();// `${acct}:${sessionId}` → session
 const _fakeSubscriptions = new Map();   // `${acct}:${subId}` → subscription
+const _fakeRefunds = new Map();         // `${acct}:${refundId}` → refund
 
 export function __resetStripeFake() {
   _fakeAccounts.clear();
@@ -54,6 +55,17 @@ export function __resetStripeFake() {
   _fakeCustomers.clear();
   _fakeCheckoutSessions.clear();
   _fakeSubscriptions.clear();
+  _fakeRefunds.clear();
+}
+
+export function __getRefundsForAccount(acct) {
+  return Array.from(_fakeRefunds.entries())
+    .filter(([k]) => k.startsWith(`${acct}:`))
+    .map(([, v]) => v);
+}
+
+export function __getCheckoutSession(acct, sessionId) {
+  return _fakeCheckoutSessions.get(`${acct}:${sessionId}`) ?? null;
 }
 
 export function __setAccountState(id, patch) {
@@ -320,12 +332,53 @@ function testFake() {
             success_url: params.success_url,
             cancel_url: params.cancel_url,
             metadata: params.metadata ?? {},
+            expires_at:
+              params.expires_at ??
+              Math.floor(Date.now() / 1000) + 24 * 60 * 60, // Stripe default: 24h
             url: `https://stripe.example/checkout/${id}`,
             stripe_account: acct,
           };
           _fakeCheckoutSessions.set(`${acct}:${id}`, row);
           return row;
         },
+      },
+    },
+    refunds: {
+      // Full refund by payment_intent (the only shape the app uses).
+      // Mirrors Stripe: refunding an already-fully-refunded payment
+      // throws code 'charge_already_refunded'.
+      async create(params, opts) {
+        const acct = acctFromOptions(opts);
+        if (!params?.payment_intent) {
+          const err = new Error(
+            'fake stripe: refunds.create requires payment_intent',
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+        const already = Array.from(_fakeRefunds.entries()).some(
+          ([k, v]) =>
+            k.startsWith(`${acct}:`) &&
+            v.payment_intent === params.payment_intent,
+        );
+        if (already) {
+          const err = new Error(
+            `Charge for payment intent ${params.payment_intent} has already been refunded.`,
+          );
+          err.code = 'charge_already_refunded';
+          err.statusCode = 400;
+          throw err;
+        }
+        const id = `re_test_${Math.random().toString(36).slice(2, 10)}`;
+        const row = {
+          id,
+          payment_intent: params.payment_intent,
+          amount: params.amount ?? null, // null = full refund
+          status: 'succeeded',
+          stripe_account: acct,
+        };
+        _fakeRefunds.set(`${acct}:${id}`, row);
+        return row;
       },
     },
     prices: {

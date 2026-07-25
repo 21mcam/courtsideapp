@@ -9,11 +9,15 @@
 //      block any other booking on that resource for the original
 //      slot. Cancel them with cancelled_by_type='system'.
 //
-//   2. bookings still 'confirmed' after their end_time has passed.
-//      The booking happened; settle it to 'completed' (state machine:
-//      confirmed → completed). no_show remains a MANUAL admin action —
-//      the sweep never marks no-shows, and it never touches rows an
-//      admin already moved to no_show or cancelled.
+//   2. bookings still 'confirmed' AUTO_COMPLETE_AFTER_HOURS after
+//      their end_time has passed. The booking happened; settle it to
+//      'completed' (state machine: confirmed → completed). no_show
+//      remains a MANUAL admin action — the sweep never marks
+//      no-shows, and it never touches rows an admin already moved to
+//      no_show or cancelled. The 24h grace window exists precisely so
+//      staff CAN mark no-shows: front desks do an end-of-day pass, and
+//      markBookingNoShow only accepts 'confirmed' rows, so completing
+//      immediately at end_time would foreclose the no-show workflow.
 //
 //   3. subscriptions stuck at status='incomplete' or 'pending' more
 //      than STALE_INCOMPLETE_HOURS old. The subscriptions_one_active_
@@ -36,6 +40,11 @@
 import { pool } from '../db/pool.js';
 
 export const STALE_INCOMPLETE_HOURS = 24;
+
+// Grace window between a booking's end_time and the sweep settling it
+// to 'completed'. Keeps the confirmed → no_show transition available
+// for the front desk's end-of-day pass (see header).
+export const AUTO_COMPLETE_AFTER_HOURS = 24;
 
 // Core per-tenant cleanup. `db` must be a transaction-bound client
 // with app.current_tenant_id already set (req.db in the admin route,
@@ -65,20 +74,21 @@ export async function cleanupTenantData(db, tenantId) {
   );
   const bookings_cancelled = bookingsRes.rows.length;
 
-  // 2. Auto-complete confirmed bookings whose end_time has passed.
-  //    Runs AFTER the expired-hold pass so the two never race on the
-  //    same row (they can't anyway — disjoint FROM states). no_show
-  //    and cancelled rows are untouched; future bookings are
-  //    untouched. Admins mark no-shows between start_time and the
-  //    sweep settling the row — after that the booking is history.
+  // 2. Auto-complete confirmed bookings whose end_time passed more
+  //    than AUTO_COMPLETE_AFTER_HOURS ago. Runs AFTER the expired-hold
+  //    pass so the two never race on the same row (they can't anyway —
+  //    disjoint FROM states). no_show and cancelled rows are
+  //    untouched; future and recent bookings are untouched. Admins
+  //    mark no-shows between start_time and the grace window closing —
+  //    after that the booking is history.
   const completedRes = await db.query(
     `UPDATE bookings
         SET status = 'completed'
       WHERE tenant_id = $1
         AND status = 'confirmed'
-        AND end_time <= now()
+        AND end_time <= now() - ($2 * interval '1 hour')
       RETURNING id`,
-    [tenantId],
+    [tenantId, AUTO_COMPLETE_AFTER_HOURS],
   );
   const bookings_completed = completedRes.rows.length;
 

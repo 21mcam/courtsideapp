@@ -534,7 +534,7 @@ test('webhook duplicate delivery is deduped (no double UPDATE)', { skip }, async
   assert.equal(body2b.deduped, true);
 });
 
-test('webhook does NOT re-confirm a booking that was cancelled in the meantime', { skip }, async () => {
+test('webhook refunds (and does not re-confirm) a booking cancelled in the meantime', { skip }, async () => {
   const slot = '2027-06-28T15:00:00.000Z';
   const r1 = await publicFetch('/api/customers/bookings', {
     method: 'POST',
@@ -582,14 +582,65 @@ test('webhook does NOT re-confirm a booking that was cancelled in the meantime',
   assert.equal(res.status, 200);
 
   // Booking stays cancelled — handler's WHERE status = 'pending_payment'
-  // gate is the safety.
+  // gate is the safety — and the payment is auto-refunded (the
+  // customer paid for a slot we can't honor).
   const r = await privilegedPool.query(
-    `SELECT status, payment_status FROM bookings WHERE id = $1`,
+    `SELECT status, payment_status, amount_paid_cents, amount_refunded_cents,
+            stripe_payment_intent_id
+       FROM bookings WHERE id = $1`,
     [bookingId],
   );
   assert.equal(r.rows[0].status, 'cancelled');
-  // payment_status was 'pending' when row was cancelled (we cancel
-  // without reconciling money fields here; this just verifies we
-  // don't *flip* it to 'paid' on the late webhook).
-  assert.notEqual(r.rows[0].payment_status, 'paid');
+  assert.equal(r.rows[0].payment_status, 'refunded');
+  assert.equal(r.rows[0].amount_paid_cents, DOLLAR_PRICE);
+  assert.equal(r.rows[0].amount_refunded_cents, DOLLAR_PRICE);
+  assert.equal(r.rows[0].stripe_payment_intent_id, payment_intent);
+
+  // A refund was created on the connected account for this payment.
+  const refunds = stripeFake
+    .__getRefundsForAccount(stripe_account_id)
+    .filter((rf) => rf.payment_intent === payment_intent);
+  assert.equal(refunds.length, 1, 'exactly one refund for the payment');
+
+  // Redelivery of the same event id is deduped and refunds nothing new.
+  const res2 = await postWebhook(event);
+  assert.equal((await res2.json()).deduped, true);
+  assert.equal(
+    stripeFake
+      .__getRefundsForAccount(stripe_account_id)
+      .filter((rf) => rf.payment_intent === payment_intent).length,
+    1,
+  );
+});
+
+test('walk-in Checkout session gets an expires_at aligned with the hold (>= Stripe 30min floor)', { skip }, async () => {
+  const slot = '2027-07-05T15:00:00.000Z';
+  const before_ = Math.floor(Date.now() / 1000);
+  const r1 = await publicFetch('/api/customers/bookings', {
+    method: 'POST',
+    body: JSON.stringify(bookingBody(slot)),
+  });
+  assert.equal(r1.status, 201);
+  const created = await r1.json();
+
+  const session = stripeFake.__getCheckoutSession(
+    stripe_account_id,
+    created.session_id,
+  );
+  assert.ok(session, 'session recorded on the fake');
+  // Stripe's floor is 30min ahead; we send 31min to absorb clock skew.
+  // The hold is min(now+30min, start_time); for this far-future slot
+  // the session expiry is the 31min floor.
+  assert.ok(
+    session.expires_at >= before_ + 30 * 60,
+    `expires_at ${session.expires_at} must be >= 30min out`,
+  );
+  assert.ok(
+    session.expires_at <= before_ + 32 * 60,
+    `expires_at ${session.expires_at} must not fall back to Stripe's 24h default`,
+  );
+
+  // DB hold ≈ 30 minutes out for a far-future slot.
+  const hold = new Date(created.booking.hold_expires_at).getTime() / 1000;
+  assert.ok(hold >= before_ + 29 * 60 && hold <= before_ + 31 * 60);
 });
