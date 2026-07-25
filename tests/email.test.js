@@ -332,8 +332,9 @@ before(async () => {
   });
   adminToken = (await login.json()).token;
 
-  // Self-registered member (register-member sends no welcome — that's
-  // reserved for admin-created members and first checkout).
+  // Self-registered member (register-member also queues a welcome
+  // email as of the people-flows slice — asserted in its own test
+  // below; every email test clears the skip log first).
   memberEmail = `member-${randomUUID()}@example.com`;
   const reg = await fetch(`${baseUrl}/api/auth/register-member?tenant=${TENANT}`, {
     method: 'POST',
@@ -437,6 +438,28 @@ test('admin sets the tenant reply-to; /api/tenant exposes it', { skip }, async (
 
   const t = await fetch(`${baseUrl}/api/tenant?tenant=${TENANT}`);
   assert.equal((await t.json()).reply_to_email, REPLY_TO);
+});
+
+test('member self-signup gets a welcome email (keyless no-op)', { skip }, async () => {
+  __clearSkippedEmails();
+  const email = `selfsignup-${randomUUID()}@example.com`;
+  const res = await fetch(`${baseUrl}/api/auth/register-member?tenant=${TENANT}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email,
+      password: 'password123',
+      first_name: 'Selby',
+      last_name: 'Signup',
+    }),
+  });
+  assert.equal(res.status, 201);
+
+  const mail = await waitForEmail((e) => e.to === email);
+  assert.ok(mail, 'welcome email was not queued');
+  assert.equal(mail.subject, 'Welcome to Email Tests');
+  assert.ok(mail.html.includes('Hi Selby,'));
+  assert.ok(mail.text.includes(`http://${TENANT}.localhost:5173/login`));
 });
 
 test('admin-created member gets a welcome email (keyless no-op)', { skip }, async () => {

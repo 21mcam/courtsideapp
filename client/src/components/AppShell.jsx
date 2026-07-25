@@ -18,7 +18,9 @@ import {
   Menu,
   Settings,
   Ticket,
+  UserCog,
   Users,
+  UsersRound,
   Wand2,
   X,
 } from 'lucide-react';
@@ -29,6 +31,8 @@ const ADMIN_NAV = [
   { to: '/admin/calendar', label: 'Calendar', icon: CalendarDays },
   { to: '/admin/bookings', label: 'Bookings', icon: BookOpenCheck },
   { to: '/admin/classes', label: 'Classes', icon: Users },
+  { to: '/admin/members', label: 'Members', icon: UsersRound },
+  { to: '/admin/staff', label: 'Staff', icon: UserCog },
   { to: '/admin/stripe', label: 'Payments', icon: CreditCard },
   { to: '/admin/settings', label: 'Settings', icon: Settings },
   { to: '/wizard', label: 'Setup wizard', icon: Wand2 },

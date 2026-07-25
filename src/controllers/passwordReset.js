@@ -38,6 +38,42 @@ function hashToken(raw) {
   return createHash('sha256').update(raw).digest('hex');
 }
 
+// Staff invites reuse this token infrastructure as a set-password
+// link; a week-long window suits "check your email when you get a
+// minute" better than the 1-hour reset window.
+export const INVITE_TOKEN_EXPIRY_HOURS = 24 * 7;
+
+// Invalidate any prior unused tokens for this user and mint a fresh
+// one. Returns the raw token (only its hash is stored). Must run
+// inside the caller's withTenantContext transaction — the
+// invalidate-then-insert sequence is what satisfies the partial
+// unique index (one active token per user, migration 013).
+export async function issuePasswordSetupToken(
+  db,
+  tenantId,
+  userId,
+  expiryHours = RESET_TOKEN_EXPIRY_HOURS,
+) {
+  await db.query(
+    `UPDATE password_reset_tokens
+        SET used_at = now()
+      WHERE tenant_id = $1 AND user_id = $2 AND used_at IS NULL`,
+    [tenantId, userId],
+  );
+
+  const rawToken = randomBytes(RESET_TOKEN_BYTES).toString('hex');
+  const expiresAt = new Date(Date.now() + expiryHours * 60 * 60 * 1000);
+
+  await db.query(
+    `INSERT INTO password_reset_tokens
+       (tenant_id, user_id, token_hash, expires_at)
+     VALUES ($1, $2, $3, $4)`,
+    [tenantId, userId, hashToken(rawToken), expiresAt],
+  );
+
+  return rawToken;
+}
+
 export async function forgotPassword(req, res, next) {
   try {
     const parsed = forgotPasswordSchema.safeParse(req.body);
@@ -62,27 +98,10 @@ export async function forgotPassword(req, res, next) {
 
     const user_id = userResult.rows[0].id;
 
-    // Invalidate any prior unused tokens for this user. The partial
-    // unique index requires this — without it, the INSERT below
-    // collides with the existing active row.
-    await req.db.query(
-      `UPDATE password_reset_tokens
-          SET used_at = now()
-        WHERE tenant_id = $1 AND user_id = $2 AND used_at IS NULL`,
-      [req.tenant.id, user_id],
-    );
-
-    const rawToken = randomBytes(RESET_TOKEN_BYTES).toString('hex');
-    const tokenHash = hashToken(rawToken);
-    const expiresAt = new Date(
-      Date.now() + RESET_TOKEN_EXPIRY_HOURS * 60 * 60 * 1000,
-    );
-
-    await req.db.query(
-      `INSERT INTO password_reset_tokens
-         (tenant_id, user_id, token_hash, expires_at)
-       VALUES ($1, $2, $3, $4)`,
-      [req.tenant.id, user_id, tokenHash, expiresAt],
+    const rawToken = await issuePasswordSetupToken(
+      req.db,
+      req.tenant.id,
+      user_id,
     );
 
     const resetUrl = tenantUrl(req.tenant.subdomain, `/reset?token=${rawToken}`);

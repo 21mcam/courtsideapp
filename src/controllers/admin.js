@@ -9,9 +9,16 @@
 import { z } from 'zod';
 
 import {
+  sendAdminInvite,
   sendBookingConfirmation,
   sendMemberWelcome,
+  tenantUrl,
 } from '../services/email.js';
+import {
+  INVITE_TOKEN_EXPIRY_HOURS,
+  issuePasswordSetupToken,
+} from './passwordReset.js';
+import { isUuid } from './catalog.js';
 
 const createMemberSchema = z.object({
   email: z.string().email().toLowerCase().trim(),
@@ -148,6 +155,126 @@ export async function adjustMemberCredits(req, res, next) {
   }
 }
 
+// GET /api/admin/members/:id — member detail for the admin UI.
+//
+// One roundtrip for the whole detail view: profile + credit balance,
+// current subscription (joined with its active plan period, same
+// shape as GET /api/me/subscriptions), recent bookings (newest 20),
+// and the credit ledger paginated via ?ledger_limit & ?ledger_offset
+// (default 20, max 100). Ledger is newest-first by entry_number —
+// the append-only ordering column, immune to created_at ties.
+//
+// The runtime role has SELECT on credit_ledger_entries (writes are
+// revoked — apply_credit_change() is the only write path).
+const memberDetailQuerySchema = z.object({
+  ledger_limit: z.coerce.number().int().min(1).max(100).default(20),
+  ledger_offset: z.coerce.number().int().min(0).default(0),
+});
+
+const RECENT_BOOKINGS_LIMIT = 20;
+
+export async function getMemberDetail(req, res, next) {
+  try {
+    const member_id = req.params.id;
+    if (!isUuid(member_id)) {
+      return res.status(404).json({ error: 'member not found' });
+    }
+    const parsed = memberDetailQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid query', details: parsed.error.flatten() });
+    }
+    const { ledger_limit, ledger_offset } = parsed.data;
+    const { tenant, db } = req;
+
+    const memberRes = await db.query(
+      `SELECT m.id, m.email, m.first_name, m.last_name, m.phone,
+              m.user_id, m.created_at, m.updated_at,
+              COALESCE(cb.current_credits, 0) AS current_credits
+         FROM members m
+    LEFT JOIN credit_balances cb
+           ON cb.tenant_id = m.tenant_id
+          AND cb.member_id = m.id
+        WHERE m.tenant_id = $1 AND m.id = $2`,
+      [tenant.id, member_id],
+    );
+    if (memberRes.rows.length === 0) {
+      return res.status(404).json({ error: 'member not found' });
+    }
+
+    // At most one non-terminal subscription (partial unique index).
+    const subRes = await db.query(
+      `SELECT s.id, s.status, s.stripe_subscription_id,
+              s.current_period_start, s.current_period_end,
+              s.cancel_at_period_end, s.activated_at, s.created_at,
+              p.id AS plan_id,
+              p.name AS plan_name,
+              p.monthly_price_cents,
+              p.credits_per_week
+         FROM subscriptions s
+         LEFT JOIN subscription_plan_periods spp
+           ON spp.tenant_id = s.tenant_id
+          AND spp.subscription_id = s.id
+          AND spp.ended_at IS NULL
+         LEFT JOIN plans p
+           ON p.tenant_id = spp.tenant_id
+          AND p.id = spp.plan_id
+        WHERE s.tenant_id = $1
+          AND s.member_id = $2
+          AND s.status IN ('pending', 'active', 'past_due', 'incomplete')
+        ORDER BY s.created_at DESC
+        LIMIT 1`,
+      [tenant.id, member_id],
+    );
+
+    const bookingsRes = await db.query(
+      `SELECT b.id, b.status, b.start_time, b.end_time,
+              b.credit_cost_charged, b.amount_due_cents,
+              b.amount_paid_cents, b.payment_status, b.created_at,
+              o.name AS offering_name,
+              r.name AS resource_name
+         FROM bookings b
+         JOIN offerings o ON o.tenant_id = b.tenant_id AND o.id = b.offering_id
+         JOIN resources r ON r.tenant_id = b.tenant_id AND r.id = b.resource_id
+        WHERE b.tenant_id = $1 AND b.member_id = $2
+        ORDER BY b.start_time DESC
+        LIMIT ${RECENT_BOOKINGS_LIMIT}`,
+      [tenant.id, member_id],
+    );
+
+    const ledgerRes = await db.query(
+      `SELECT id, entry_number, amount, balance_after, reason, note,
+              granted_by, booking_id, class_booking_id, created_at
+         FROM credit_ledger_entries
+        WHERE tenant_id = $1 AND member_id = $2
+        ORDER BY entry_number DESC
+        LIMIT $3 OFFSET $4`,
+      [tenant.id, member_id, ledger_limit, ledger_offset],
+    );
+    const ledgerCountRes = await db.query(
+      `SELECT count(*)::int AS total
+         FROM credit_ledger_entries
+        WHERE tenant_id = $1 AND member_id = $2`,
+      [tenant.id, member_id],
+    );
+
+    res.json({
+      member: memberRes.rows[0],
+      subscription: subRes.rows[0] ?? null,
+      bookings: bookingsRes.rows,
+      ledger: {
+        entries: ledgerRes.rows,
+        total: ledgerCountRes.rows[0].total,
+        limit: ledger_limit,
+        offset: ledger_offset,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /api/admin/bookings — admin booking calendar feed.
 //
 // Query filters:
@@ -259,6 +386,140 @@ export async function listAdmins(req, res, next) {
       [req.tenant.id],
     );
     res.json({ admins: result.rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ---------- POST /api/admin/admins — staff invite ----------
+//
+// One user identity, many roles (CLAUDE.md): if a user row already
+// exists for this email in this tenant (e.g. a member being promoted
+// to staff), we attach a tenant_admin role to it. Otherwise we create
+// the user with NO password (password_hash NULL, migration 021) —
+// they can't log in until they consume the set-password link in the
+// invite email, which reuses the password-reset-token infrastructure
+// with a 7-day expiry.
+//
+// Existing users with a password get a plain sign-in link instead —
+// minting a reset token for them would silently invalidate any reset
+// token they requested themselves.
+//
+// Guard: an email that's already an admin in this tenant is a 409.
+
+const inviteAdminSchema = z.object({
+  email: z.string().email().toLowerCase().trim(),
+  first_name: z.string().trim().min(1).max(100),
+  last_name: z.string().trim().min(1).max(100),
+});
+
+export async function inviteAdmin(req, res, next) {
+  try {
+    const parsed = inviteAdminSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const { email, first_name, last_name } = parsed.data;
+    const { tenant, db } = req;
+
+    const userRes = await db.query(
+      `SELECT id, password_hash, first_name, last_name
+         FROM users
+        WHERE tenant_id = $1 AND email = $2`,
+      [tenant.id, email],
+    );
+
+    let user_id;
+    let userFirstName = first_name;
+    let userLastName = last_name;
+    // needsPassword drives which link the email carries.
+    let needsPassword;
+    const existing_user = userRes.rows.length > 0;
+
+    if (existing_user) {
+      const existing = userRes.rows[0];
+      user_id = existing.id;
+      userFirstName = existing.first_name;
+      userLastName = existing.last_name;
+      needsPassword = existing.password_hash == null;
+
+      const adminRes = await db.query(
+        `SELECT 1 FROM tenant_admins WHERE tenant_id = $1 AND user_id = $2`,
+        [tenant.id, user_id],
+      );
+      if (adminRes.rows.length > 0) {
+        return res
+          .status(409)
+          .json({ error: 'this email is already an admin in this tenant' });
+      }
+    } else {
+      needsPassword = true;
+      const ins = await db.query(
+        `INSERT INTO users (tenant_id, email, password_hash, first_name, last_name)
+         VALUES ($1, $2, NULL, $3, $4)
+         RETURNING id`,
+        [tenant.id, email, first_name, last_name],
+      );
+      user_id = ins.rows[0].id;
+    }
+
+    let admin;
+    try {
+      const adminIns = await db.query(
+        `INSERT INTO tenant_admins (tenant_id, user_id, role)
+         VALUES ($1, $2, 'admin')
+         RETURNING id, role, user_id, created_at`,
+        [tenant.id, user_id],
+      );
+      admin = adminIns.rows[0];
+    } catch (err) {
+      if (err.code === '23505') {
+        // UNIQUE (tenant_id, user_id) — concurrent duplicate invite.
+        return res
+          .status(409)
+          .json({ error: 'this email is already an admin in this tenant' });
+      }
+      throw err;
+    }
+
+    const actionUrl = needsPassword
+      ? tenantUrl(
+          tenant.subdomain,
+          `/reset?token=${await issuePasswordSetupToken(
+            db,
+            tenant.id,
+            user_id,
+            INVITE_TOKEN_EXPIRY_HOURS,
+          )}&invite=1`,
+        )
+      : tenantUrl(tenant.subdomain, '/login');
+
+    // Invite email — sent AFTER the transaction commits (res 'finish'
+    // fires after withTenantContext's COMMIT flushes), fire-and-
+    // forget. TODO: outbox for reliability-critical delivery.
+    res.on('finish', () => {
+      sendAdminInvite({
+        tenant,
+        to: email,
+        firstName: userFirstName,
+        actionUrl,
+        isNewUser: needsPassword,
+      }).catch((err) =>
+        console.error('[email] admin invite send failed:', err),
+      );
+    });
+
+    res.status(201).json({
+      admin: {
+        ...admin,
+        email,
+        first_name: userFirstName,
+        last_name: userLastName,
+      },
+      existing_user,
+    });
   } catch (err) {
     next(err);
   }

@@ -3,6 +3,10 @@
 // Routes:
 //   /        → role-based home (Admin or Member)
 //   /login   → login form (single, role-detected)
+//   /register → PUBLIC member self-signup
+//   /forgot  → PUBLIC forgot-password (email entry)
+//   /reset   → PUBLIC reset/set password — path is baked into sent
+//              emails (?token=..., &invite=1 for staff invites)
 //   /wizard  → admin-only setup wizard (Phase 2 slice 5)
 //   /book    → member booking flow (Phase 3 slice 5)
 //   /walk-in → PUBLIC walk-in booking, no login (Phase 5 slice 7 UI)
@@ -12,6 +16,8 @@
 //   /admin/classes  → admin schedules + instances + roster (Phase 4 slice 4)
 //   /admin/stripe   → Stripe Connect onboarding + status (Phase 5 slice 1)
 //   /admin/calendar → multi-resource day view (visual ops calendar)
+//   /admin/members + /admin/members/:id → member management
+//   /admin/staff    → staff roster + invites
 //
 // Wrapping AuthProvider so any page can read tenant + me state.
 
@@ -35,6 +41,12 @@ import AdminBlackouts from './pages/AdminBlackouts.jsx';
 import AdminPolicies from './pages/AdminPolicies.jsx';
 import WalkInPage from './pages/WalkInPage.jsx';
 import WalkInSuccessPage from './pages/WalkInSuccessPage.jsx';
+import RegisterPage from './pages/RegisterPage.jsx';
+import ForgotPasswordPage from './pages/ForgotPasswordPage.jsx';
+import ResetPasswordPage from './pages/ResetPasswordPage.jsx';
+import AdminMembers from './pages/AdminMembers.jsx';
+import AdminMemberDetail from './pages/AdminMemberDetail.jsx';
+import AdminStaff from './pages/AdminStaff.jsx';
 
 export default function App() {
   return (
@@ -58,8 +70,11 @@ function Shell() {
 
   return (
     <Routes>
-      {/* Outside the shell: login + public walk-in booking */}
+      {/* Outside the shell: login/signup/password + public walk-in */}
       <Route path="/login" element={<RouteLogin />} />
+      <Route path="/register" element={<RouteRegister />} />
+      <Route path="/forgot" element={<ForgotPasswordPage />} />
+      <Route path="/reset" element={<ResetPasswordPage />} />
       <Route path="/walk-in" element={<WalkInPage />} />
       <Route path="/walk-in/success" element={<WalkInSuccessPage />} />
 
@@ -74,6 +89,9 @@ function Shell() {
           <Route path="/admin/bookings" element={<AdminBookings />} />
           <Route path="/admin/classes" element={<AdminClasses />} />
           <Route path="/admin/calendar" element={<AdminCalendar />} />
+          <Route path="/admin/members" element={<AdminMembers />} />
+          <Route path="/admin/members/:id" element={<AdminMemberDetail />} />
+          <Route path="/admin/staff" element={<AdminStaff />} />
           <Route path="/admin/stripe" element={<AdminStripe />} />
           <Route path="/admin/settings" element={<AdminSettings />} />
           <Route path="/admin/settings/hours" element={<AdminHours />} />
@@ -97,6 +115,12 @@ function RouteLogin() {
   const { me } = useAuth();
   if (me) return <Navigate to="/" replace />;
   return <LoginPage />;
+}
+
+function RouteRegister() {
+  const { me } = useAuth();
+  if (me) return <Navigate to="/" replace />;
+  return <RegisterPage />;
 }
 
 // Guards work both as children-wrappers and as layout routes (via

@@ -1,0 +1,62 @@
+-- Migration 021 — users.password_hash nullable (staff invites)
+--
+-- Staff invites (POST /api/admin/admins) create the user row before
+-- the person has ever chosen a password: password_hash NULL means
+-- "invited, no password set yet — cannot log in". The invite email
+-- carries a set-password link that reuses the password-reset-token
+-- infrastructure (migration 013); consuming it populates
+-- password_hash through the normal reset flow.
+--
+-- Login treats a NULL hash exactly like a wrong password (same 401,
+-- no enumeration signal).
+--
+-- The CHECK is named explicitly so a future migration can drop or
+-- replace it deterministically (MIGRATION_ORDER.md convention).
+--
+-- Apply: psql -v ON_ERROR_STOP=1 -f 021_users_password_nullable.sql
+-- Depends on: 002 (users)
+-- Verify: see commented block at end.
+
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+
+-- NULL is allowed (invited, no password yet); empty/whitespace-only
+-- strings are not — same spirit as the btrim CHECKs on name fields.
+ALTER TABLE users ADD CONSTRAINT users_password_hash_not_empty
+  CHECK (password_hash IS NULL OR btrim(password_hash) <> '');
+
+-- ============================================================
+-- VERIFICATION (run manually after applying)
+-- ============================================================
+--
+-- 1. Column is nullable (expected: YES):
+--      SELECT is_nullable FROM information_schema.columns
+--       WHERE table_schema = 'public' AND table_name = 'users'
+--         AND column_name = 'password_hash';
+--
+-- 2. Named CHECK present (expected: 1 row):
+--      SELECT conname FROM pg_constraint
+--       WHERE conrelid = 'users'::regclass
+--         AND conname = 'users_password_hash_not_empty';
+--
+-- 3. NULL passes, empty string rejected:
+--      BEGIN;
+--      DO $$
+--      DECLARE v_tenant_id uuid;
+--      BEGIN
+--        INSERT INTO tenants (subdomain, name, timezone)
+--          VALUES ('verify-021', 'Verify 021', 'America/New_York')
+--          RETURNING id INTO v_tenant_id;
+--        PERFORM set_config('app.current_tenant_id', v_tenant_id::text, true);
+--        INSERT INTO users (tenant_id, email, password_hash, first_name, last_name)
+--          VALUES (v_tenant_id, 'invited@example.com', NULL, 'In', 'Vited');
+--        RAISE NOTICE 'PASS: NULL password_hash accepted';
+--        BEGIN
+--          INSERT INTO users (tenant_id, email, password_hash, first_name, last_name)
+--            VALUES (v_tenant_id, 'empty@example.com', '  ', 'Em', 'Pty');
+--          RAISE EXCEPTION 'FAIL: whitespace-only password_hash accepted';
+--        EXCEPTION WHEN check_violation THEN
+--          RAISE NOTICE 'PASS: whitespace-only password_hash rejected';
+--        END;
+--      END;
+--      $$;
+--      ROLLBACK;

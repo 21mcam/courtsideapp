@@ -206,7 +206,12 @@ CREATE TABLE users (
                     AND btrim(email) <> ''
                     AND email !~ '\s'
                   ),
-  password_hash   text NOT NULL,
+  -- NULL = invited (staff invite flow), no password set yet — cannot
+  -- log in until the set-password link is consumed. Named CHECK so a
+  -- future migration can drop/replace it deterministically.
+  password_hash   text
+                  CONSTRAINT users_password_hash_not_empty
+                  CHECK (password_hash IS NULL OR btrim(password_hash) <> ''),
   first_name      text NOT NULL
                   CHECK (btrim(first_name) <> '' AND first_name = btrim(first_name)),
   last_name       text NOT NULL

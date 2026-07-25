@@ -198,6 +198,15 @@ Transactional-email support (Phase 3 email slice).
   guarded, EXECUTE granted to `app_runtime` (same pattern as
   `set_tenant_theme` in 019)
 
+### 021_users_password_nullable.sql
+
+Staff invites (people-flows slice).
+
+- `users.password_hash` becomes nullable — NULL means "invited, no
+  password set yet, cannot log in". The invite flow reuses the
+  password-reset-token infrastructure (013) for the set-password link.
+- Named CHECK `users_password_hash_not_empty` (NULL or non-blank).
+
 ## Application of migrations
 
 For each migration file:

@@ -14,6 +14,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 
+import { sendMemberWelcome } from '../services/email.js';
+
 const TOKEN_EXPIRY = '7d';
 const BCRYPT_ROUNDS = 10;
 
@@ -88,6 +90,17 @@ export async function registerMember(req, res, next) {
       role: 'member',
     });
 
+    // Welcome email — sent AFTER the transaction commits (res
+    // 'finish' fires after withTenantContext's COMMIT flushes),
+    // fire-and-forget. TODO: outbox for reliability-critical
+    // delivery.
+    const tenant = req.tenant;
+    res.on('finish', () => {
+      sendMemberWelcome({ tenant, to: email, firstName: first_name }).catch(
+        (err) => console.error('[email] member welcome send failed:', err),
+      );
+    });
+
     res.status(201).json({ token, user_id, member_id });
   } catch (err) {
     next(err);
@@ -119,6 +132,13 @@ export async function login(req, res, next) {
     }
 
     const { id: user_id, password_hash } = userResult.rows[0];
+
+    // NULL hash = invited user who hasn't set a password yet
+    // (migration 021). Same 401 as a wrong password — no signal.
+    if (!password_hash) {
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+
     const valid = await bcrypt.compare(password, password_hash);
     if (!valid) {
       return res.status(401).json({ error: 'invalid credentials' });

@@ -15,6 +15,8 @@ import {
   listAdmins,
   createManualMember,
   adjustMemberCredits,
+  getMemberDetail,
+  inviteAdmin,
   listAllBookings,
   createAdminBooking,
   updateTenantTheme,
@@ -70,10 +72,14 @@ router.use(requireAuth, requireAdmin, withTenantContext);
 //   - listMembers: Phase 1 slice 4 (now extended with current_credits
 //     in Phase 2 slice 4)
 //   - createManualMember + adjustMemberCredits: Phase 2 slice 4
+//   - getMemberDetail + inviteAdmin: people-flows slice (member
+//     detail view + staff invites)
 router.get('/members', listMembers);
 router.post('/members', createManualMember);
+router.get('/members/:id', getMemberDetail);
 router.post('/members/:id/credit-adjustments', adjustMemberCredits);
 router.get('/admins', listAdmins);
+router.post('/admins', inviteAdmin);
 
 // Catalog (Phase 2 slice 2; update + deactivate in the Tier-A
 // sell-readiness slice). PATCH accepts partial bodies and an

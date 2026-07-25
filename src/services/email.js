@@ -327,6 +327,51 @@ export function renderWelcomeEmail({ tenantName, accent, firstName, loginUrl }) 
   return { subject, html, text };
 }
 
+// Staff invite. Two variants share the template:
+//   * isNewUser: the invitee has no password yet — the button is a
+//     set-password link (password-reset-token infrastructure, 7-day
+//     expiry).
+//   * existing user: they already log in here (e.g. a member being
+//     promoted to staff) — the button is a plain sign-in link.
+export function renderAdminInviteEmail({
+  tenantName,
+  accent,
+  firstName,
+  actionUrl,
+  isNewUser,
+}) {
+  const subject = `You've been invited to help manage ${tenantName}`;
+  const greeting = firstName ? `Hi ${firstName},` : 'Hi,';
+  const hex = accentHex(accent);
+  const safeUrl = escapeHtml(actionUrl);
+  const lead = isNewUser
+    ? 'Set a password to activate your account. The link below expires in 7 days.'
+    : 'Sign in with your existing password to get started.';
+  const buttonLabel = isNewUser ? 'Set your password' : 'Sign in';
+  const html = renderLayout({
+    tenantName,
+    accent,
+    bodyHtml: `                <p style="margin:0 0 8px;font-size:17px;font-weight:700;">You're invited</p>
+                <p style="margin:0 0 16px;">${escapeHtml(greeting)} you've been invited to help manage ${escapeHtml(tenantName)} as a staff member. ${escapeHtml(lead)}</p>
+                <p style="margin:0 0 16px;">
+                  <a href="${safeUrl}" style="display:inline-block;background-color:${hex};color:#ffffff;text-decoration:none;font-weight:600;padding:10px 20px;border-radius:8px;">${escapeHtml(buttonLabel)}</a>
+                </p>
+                <p style="margin:0 0 16px;color:#64748b;font-size:13px;">Or paste this link into your browser:<br /><a href="${safeUrl}" style="color:${hex};word-break:break-all;">${safeUrl}</a></p>
+                <p style="margin:0;color:#64748b;font-size:13px;">If you weren't expecting this invitation, you can safely ignore this email.</p>`,
+  });
+  const text = [
+    "You're invited",
+    '',
+    `${greeting} you've been invited to help manage ${tenantName} as a staff member.`,
+    lead,
+    '',
+    actionUrl,
+    '',
+    "If you weren't expecting this invitation, you can safely ignore this email.",
+  ].join('\n');
+  return { subject, html, text };
+}
+
 // ---------- send layer ----------
 
 // In-memory record of sends skipped because RESEND_API_KEY is unset.
@@ -437,6 +482,18 @@ export function sendPasswordReset({ tenant, to, resetUrl }) {
     tenantName,
     accent,
     resetUrl,
+  });
+  return sendEmail({ to, subject, html, text, replyTo });
+}
+
+export function sendAdminInvite({ tenant, to, firstName, actionUrl, isNewUser }) {
+  const { tenantName, accent, replyTo } = tenantSendFields(tenant);
+  const { subject, html, text } = renderAdminInviteEmail({
+    tenantName,
+    accent,
+    firstName,
+    actionUrl,
+    isNewUser,
   });
   return sendEmail({ to, subject, html, text, replyTo });
 }
