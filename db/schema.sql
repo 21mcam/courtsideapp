@@ -88,6 +88,17 @@ CREATE TABLE tenants (
   theme_accent                    text NOT NULL DEFAULT 'indigo'
                                   CHECK (theme_accent IN
                                          ('indigo', 'sky', 'emerald', 'violet', 'rose', 'slate')),
+  -- Reply-to for tenant transactional emails (Resend). NULL = none.
+  -- Same normalize-on-write convention as users.email. (Migration 020.)
+  reply_to_email                  text
+                                  CONSTRAINT tenants_reply_to_email_check CHECK (
+                                    reply_to_email IS NULL
+                                    OR (
+                                      reply_to_email = lower(btrim(reply_to_email))
+                                      AND btrim(reply_to_email) <> ''
+                                      AND reply_to_email !~ '\s'
+                                    )
+                                  ),
   -- platform-side billing (what the tenant pays us). Privileged-only
   -- — never exposed via tenant_lookup view.
   platform_stripe_customer_id     text,
@@ -154,12 +165,36 @@ SELECT
       AND (trial_ends_at IS NULL OR trial_ends_at > now())
     )
   ) AS is_billing_ok,
-  theme_accent
+  theme_accent,
+  reply_to_email
 FROM tenants;
 
 COMMENT ON VIEW tenant_lookup IS
   'Safe subdomain-resolution view. Exposes routing-safe columns only; '
   'never billing fields. Runtime role gets SELECT here, not on tenants.';
+
+-- ----------------------------------------------------------
+-- Tenant reply-to setter (migration 020). app_runtime has no UPDATE
+-- on tenants, so the admin settings endpoint writes through this
+-- SECURITY DEFINER function — same pattern as set_tenant_theme (019),
+-- guarded by the tenant GUC.
+CREATE OR REPLACE FUNCTION set_tenant_reply_to(p_tenant_id uuid, p_email text)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF p_tenant_id IS DISTINCT FROM current_setting('app.current_tenant_id', true)::uuid THEN
+    RAISE EXCEPTION 'tenant mismatch';
+  END IF;
+
+  UPDATE tenants SET reply_to_email = p_email WHERE id = p_tenant_id;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION set_tenant_reply_to(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION set_tenant_reply_to(uuid, text) TO app_runtime;
 
 -- ----------------------------------------------------------
 CREATE TABLE users (

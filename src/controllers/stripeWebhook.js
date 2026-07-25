@@ -20,6 +20,10 @@
 
 import { getStripe } from '../services/stripe.js';
 import { pool } from '../db/pool.js';
+import {
+  sendBookingConfirmation,
+  sendMemberWelcome,
+} from '../services/email.js';
 
 export async function handleStripeWebhook(req, res, next) {
   try {
@@ -164,6 +168,19 @@ async function withTenantContextById(tenantId, fn) {
   }
 }
 
+// Load the tenant fields the email service needs (name, subdomain,
+// timezone, theme_accent, reply_to_email). Webhooks have no
+// req.tenant — Stripe POSTs from api.stripe.com — so we read the
+// unprivileged tenant_lookup view directly via the pool, same as
+// resolveTenant does for subdomains. Returns null if the tenant is
+// gone (nothing to email about).
+async function loadTenantEmailContext(tenantId) {
+  const r = await pool.query(`SELECT * FROM tenant_lookup WHERE id = $1`, [
+    tenantId,
+  ]);
+  return r.rows[0] ?? null;
+}
+
 // Resolve tenant from event.account; returns null + logs if there's
 // no row (Stripe sent us an event for an account we don't know).
 async function resolveTenantFromAccount(accountId, eventType) {
@@ -249,6 +266,9 @@ async function handleCheckoutSessionCompleted(event, accountId) {
 
   // All work below runs inside one transaction with the tenant GUC
   // set, so RLS applies + apply_credit_change's GUC check passes.
+  // `welcome` is populated inside the tx when this is the member's
+  // FIRST subscription; the email itself goes out after COMMIT.
+  let welcome = null;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -272,6 +292,26 @@ async function handleCheckoutSessionCompleted(event, accountId) {
       return;
     }
     const plan = planRes.rows[0];
+
+    // Welcome email gate: first subscription ever for this member
+    // (history rows count — an upgrade/resubscribe isn't a welcome).
+    // Checked BEFORE our INSERT adds a row. DB reads only; the send
+    // happens post-commit.
+    const priorSubRes = await client.query(
+      `SELECT 1 FROM subscriptions
+        WHERE tenant_id = $1 AND member_id = $2 LIMIT 1`,
+      [tenantId, memberId],
+    );
+    if (priorSubRes.rows.length === 0) {
+      const contactRes = await client.query(
+        `SELECT email, first_name FROM members
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, memberId],
+      );
+      if (contactRes.rows[0]?.email) {
+        welcome = contactRes.rows[0];
+      }
+    }
 
     // Insert the subscription. The partial unique index
     // subscriptions_stripe_unique catches duplicate webhook delivery
@@ -348,6 +388,24 @@ async function handleCheckoutSessionCompleted(event, accountId) {
   } finally {
     client.release();
   }
+
+  // Post-commit: welcome the member on their first subscription.
+  // Fire-and-forget — a lost welcome email must never fail the
+  // webhook (Stripe would retry and the dedup log blocks the retry
+  // from re-running the handler anyway).
+  // TODO: outbox for reliability-critical delivery.
+  if (welcome) {
+    const tenantCtx = await loadTenantEmailContext(tenantId);
+    if (tenantCtx) {
+      sendMemberWelcome({
+        tenant: tenantCtx,
+        to: welcome.email,
+        firstName: welcome.first_name,
+      }).catch((err) =>
+        console.error('[email] member welcome send failed:', err),
+      );
+    }
+  }
 }
 
 // checkout.session.completed (mode='payment') — Phase 5 slice 7.
@@ -384,34 +442,73 @@ async function handleCustomerBookingPaid(session, accountId) {
     return;
   }
 
-  await withTenantContextById(tenantIdFromAcct, async (client) => {
-    const r = await client.query(
-      `UPDATE bookings
-          SET status = 'confirmed',
-              payment_status = 'paid',
-              amount_paid_cents = $1,
-              stripe_payment_intent_id = $2
-        WHERE tenant_id = $3
-          AND id = $4
-          AND status = 'pending_payment'
-        RETURNING id`,
-      [
-        session.amount_total ?? 0,
-        session.payment_intent ?? null,
-        tenantIdFromAcct,
-        bookingId,
-      ],
-    );
-    if (r.rows.length === 0) {
-      // Booking moved out of pending_payment between our INSERT and
-      // the payment landing. Most likely: admin cancelled, or hold
-      // expired and a janitor closed it. Slice 6 / hardening will
-      // add a refund flow for this edge.
-      console.warn(
-        `checkout.session.completed (payment): booking ${bookingId} not in pending_payment state; payment held without confirmation`,
+  const confirmed = await withTenantContextById(
+    tenantIdFromAcct,
+    async (client) => {
+      const r = await client.query(
+        `UPDATE bookings
+            SET status = 'confirmed',
+                payment_status = 'paid',
+                amount_paid_cents = $1,
+                stripe_payment_intent_id = $2
+          WHERE tenant_id = $3
+            AND id = $4
+            AND status = 'pending_payment'
+          RETURNING id, offering_id, resource_id, start_time,
+                    customer_first_name, customer_email,
+                    amount_paid_cents`,
+        [
+          session.amount_total ?? 0,
+          session.payment_intent ?? null,
+          tenantIdFromAcct,
+          bookingId,
+        ],
+      );
+      if (r.rows.length === 0) {
+        // Booking moved out of pending_payment between our INSERT and
+        // the payment landing. Most likely: admin cancelled, or hold
+        // expired and a janitor closed it. Slice 6 / hardening will
+        // add a refund flow for this edge.
+        console.warn(
+          `checkout.session.completed (payment): booking ${bookingId} not in pending_payment state; payment held without confirmation`,
+        );
+        return null;
+      }
+      const booking = r.rows[0];
+
+      // Names for the confirmation email — still DB work, still
+      // inside the tx.
+      const namesRes = await client.query(
+        `SELECT o.name AS offering_name, r.name AS resource_name
+           FROM offerings o
+           JOIN resources r
+             ON r.tenant_id = o.tenant_id AND r.id = $3
+          WHERE o.tenant_id = $1 AND o.id = $2`,
+        [tenantIdFromAcct, booking.offering_id, booking.resource_id],
+      );
+      return { ...booking, ...(namesRes.rows[0] ?? {}) };
+    },
+  );
+
+  // Post-commit: confirm to the walk-in customer. Fire-and-forget —
+  // email failure must never fail the webhook.
+  // TODO: outbox for reliability-critical delivery.
+  if (confirmed?.customer_email) {
+    const tenantCtx = await loadTenantEmailContext(tenantIdFromAcct);
+    if (tenantCtx) {
+      sendBookingConfirmation({
+        tenant: tenantCtx,
+        to: confirmed.customer_email,
+        recipientName: confirmed.customer_first_name,
+        offeringName: confirmed.offering_name,
+        resourceName: confirmed.resource_name,
+        startTime: confirmed.start_time,
+        amountPaidCents: confirmed.amount_paid_cents,
+      }).catch((err) =>
+        console.error('[email] walk-in booking confirmation send failed:', err),
       );
     }
-  });
+  }
 }
 
 // customer.subscription.updated — Phase 5 slice 4b.

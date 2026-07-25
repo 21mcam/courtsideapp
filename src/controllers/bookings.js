@@ -41,6 +41,11 @@
 
 import { z } from 'zod';
 
+import {
+  sendBookingConfirmation,
+  sendBookingCancellation,
+} from '../services/email.js';
+
 const createBookingSchema = z.object({
   offering_id: z.string().uuid(),
   resource_id: z.string().uuid(),
@@ -69,7 +74,7 @@ export async function createMemberBooking(req, res, next) {
 
     // 1. Offering
     const offerRes = await db.query(
-      `SELECT id, category, duration_minutes, credit_cost,
+      `SELECT id, name, category, duration_minutes, credit_cost,
               capacity, active, allow_member_booking
          FROM offerings
         WHERE tenant_id = $1 AND id = $2`,
@@ -144,7 +149,7 @@ export async function createMemberBooking(req, res, next) {
     //    no rows and we 404. RLS shouldn't hide it because we're in
     //    the tenant context, but defense in depth.
     const lockRes = await db.query(
-      `SELECT active FROM resources
+      `SELECT active, name FROM resources
         WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [tenant.id, resource_id],
     );
@@ -154,6 +159,7 @@ export async function createMemberBooking(req, res, next) {
     if (!lockRes.rows[0].active) {
       return res.status(409).json({ error: 'resource is inactive' });
     }
+    const resource_name = lockRes.rows[0].name;
 
     // 5a. Operating hours: at least one row must contain [start, end].
     //     Convert the row's local open/close times to UTC for the
@@ -287,6 +293,34 @@ export async function createMemberBooking(req, res, next) {
         ],
       );
       const { entry_id, balance_after } = creditRes.rows[0];
+
+      // Confirmation email — sent AFTER the transaction commits (res
+      // 'finish' fires after withTenantContext's COMMIT flushes),
+      // fire-and-forget. Contact lookup runs inside the tx (DB work
+      // only); the send itself never does (CLAUDE.md).
+      // TODO: outbox for reliability-critical delivery.
+      const contactRes = await db.query(
+        `SELECT email, first_name FROM members
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, member_id],
+      );
+      const contact = contactRes.rows[0];
+      if (contact?.email) {
+        res.on('finish', () => {
+          sendBookingConfirmation({
+            tenant,
+            to: contact.email,
+            recipientName: contact.first_name,
+            offeringName: offering.name,
+            resourceName: resource_name,
+            startTime: booking.start_time,
+            creditCost: offering.credit_cost,
+          }).catch((err) =>
+            console.error('[email] booking confirmation send failed:', err),
+          );
+        });
+      }
+
       res.status(201).json({ booking, ledger_entry_id: entry_id, balance_after });
     } catch (err) {
       if (err.code === '23514') {
@@ -328,14 +362,20 @@ export async function cancelMemberBooking(req, res, next) {
     const id = req.params.id;
 
     // Look up the booking. RLS scopes by tenant; an id from another
-    // tenant simply returns no rows.
+    // tenant simply returns no rows. Offering/resource names and the
+    // customer contact ride along for the cancellation email.
     const bookingRes = await db.query(
-      `SELECT id, member_id, offering_id, resource_id,
-              start_time, end_time, status,
-              credit_cost_charged, payment_status,
-              cancelled_at
-         FROM bookings
-        WHERE tenant_id = $1 AND id = $2`,
+      `SELECT b.id, b.member_id, b.offering_id, b.resource_id,
+              b.start_time, b.end_time, b.status,
+              b.credit_cost_charged, b.payment_status,
+              b.cancelled_at,
+              b.customer_first_name, b.customer_email,
+              o.name AS offering_name,
+              r.name AS resource_name
+         FROM bookings b
+         JOIN offerings o ON o.tenant_id = b.tenant_id AND o.id = b.offering_id
+         JOIN resources r ON r.tenant_id = b.tenant_id AND r.id = b.resource_id
+        WHERE b.tenant_id = $1 AND b.id = $2`,
       [tenant.id, id],
     );
     if (bookingRes.rows.length === 0) {
@@ -442,6 +482,40 @@ export async function cancelMemberBooking(req, res, next) {
       );
       refund_entry_id = refundRes.rows[0].entry_id;
       balance_after = refundRes.rows[0].balance_after;
+    }
+
+    // Cancellation email to whoever booked: the member (looked up
+    // inside the tx) or the walk-in customer stored on the row. Sent
+    // AFTER the transaction commits (res 'finish' fires after
+    // withTenantContext's COMMIT flushes), fire-and-forget.
+    // TODO: outbox for reliability-critical delivery.
+    let emailTo = booking.customer_email;
+    let emailName = booking.customer_first_name;
+    if (booking.member_id) {
+      const contactRes = await db.query(
+        `SELECT email, first_name FROM members
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, booking.member_id],
+      );
+      emailTo = contactRes.rows[0]?.email ?? null;
+      emailName = contactRes.rows[0]?.first_name ?? null;
+    }
+    if (emailTo) {
+      const to = emailTo;
+      const recipientName = emailName;
+      res.on('finish', () => {
+        sendBookingCancellation({
+          tenant,
+          to,
+          recipientName,
+          offeringName: booking.offering_name,
+          resourceName: booking.resource_name,
+          startTime: booking.start_time,
+          refundCredits,
+        }).catch((err) =>
+          console.error('[email] booking cancellation send failed:', err),
+        );
+      });
     }
 
     res.json({

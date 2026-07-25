@@ -174,6 +174,30 @@ applied successfully.
   ```
   If it errors, the view grant is broken.
 
+### 012–019
+
+Added incrementally during Phases 1–5; each file's header comment
+documents its contents, dependencies, and verification block. In
+brief: 012 tenant-signup function, 013 password reset tokens, 014
+`apply_credit_change` + ledger write revocations, 015
+`lookup_tenant_by_stripe_account`, 016 Stripe webhook dedup log, 017
+ledger `reason` migration transform, 018 webhook-events RLS, 019
+tenant theme accent (`theme_accent` column + `tenant_lookup` append +
+`set_tenant_theme`).
+
+### 020_tenant_reply_to.sql
+
+Transactional-email support (Phase 3 email slice).
+
+- `tenants.reply_to_email` nullable column (named CHECK
+  `tenants_reply_to_email_check`; same normalize-on-write rules as
+  `users.email`)
+- `tenant_lookup` view append (`reply_to_email` after
+  `theme_accent` — CREATE OR REPLACE VIEW can only append)
+- `set_tenant_reply_to(uuid, text)` SECURITY DEFINER setter, GUC
+  guarded, EXECUTE granted to `app_runtime` (same pattern as
+  `set_tenant_theme` in 019)
+
 ## Application of migrations
 
 For each migration file:

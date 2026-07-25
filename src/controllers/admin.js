@@ -8,6 +8,11 @@
 
 import { z } from 'zod';
 
+import {
+  sendBookingConfirmation,
+  sendMemberWelcome,
+} from '../services/email.js';
+
 const createMemberSchema = z.object({
   email: z.string().email().toLowerCase().trim(),
   first_name: z.string().trim().min(1).max(100),
@@ -65,6 +70,22 @@ export async function createManualMember(req, res, next) {
         [req.tenant.id, email, first_name, last_name, phone ?? null],
       );
       const member = { ...result.rows[0], current_credits: 0 };
+
+      // Welcome email — sent AFTER the transaction commits (res
+      // 'finish' fires after withTenantContext's COMMIT flushes),
+      // fire-and-forget. TODO: outbox for reliability-critical
+      // delivery.
+      const tenant = req.tenant;
+      res.on('finish', () => {
+        sendMemberWelcome({
+          tenant,
+          to: member.email,
+          firstName: member.first_name,
+        }).catch((err) =>
+          console.error('[email] member welcome send failed:', err),
+        );
+      });
+
       res.status(201).json({ member });
     } catch (err) {
       if (err.code === '23505') {
@@ -311,7 +332,7 @@ export async function createAdminBooking(req, res, next) {
     // Offering: active rental. Self-serve visibility flags don't gate
     // the front desk.
     const offerRes = await db.query(
-      `SELECT id, duration_minutes, credit_cost, dollar_price,
+      `SELECT id, name, duration_minutes, credit_cost, dollar_price,
               capacity, active
          FROM offerings
         WHERE tenant_id = $1 AND id = $2`,
@@ -344,7 +365,7 @@ export async function createAdminBooking(req, res, next) {
     // Lock the resource row to serialize concurrent attempts on it
     // (same pattern as the member flow).
     const lockRes = await db.query(
-      `SELECT active FROM resources
+      `SELECT active, name FROM resources
         WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [tenant.id, resource_id],
     );
@@ -354,6 +375,7 @@ export async function createAdminBooking(req, res, next) {
     if (!lockRes.rows[0].active) {
       return res.status(409).json({ error: 'resource is inactive' });
     }
+    const resource_name = lockRes.rows[0].name;
 
     // Blackouts still apply (see header comment).
     const blackoutCheck = await db.query(
@@ -493,6 +515,28 @@ export async function createAdminBooking(req, res, next) {
       }
     }
 
+    // Walk-in confirmation email — front-desk bookings for a customer
+    // captured an email at creation; confirm to it. Member bookings
+    // created by the front desk skip email (the member was standing
+    // there). Sent AFTER the transaction commits (res 'finish' fires
+    // after withTenantContext's COMMIT flushes), fire-and-forget.
+    // TODO: outbox for reliability-critical delivery.
+    if (customer?.email) {
+      res.on('finish', () => {
+        sendBookingConfirmation({
+          tenant,
+          to: customer.email,
+          recipientName: customer.first_name,
+          offeringName: offering.name,
+          resourceName: resource_name,
+          startTime: booking.start_time,
+          amountDueCents: booking.amount_due_cents,
+        }).catch((err) =>
+          console.error('[email] booking confirmation send failed:', err),
+        );
+      });
+    }
+
     res.status(201).json({ booking });
   } catch (err) {
     next(err);
@@ -518,6 +562,33 @@ export async function updateTenantTheme(req, res, next) {
       parsed.data.accent,
     ]);
     res.json({ theme_accent: parsed.data.accent });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// PUT /api/admin/reply-to-email — the tenant's reply-to address for
+// transactional emails (migration 020). null (or '') clears it.
+// Same SECURITY DEFINER write path as the theme: app_runtime has no
+// UPDATE on tenants.
+const replyToSchema = z.object({
+  reply_to_email: z.preprocess(
+    (v) => (v === '' ? null : v),
+    z.string().email().toLowerCase().trim().nullable(),
+  ),
+});
+
+export async function updateTenantReplyTo(req, res, next) {
+  try {
+    const parsed = replyToSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'invalid reply-to email' });
+    }
+    await req.db.query('SELECT set_tenant_reply_to($1, $2)', [
+      req.tenant.id,
+      parsed.data.reply_to_email,
+    ]);
+    res.json({ reply_to_email: parsed.data.reply_to_email });
   } catch (err) {
     next(err);
   }

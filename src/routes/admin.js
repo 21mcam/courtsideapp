@@ -18,6 +18,7 @@ import {
   listAllBookings,
   createAdminBooking,
   updateTenantTheme,
+  updateTenantReplyTo,
 } from '../controllers/admin.js';
 import {
   listResources,
@@ -92,6 +93,9 @@ router.put('/booking-policies', upsertBookingPolicies);
 
 // Tenant appearance (UI accent color, admin Settings page)
 router.put('/theme', updateTenantTheme);
+
+// Transactional-email reply-to address (admin Settings page)
+router.put('/reply-to-email', updateTenantReplyTo);
 
 // Blackouts (Phase 3 prep)
 router.get('/blackouts', listBlackouts);

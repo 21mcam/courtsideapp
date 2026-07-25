@@ -1,9 +1,10 @@
 // Password reset controllers — Phase 1, slice 5.
 //
-// Plumbing-only: tokens stored, hashed, single-use, rate-limited via
-// the partial-unique-index in migration 013. Email delivery via
-// Resend lands in Phase 3 — for now the reset URL is logged to the
-// server console as a dev affordance.
+// Tokens stored, hashed, single-use, rate-limited via the
+// partial-unique-index in migration 013. The reset link goes out via
+// the email service (Resend; keyless dev/test no-ops) AFTER the
+// transaction commits; the console.log stays as the local-dev
+// affordance since keyless environments never send.
 //
 // Anti-enumeration: forgotPassword always returns 200. The response
 // shape doesn't differentiate "email exists" from "email doesn't
@@ -17,6 +18,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
+
+import { sendPasswordReset, tenantUrl } from '../services/email.js';
 
 const RESET_TOKEN_BYTES = 32;
 const RESET_TOKEN_EXPIRY_HOURS = 1;
@@ -33,16 +36,6 @@ const resetPasswordSchema = z.object({
 
 function hashToken(raw) {
   return createHash('sha256').update(raw).digest('hex');
-}
-
-function buildResetUrl(req, rawToken) {
-  // Best-effort URL for the dev log. In prod (Phase 3+) Resend's
-  // template owns the URL; this is just the convenience handoff for
-  // local testing.
-  const apex = process.env.APP_HOSTNAME || 'localhost';
-  const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
-  const port = apex === 'localhost' ? ':5173' : '';
-  return `${protocol}://${req.tenant.subdomain}.${apex}${port}/reset?token=${rawToken}`;
 }
 
 export async function forgotPassword(req, res, next) {
@@ -92,9 +85,22 @@ export async function forgotPassword(req, res, next) {
       [req.tenant.id, user_id, tokenHash, expiresAt],
     );
 
-    // TODO (Phase 3): swap this for a Resend send + per-tenant
-    // reply-to address. Until then, console.log is the dev hand-off.
-    console.log(`[password-reset] ${buildResetUrl(req, rawToken)}`);
+    const resetUrl = tenantUrl(req.tenant.subdomain, `/reset?token=${rawToken}`);
+
+    // Dev affordance: keyless environments (local dev, tests) skip
+    // the send, so the console line stays the local hand-off.
+    console.log(`[password-reset] ${resetUrl}`);
+
+    // Send AFTER the transaction commits — res 'finish' fires after
+    // withTenantContext's COMMIT flushes. Fire-and-forget.
+    // TODO: outbox (CLAUDE.md) once reliability-critical email
+    // delivery needs more than log-on-failure.
+    const tenant = req.tenant;
+    res.on('finish', () => {
+      sendPasswordReset({ tenant, to: email, resetUrl }).catch((err) =>
+        console.error('[email] password reset send failed:', err),
+      );
+    });
 
     res.json({ ok: true });
   } catch (err) {
