@@ -29,6 +29,7 @@ import bookingsRouter from './routes/bookings.js';
 import classInstancesRouter from './routes/classInstances.js';
 import classBookingsRouter from './routes/classBookings.js';
 import customerBookingsRouter from './routes/customerBookings.js';
+import waiversRouter from './routes/waivers.js';
 import platformRouter from './routes/platform.js';
 import stripeWebhookRouter from './routes/stripeWebhook.js';
 import { resolveTenant } from './middleware/resolveTenant.js';
@@ -71,6 +72,7 @@ app.use('/api/bookings', bookingsRouter);
 app.use('/api/class-instances', classInstancesRouter);
 app.use('/api/class-bookings', classBookingsRouter);
 app.use('/api/customers', customerBookingsRouter);
+app.use('/api/waivers', waiversRouter);
 app.use('/api/tenant', tenantRouter);
 
 // 6. /api/* fallthrough.

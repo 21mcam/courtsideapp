@@ -63,6 +63,7 @@ import {
   updatePlan,
 } from '../controllers/stripeConnect.js';
 import { runTenantCleanup } from '../controllers/cleanup.js';
+import { listWaiverSignatures } from '../controllers/waivers.js';
 
 const router = express.Router();
 
@@ -118,6 +119,11 @@ router.put('/theme', updateTenantTheme);
 
 // Transactional-email reply-to address (admin Settings page)
 router.put('/reply-to-email', updateTenantReplyTo);
+
+// Liability waiver signatures (waivers v1 slice). Config lives on
+// booking_policies (PUT above bumps waiver_version on text change);
+// this is the read-only roster of who signed which version.
+router.get('/waiver-signatures', listWaiverSignatures);
 
 // Blackouts (Phase 3 prep)
 router.get('/blackouts', listBlackouts);

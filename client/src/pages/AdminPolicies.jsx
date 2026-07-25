@@ -8,6 +8,7 @@
 // the complete policy object.
 
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import SettingsNav from '../components/SettingsNav.jsx';
 import {
@@ -18,6 +19,7 @@ import {
   Page,
   PageHeader,
   Select,
+  Textarea,
 } from '../components/ui/index.js';
 
 const NO_SHOW_OPTIONS = [
@@ -63,6 +65,9 @@ export default function AdminPolicies() {
           max_advance_booking_days: String(p.max_advance_booking_days),
           allow_member_self_cancel: p.allow_member_self_cancel,
           allow_customer_self_cancel: p.allow_customer_self_cancel,
+          waiver_required: p.waiver_required ?? false,
+          waiver_text: p.waiver_text ?? '',
+          waiver_version: p.waiver_version ?? 1,
         });
       } catch (err) {
         if (alive) setLoadError(err.message);
@@ -102,6 +107,8 @@ export default function AdminPolicies() {
         max_advance_booking_days: Number(form.max_advance_booking_days),
         allow_member_self_cancel: form.allow_member_self_cancel,
         allow_customer_self_cancel: form.allow_customer_self_cancel,
+        waiver_required: form.waiver_required,
+        waiver_text: form.waiver_text.trim() === '' ? null : form.waiver_text,
       };
       const res = await api('/api/admin/booking-policies', {
         method: 'PUT',
@@ -109,6 +116,13 @@ export default function AdminPolicies() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      // The server bumps waiver_version when the text changed; keep
+      // the displayed version in sync.
+      setForm((prev) => ({
+        ...prev,
+        waiver_version:
+          body.booking_policies?.waiver_version ?? prev.waiver_version,
+      }));
       setSaved(true);
     } catch (err) {
       setSaveError(`Couldn't save policies: ${err.message}`);
@@ -231,6 +245,43 @@ export default function AdminPolicies() {
                     }
                   />
                 </Field>
+              )}
+            </div>
+          </Card>
+
+          <Card title="Liability waiver">
+            <div className="space-y-4">
+              <Checkbox
+                checked={form.waiver_required}
+                onChange={(v) => set({ waiver_required: v })}
+                label="Require a signed waiver before booking"
+              />
+              {form.waiver_required && (
+                <>
+                  <Field
+                    label={`Waiver text (currently version ${form.waiver_version})`}
+                    hint="Saving a change to this text requires every member and walk-in to sign again before their next booking."
+                  >
+                    <Textarea
+                      rows={10}
+                      value={form.waiver_text}
+                      onChange={(e) => set({ waiver_text: e.target.value })}
+                      placeholder="Paste your facility's liability waiver here…"
+                    />
+                  </Field>
+                  <p className="text-xs text-slate-500">
+                    Members sign once in the booking flow; walk-ins sign
+                    inline on the public booking form. See who has signed
+                    on the{' '}
+                    <Link
+                      to="/admin/settings/waivers"
+                      className="font-medium text-brand-600 hover:text-brand-700"
+                    >
+                      Waivers
+                    </Link>{' '}
+                    tab.
+                  </p>
+                </>
               )}
             </div>
           </Card>

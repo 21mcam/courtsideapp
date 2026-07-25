@@ -238,6 +238,28 @@ Weekly credit reset (credit-correctness slice).
   Initial activation (`checkout.session.completed`) still grants
   the first week.
 
+### 023_waivers.sql
+
+Liability waivers v1 (Tier-A sell-readiness slice).
+
+- Waiver config on `booking_policies`: `waiver_required` (default
+  false), `waiver_text`, `waiver_version` (default 1, named CHECK
+  `booking_policies_waiver_version_positive`). The app bumps
+  `waiver_version` whenever the admin changes `waiver_text`
+  (policies update controller) — enforcement requires a signature at
+  the CURRENT version, so a text change re-prompts everyone.
+- `waiver_signatures` table — append-only record of who signed which
+  version. `member_id` (composite FK to members, ON DELETE RESTRICT)
+  or `customer_email` for walk-ins; at least one required by CHECK.
+  Guardian fields (`guardian_name`, `is_minor`) for signing on
+  behalf of a minor (minor requires guardian by CHECK). RLS
+  enabled + forced + tenant_isolation policy. No `updated_at` —
+  immutable rows, same convention as `credit_ledger_entries`.
+- Privileges: `REVOKE UPDATE, DELETE ON waiver_signatures FROM
+  app_runtime` — the runtime role can INSERT and SELECT signatures
+  but never rewrite or remove them (011's default privileges would
+  otherwise grant full CRUD).
+
 ## Application of migrations
 
 For each migration file:

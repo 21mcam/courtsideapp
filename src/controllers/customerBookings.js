@@ -27,6 +27,11 @@
 
 import { z } from 'zod';
 import { getStripe } from '../services/stripe.js';
+import {
+  findMissingWaiverSignature,
+  waiverSignatureSchema,
+  WAIVER_REQUIRED_CODE,
+} from './waivers.js';
 
 const HOLD_DURATION_MS = 15 * 60 * 1000;
 
@@ -42,6 +47,11 @@ const createSchema = z.object({
     email: z.string().email().transform((s) => s.toLowerCase().trim()),
     phone: z.string().trim().optional(),
   }),
+  // Inline liability waiver — required (409 below) when the tenant's
+  // booking_policies.waiver_required is on and this email hasn't
+  // signed the current version yet. Recorded in the SAME transaction
+  // as the booking row.
+  waiver: waiverSignatureSchema.optional(),
   success_url: z.string().url(),
   cancel_url: z.string().url(),
 });
@@ -59,10 +69,28 @@ export async function createCustomerBooking(req, res, next) {
       resource_id,
       start_time,
       customer,
+      waiver,
       success_url,
       cancel_url,
     } = parsed.data;
     const { tenant, db } = req;
+
+    // 0. Liability waiver gate. When required and this email has no
+    //    CURRENT-version signature, the request must carry the inline
+    //    waiver fields (the walk-in form renders them; this 409 is
+    //    the backstop for clients that skip it). The signature row is
+    //    inserted AFTER the booking INSERT succeeds — same
+    //    transaction, so it commits iff the booking commits.
+    const missingWaiver = await findMissingWaiverSignature(db, tenant.id, {
+      customerEmail: customer.email,
+    });
+    if (missingWaiver && !waiver) {
+      return res.status(409).json({
+        error: 'a signed liability waiver is required before booking',
+        code: WAIVER_REQUIRED_CODE,
+        waiver_version: missingWaiver.waiver_version,
+      });
+    }
 
     // 1. Offering must allow public booking + capacity 1.
     const offerRes = await db.query(
@@ -263,6 +291,30 @@ export async function createCustomerBooking(req, res, next) {
           .json({ error: 'slot already booked (concurrent)' });
       }
       throw err;
+    }
+
+    // 8b. Record the inline waiver signature — same transaction as
+    //     the booking INSERT above, before the Stripe call. If the
+    //     Stripe call fails the response is >= 400 and
+    //     withTenantContext rolls the whole transaction back, so a
+    //     signature never lands without its booking. Skipped when
+    //     this email already holds a current-version signature
+    //     (repeat walk-in) — enforcement only needs one.
+    if (missingWaiver && waiver) {
+      await db.query(
+        `INSERT INTO waiver_signatures
+           (tenant_id, customer_email, signer_name, guardian_name,
+            is_minor, waiver_version)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          tenant.id,
+          customer.email,
+          waiver.signer_name,
+          waiver.guardian_name ?? null,
+          waiver.is_minor ?? false,
+          missingWaiver.waiver_version,
+        ],
+      );
     }
 
     // 9. Create Checkout Session in mode='payment' on the connected

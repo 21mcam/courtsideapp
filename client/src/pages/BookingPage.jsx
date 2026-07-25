@@ -20,6 +20,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { formatTimeLocal } from '../format.js';
+import WaiverModal from '../components/WaiverModal.jsx';
 import {
   Page,
   PageHeader,
@@ -79,6 +80,9 @@ export default function BookingPage() {
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
+  // Slot held aside while the waiver modal is open — the booking is
+  // retried automatically after signing.
+  const [waiverSlot, setWaiverSlot] = useState(null);
 
   // Load offerings on mount.
   useEffect(() => {
@@ -173,6 +177,13 @@ export default function BookingPage() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
+        // Waiver gate: open the signing modal instead of erroring;
+        // the booking retries automatically once signed.
+        if (res.status === 409 && body.code === 'waiver_signature_required') {
+          setWaiverSlot(slot);
+          setSubmitting(false);
+          return;
+        }
         throw new Error(body.error || `HTTP ${res.status}`);
       }
       // Refresh /api/me so the credit balance on the home page is
@@ -363,6 +374,17 @@ export default function BookingPage() {
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           Booking failed: {submitError}
         </div>
+      )}
+
+      {waiverSlot && (
+        <WaiverModal
+          onClose={() => setWaiverSlot(null)}
+          onSigned={() => {
+            const slot = waiverSlot;
+            setWaiverSlot(null);
+            bookSlot(slot);
+          }}
+        />
       )}
     </Page>
   );

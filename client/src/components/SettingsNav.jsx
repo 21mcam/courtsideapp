@@ -1,9 +1,10 @@
-// Tab nav for the admin Settings area. Four sub-pages share the
+// Tab nav for the admin Settings area. Five sub-pages share the
 // sidebar's single "Settings" entry:
 //   /admin/settings            General (appearance, facility, email)
 //   /admin/settings/hours      Operating hours per resource
 //   /admin/settings/blackouts  Blackout windows
-//   /admin/settings/policies   Booking policies
+//   /admin/settings/policies   Booking policies (incl. waiver config)
+//   /admin/settings/waivers    Waiver signature roster
 //
 // Rendered by each settings page under its PageHeader.
 
@@ -15,6 +16,7 @@ const TABS = [
   { to: '/admin/settings/hours', label: 'Operating hours' },
   { to: '/admin/settings/blackouts', label: 'Blackouts' },
   { to: '/admin/settings/policies', label: 'Policies' },
+  { to: '/admin/settings/waivers', label: 'Waivers' },
 ];
 
 export default function SettingsNav() {

@@ -25,6 +25,10 @@
 import { z } from 'zod';
 
 import { findPlanCategoryRestriction } from './bookings.js';
+import {
+  findMissingWaiverSignature,
+  WAIVER_REQUIRED_CODE,
+} from './waivers.js';
 
 // ============================================================
 // GET /api/class-instances — member-readable upcoming list
@@ -171,6 +175,21 @@ export async function createMemberClassBooking(req, res, next) {
     if (restriction) {
       return res.status(403).json({
         error: `your plan "${restriction.plan_name}" does not include the "${restriction.category}" category`,
+      });
+    }
+
+    // Liability waiver — same rule as the rental flow: the member
+    // must hold a CURRENT-version signature when the tenant requires
+    // one. The distinct `code` drives the waiver modal + retry in
+    // the UI.
+    const missingWaiver = await findMissingWaiverSignature(db, tenant.id, {
+      memberId: member_id,
+    });
+    if (missingWaiver) {
+      return res.status(409).json({
+        error: 'a signed liability waiver is required before booking',
+        code: WAIVER_REQUIRED_CODE,
+        waiver_version: missingWaiver.waiver_version,
       });
     }
 

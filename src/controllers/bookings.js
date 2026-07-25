@@ -47,6 +47,10 @@ import {
   sendBookingConfirmation,
   sendBookingCancellation,
 } from '../services/email.js';
+import {
+  findMissingWaiverSignature,
+  WAIVER_REQUIRED_CODE,
+} from './waivers.js';
 
 // Enforce plans.allowed_categories for a member booking. Returns null
 // when the booking may proceed, or { plan_name, category } when the
@@ -150,6 +154,21 @@ export async function createMemberBooking(req, res, next) {
     if (restriction) {
       return res.status(403).json({
         error: `your plan "${restriction.plan_name}" does not include the "${restriction.category}" category`,
+      });
+    }
+
+    // 1b. Liability waiver. When the tenant requires one, the member
+    //     must have signed the CURRENT waiver_version. The distinct
+    //     `code` lets the booking UI open the waiver modal, sign via
+    //     POST /api/waivers/sign, and retry automatically.
+    const missingWaiver = await findMissingWaiverSignature(db, tenant.id, {
+      memberId: member_id,
+    });
+    if (missingWaiver) {
+      return res.status(409).json({
+        error: 'a signed liability waiver is required before booking',
+        code: WAIVER_REQUIRED_CODE,
+        waiver_version: missingWaiver.waiver_version,
       });
     }
 

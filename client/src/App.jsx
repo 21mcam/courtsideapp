@@ -39,6 +39,7 @@ import AdminSettings from './pages/AdminSettings.jsx';
 import AdminHours from './pages/AdminHours.jsx';
 import AdminBlackouts from './pages/AdminBlackouts.jsx';
 import AdminPolicies from './pages/AdminPolicies.jsx';
+import AdminWaivers from './pages/AdminWaivers.jsx';
 import WalkInPage from './pages/WalkInPage.jsx';
 import WalkInSuccessPage from './pages/WalkInSuccessPage.jsx';
 import RegisterPage from './pages/RegisterPage.jsx';
@@ -97,6 +98,7 @@ function Shell() {
           <Route path="/admin/settings/hours" element={<AdminHours />} />
           <Route path="/admin/settings/blackouts" element={<AdminBlackouts />} />
           <Route path="/admin/settings/policies" element={<AdminPolicies />} />
+          <Route path="/admin/settings/waivers" element={<AdminWaivers />} />
         </Route>
       </Route>
 

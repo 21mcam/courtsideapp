@@ -951,6 +951,15 @@ CREATE TABLE booking_policies (
   -- self-service modification
   allow_member_self_cancel        boolean NOT NULL DEFAULT true,
   allow_customer_self_cancel      boolean NOT NULL DEFAULT true,
+  -- liability waiver (migration 023). waiver_version is bumped by
+  -- the app whenever waiver_text changes; enforcement requires a
+  -- waiver_signatures row at the CURRENT version, so a text change
+  -- re-prompts every member and walk-in.
+  waiver_required                 boolean NOT NULL DEFAULT false,
+  waiver_text                     text,
+  waiver_version                  integer NOT NULL DEFAULT 1
+                                  CONSTRAINT booking_policies_waiver_version_positive
+                                  CHECK (waiver_version > 0),
   created_at                      timestamptz NOT NULL DEFAULT now(),
   updated_at                      timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id),
@@ -978,6 +987,56 @@ CREATE TRIGGER booking_policies_set_updated_at
 ALTER TABLE booking_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE booking_policies FORCE ROW LEVEL SECURITY;
 CREATE POLICY booking_policies_tenant_isolation ON booking_policies
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+-- ----------------------------------------------------------
+-- Liability waiver signatures (migration 023). Append-only record of
+-- who signed which waiver_version. Either a member (member_id) or a
+-- walk-in (customer_email), never neither. Guardian fields support
+-- signing on behalf of a minor. Rows are immutable legal records: the
+-- runtime role has INSERT + SELECT but NOT UPDATE/DELETE (revoked in
+-- migration 023), and there is no updated_at (same convention as
+-- credit_ledger_entries).
+--
+-- member_id FK is ON DELETE RESTRICT (matches bookings): a signature
+-- must not silently vanish with a member row. Tenant deletion still
+-- cascades via the tenant_id FK.
+CREATE TABLE waiver_signatures (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id       uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  member_id       uuid,
+  customer_email  text CHECK (customer_email IS NULL
+                              OR (btrim(customer_email) <> ''
+                                  AND customer_email = lower(customer_email))),
+  signer_name     text NOT NULL CHECK (btrim(signer_name) <> ''),
+  guardian_name   text CHECK (guardian_name IS NULL OR btrim(guardian_name) <> ''),
+  is_minor        boolean NOT NULL DEFAULT false,
+  waiver_version  integer NOT NULL CHECK (waiver_version > 0),
+  signed_at       timestamptz NOT NULL DEFAULT now(),
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, id),
+  FOREIGN KEY (tenant_id, member_id)
+    REFERENCES members(tenant_id, id) ON DELETE RESTRICT,
+  CHECK (member_id IS NOT NULL OR customer_email IS NOT NULL),
+  -- a minor's waiver must carry the guardian who signed it
+  CHECK ((NOT is_minor) OR guardian_name IS NOT NULL)
+);
+
+CREATE INDEX waiver_signatures_member_idx
+  ON waiver_signatures (tenant_id, member_id, waiver_version)
+  WHERE member_id IS NOT NULL;
+
+CREATE INDEX waiver_signatures_customer_idx
+  ON waiver_signatures (tenant_id, customer_email, waiver_version)
+  WHERE customer_email IS NOT NULL;
+
+CREATE INDEX waiver_signatures_signed_at_idx
+  ON waiver_signatures (tenant_id, signed_at DESC);
+
+ALTER TABLE waiver_signatures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE waiver_signatures FORCE ROW LEVEL SECURITY;
+CREATE POLICY waiver_signatures_tenant_isolation ON waiver_signatures
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 

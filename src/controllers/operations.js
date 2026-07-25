@@ -238,6 +238,9 @@ const POLICY_DEFAULTS = {
   max_advance_booking_days: 30,
   allow_member_self_cancel: true,
   allow_customer_self_cancel: true,
+  waiver_required: false,
+  waiver_text: null,
+  waiver_version: 1,
 };
 
 const bookingPoliciesUpsertSchema = z
@@ -253,6 +256,11 @@ const bookingPoliciesUpsertSchema = z
     max_advance_booking_days: z.number().int().positive().optional(),
     allow_member_self_cancel: z.boolean().optional(),
     allow_customer_self_cancel: z.boolean().optional(),
+    // liability waiver config. waiver_version is NOT accepted from
+    // the client — it's bumped server-side whenever waiver_text
+    // changes (see upsertBookingPolicies).
+    waiver_required: z.boolean().optional(),
+    waiver_text: z.string().max(50000).nullable().optional(),
   });
 
 export async function getBookingPolicies(req, res, next) {
@@ -262,6 +270,7 @@ export async function getBookingPolicies(req, res, next) {
               partial_refund_percent, no_show_action, no_show_fee_cents,
               min_advance_booking_minutes, max_advance_booking_days,
               allow_member_self_cancel, allow_customer_self_cancel,
+              waiver_required, waiver_text, waiver_version,
               created_at, updated_at
          FROM booking_policies
         WHERE tenant_id = $1`,
@@ -288,15 +297,52 @@ export async function upsertBookingPolicies(req, res, next) {
     }
     const d = { ...POLICY_DEFAULTS, ...parsed.data };
 
+    // Waiver semantics differ from the other fields:
+    //   * omitted waiver fields KEEP their stored values (older
+    //     clients that PUT the pre-waiver payload must not silently
+    //     reset the tenant's waiver config), whereas other omitted
+    //     fields fall back to schema defaults (pre-existing
+    //     behavior).
+    //   * waiver_version is server-managed: changing waiver_text
+    //     bumps it, which invalidates every existing signature —
+    //     enforcement requires a CURRENT-version signature, so a
+    //     text change re-prompts everyone. Saving identical text is
+    //     not a bump.
+    // FOR UPDATE so two concurrent PUTs can't both read version N
+    // and write N+1 with different texts.
+    const existingRes = await req.db.query(
+      `SELECT waiver_required, waiver_text, waiver_version
+         FROM booking_policies
+        WHERE tenant_id = $1
+          FOR UPDATE`,
+      [req.tenant.id],
+    );
+    const existing = existingRes.rows[0] ?? null;
+
+    const waiverRequired =
+      parsed.data.waiver_required ??
+      existing?.waiver_required ??
+      POLICY_DEFAULTS.waiver_required;
+    let waiverText = existing?.waiver_text ?? null;
+    let waiverVersion = existing?.waiver_version ?? 1;
+    if (Object.hasOwn(parsed.data, 'waiver_text')) {
+      const nextText = parsed.data.waiver_text; // string | null
+      if (existing && nextText !== (existing.waiver_text ?? null)) {
+        waiverVersion = existing.waiver_version + 1;
+      }
+      waiverText = nextText;
+    }
+
     try {
       const result = await req.db.query(
         `INSERT INTO booking_policies (
            tenant_id, free_cancel_hours_before, partial_refund_hours_before,
            partial_refund_percent, no_show_action, no_show_fee_cents,
            min_advance_booking_minutes, max_advance_booking_days,
-           allow_member_self_cancel, allow_customer_self_cancel
+           allow_member_self_cancel, allow_customer_self_cancel,
+           waiver_required, waiver_text, waiver_version
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (tenant_id) DO UPDATE SET
            free_cancel_hours_before    = EXCLUDED.free_cancel_hours_before,
            partial_refund_hours_before = EXCLUDED.partial_refund_hours_before,
@@ -306,11 +352,15 @@ export async function upsertBookingPolicies(req, res, next) {
            min_advance_booking_minutes = EXCLUDED.min_advance_booking_minutes,
            max_advance_booking_days    = EXCLUDED.max_advance_booking_days,
            allow_member_self_cancel    = EXCLUDED.allow_member_self_cancel,
-           allow_customer_self_cancel  = EXCLUDED.allow_customer_self_cancel
+           allow_customer_self_cancel  = EXCLUDED.allow_customer_self_cancel,
+           waiver_required             = EXCLUDED.waiver_required,
+           waiver_text                 = EXCLUDED.waiver_text,
+           waiver_version              = EXCLUDED.waiver_version
          RETURNING free_cancel_hours_before, partial_refund_hours_before,
                    partial_refund_percent, no_show_action, no_show_fee_cents,
                    min_advance_booking_minutes, max_advance_booking_days,
                    allow_member_self_cancel, allow_customer_self_cancel,
+                   waiver_required, waiver_text, waiver_version,
                    created_at, updated_at`,
         [
           req.tenant.id,
@@ -323,6 +373,9 @@ export async function upsertBookingPolicies(req, res, next) {
           d.max_advance_booking_days,
           d.allow_member_self_cancel,
           d.allow_customer_self_cancel,
+          waiverRequired,
+          waiverText,
+          waiverVersion,
         ],
       );
       res.json({ booking_policies: { ...result.rows[0], exists: true } });
