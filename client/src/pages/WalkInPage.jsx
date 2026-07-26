@@ -16,7 +16,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import { formatCents, formatSlotLocal, formatTimeLocal } from '../format.js';
+import {
+  formatCents,
+  formatNoSlotsReason,
+  formatSlotLocal,
+  formatTimeLocal,
+  formatTimezoneLabel,
+} from '../format.js';
 import { Button, Card, Field, Input, cn } from '../components/ui/index.js';
 
 // Tenant-local YYYY-MM-DD for "today" — same helper as BookingPage.
@@ -262,7 +268,7 @@ export default function WalkInPage() {
           </h1>
           <p className="mt-1 text-sm text-slate-500">
             No account needed — pick a time, pay by card, and you're
-            booked. Times shown in {tz}.
+            booked. Times shown in {formatTimezoneLabel(tz)}.
           </p>
         </div>
 
@@ -372,8 +378,10 @@ export default function WalkInPage() {
             ) : slots && slots.length === 0 ? (
               <p className="text-sm text-slate-500">
                 No open slots on this day.
-                {slotsReason && (
-                  <span className="ml-1 text-slate-400">({slotsReason})</span>
+                {formatNoSlotsReason(slotsReason) && (
+                  <span className="ml-1 text-slate-400">
+                    {formatNoSlotsReason(slotsReason)}
+                  </span>
                 )}
               </p>
             ) : slots ? (

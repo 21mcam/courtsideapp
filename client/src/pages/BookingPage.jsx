@@ -19,7 +19,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import { formatTimeLocal } from '../format.js';
+import {
+  formatNoSlotsReason,
+  formatTimeLocal,
+  formatTimezoneLabel,
+} from '../format.js';
 import WaiverModal from '../components/WaiverModal.jsx';
 import {
   Page,
@@ -202,8 +206,8 @@ export default function BookingPage() {
         <PageHeader title="Book" />
         <Card>
           <p className="text-sm text-slate-600">
-            Booking requires a member account. Contact an admin to be
-            added as a member.
+            Booking requires a member account. Ask at the front desk to
+            get set up.
           </p>
         </Card>
       </Page>
@@ -216,7 +220,7 @@ export default function BookingPage() {
         title="Book"
         description={
           <>
-            Times shown in {tz}. Available credits:{' '}
+            Times shown in {formatTimezoneLabel(tz)}. Available credits:{' '}
             <span className="font-medium text-slate-800">
               {me.credits?.current_credits ?? 0}
             </span>
@@ -237,7 +241,8 @@ export default function BookingPage() {
           <p className="mt-3 text-sm text-slate-400">loading…</p>
         ) : offerings.length === 0 ? (
           <div className="mt-3 rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-            No member-bookable offerings configured yet.
+            Online booking isn't set up yet — check back soon or ask at
+            the front desk.
           </div>
         ) : (
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -293,8 +298,8 @@ export default function BookingPage() {
 
       {selectedOffering && selectedOffering.resources.length === 0 && (
         <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-          This offering isn't currently linked to any active resources.
-          Ask an admin to link one.
+          This session type isn't available to book online right now —
+          check back soon or ask at the front desk.
         </div>
       )}
 
@@ -328,8 +333,10 @@ export default function BookingPage() {
               ) : slots && slots.length === 0 ? (
                 <div className="mt-2 rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
                   No open slots on this day.
-                  {slotsReason && (
-                    <span className="ml-1 text-slate-400">({slotsReason})</span>
+                  {formatNoSlotsReason(slotsReason) && (
+                    <span className="ml-1 text-slate-400">
+                      {formatNoSlotsReason(slotsReason)}
+                    </span>
                   )}
                 </div>
               ) : slots ? (

@@ -1,4 +1,5 @@
-// Member dashboard — Phase 4 update.
+// Member home — Phase 4 update. (Members have a "Home", not a
+// "dashboard" — keep member-facing copy in those terms.)
 //
 // Three things the signed-in member cares about:
 //   1. How many credits do I have?
@@ -17,7 +18,12 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import { bookingStatusBadge, formatSlotLocal } from '../format.js';
+import {
+  bookingStatusBadge,
+  formatDate,
+  formatSlotLocal,
+  subscriptionStatusBadge,
+} from '../format.js';
 import {
   Page,
   PageHeader,
@@ -26,14 +32,6 @@ import {
   Badge,
   ConfirmDialog,
 } from '../components/ui/index.js';
-
-const SUB_STATUS_TONES = {
-  active: 'success',
-  past_due: 'warning',
-  cancelled: 'neutral',
-  pending: 'info',
-  incomplete: 'warning',
-};
 
 export default function MemberHome() {
   const { me, refresh } = useAuth();
@@ -179,11 +177,15 @@ export default function MemberHome() {
               <span className="text-lg font-semibold text-slate-900">
                 {subscription.plan_name ?? '—'}
               </span>
-              <Badge tone={SUB_STATUS_TONES[subscription.status] ?? 'neutral'}>
-                {subscription.status}
+              <Badge tone={subscriptionStatusBadge(subscription.status).tone}>
+                {subscriptionStatusBadge(subscription.status).label}
               </Badge>
               {subscription.cancel_at_period_end && (
-                <Badge tone="warning">ending at period end</Badge>
+                <Badge tone="warning">
+                  {subscription.current_period_end
+                    ? `Ends ${formatDate(subscription.current_period_end, me.tenant.timezone)}`
+                    : 'Ending soon'}
+                </Badge>
               )}
               <Button
                 size="sm"

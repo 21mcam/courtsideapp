@@ -1,12 +1,21 @@
 // Member subscription chooser — Phase 5 slice 4a — plus one-time
 // credit packs (credit-packs slice).
 //
-// Lists plans available for subscription; click "Subscribe" → POST
-// /api/me/subscriptions/checkout, redirect to the Stripe-hosted
-// Checkout page. After payment Stripe redirects back to /?subscribed=1
-// (the success_url). The webhook is what actually creates our
-// subscriptions row + grants credits, so on return the dashboard
-// will reflect the new subscription within a couple seconds.
+// Page states (UI-declutter pass):
+//   * Subscribed → "Your plan" card first (name, price, credits,
+//     status, Manage via the Stripe billing portal — same path as
+//     MemberHome). Any OTHER purchasable plans render below, dimmed,
+//     with a per-card switching note. No other plans → nothing below.
+//   * Not subscribed → the purchasable plan grid; if the facility has
+//     none yet, a friendly "coming soon" note (members aren't the
+//     ones who configure plans, so we never tell them to add one).
+//
+// Subscribe: click → POST /api/me/subscriptions/checkout, redirect to
+// the Stripe-hosted Checkout page. After payment Stripe redirects back
+// to /?subscribed=1 (the success_url). The webhook is what actually
+// creates our subscriptions row + grants credits, so on return the
+// member home will reflect the new subscription within a couple
+// seconds.
 //
 // Credit packs work the same way in mode='payment': "Buy" → POST
 // /api/packs/:id/checkout → Stripe → back here with ?pack_success=1
@@ -19,10 +28,23 @@ import { useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import {
-  formatAllowedCategories,
+  formatCategoryLabel,
   formatCents,
+  formatDate,
+  subscriptionStatusBadge,
 } from '../format.js';
-import { Page, PageHeader, Card, Button, Badge } from '../components/ui/index.js';
+import { Page, PageHeader, Card, Button, Badge, cn } from '../components/ui/index.js';
+
+// Member-friendly line for what a plan's credits can be spent on.
+// Never shows raw category keys.
+function planCreditsLine(plan) {
+  const credits = `${plan.credits_per_week} credit${
+    plan.credits_per_week === 1 ? '' : 's'
+  } per week`;
+  if (plan.allowed_categories == null) return `${credits} · use on anything`;
+  const labels = plan.allowed_categories.map(formatCategoryLabel).join(', ');
+  return labels ? `${credits} · for ${labels}` : credits;
+}
 
 export default function MemberPlans() {
   const { me } = useAuth();
@@ -33,6 +55,7 @@ export default function MemberPlans() {
   const [loadError, setLoadError] = useState(null);
   const [busyPlanId, setBusyPlanId] = useState(null);
   const [busyPackId, setBusyPackId] = useState(null);
+  const [portalBusy, setPortalBusy] = useState(false);
   const [actionError, setActionError] = useState(null);
   // Sticky success state on return from pack Checkout — survives the
   // URL cleanup below.
@@ -63,6 +86,26 @@ export default function MemberPlans() {
   }
 
   useEffect(load, []);
+
+  // Stripe billing portal — same self-serve path as MemberHome's
+  // Manage button (update card, view invoices, cancel/reactivate).
+  async function openPortal() {
+    if (portalBusy) return;
+    setPortalBusy(true);
+    setActionError(null);
+    try {
+      const res = await api('/api/me/subscriptions/portal', {
+        method: 'POST',
+        body: JSON.stringify({ return_url: window.location.origin + '/plans' }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      window.location.assign(body.url);
+    } catch (err) {
+      setActionError(err.message);
+      setPortalBusy(false);
+    }
+  }
 
   async function buyPack(pack) {
     if (busyPackId) return;
@@ -121,6 +164,18 @@ export default function MemberPlans() {
     );
   }
 
+  // Plans the member could switch to (their own plan isn't a
+  // "different plan" to subscribe to).
+  const otherPlans =
+    plans === null
+      ? null
+      : currentSub
+        ? plans.filter((p) => p.id !== currentSub.plan_id)
+        : plans;
+  const subStatus = currentSub
+    ? subscriptionStatusBadge(currentSub.status)
+    : null;
+
   return (
     <Page width="default">
       <PageHeader
@@ -136,15 +191,6 @@ export default function MemberPlans() {
         </div>
       )}
 
-      {currentSub && (
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          You're already subscribed to{' '}
-          <strong>{currentSub.plan_name ?? 'a plan'}</strong>. Cancel
-          it from the dashboard before subscribing to a different
-          plan.
-        </div>
-      )}
-
       {loadError && (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           {loadError}
@@ -152,58 +198,107 @@ export default function MemberPlans() {
       )}
       {actionError && (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          Subscribe failed: {actionError}
+          Something went wrong: {actionError}
         </div>
       )}
 
       {plans === null ? (
         <p className="text-sm text-slate-400">loading…</p>
-      ) : plans.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-          No plans available right now. Ask the facility to add one.
-        </div>
       ) : (
-        <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {plans.map((p) => {
-            const isCurrent = currentSub?.plan_id === p.id;
-            return (
-              <li key={p.id}>
-                <Card className="flex h-full flex-col">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="font-semibold text-slate-900">{p.name}</div>
-                    {isCurrent && <Badge tone="brand">Current plan</Badge>}
-                  </div>
-                  <div className="mt-2">
-                    <span className="text-2xl font-semibold text-slate-900">
-                      {formatCents(p.monthly_price_cents)}
+        <>
+          {/* The member's own plan, when they have one. */}
+          {currentSub && (
+            <Card>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm text-slate-500">Your plan</div>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <span className="text-lg font-semibold text-slate-900">
+                      {currentSub.plan_name ?? 'Membership'}
                     </span>
-                    <span className="ml-1 text-sm text-slate-500">/mo</span>
+                    <Badge tone={subStatus.tone}>{subStatus.label}</Badge>
+                    {currentSub.cancel_at_period_end && (
+                      <Badge tone="warning">
+                        {currentSub.current_period_end
+                          ? `Ends ${formatDate(currentSub.current_period_end, me.tenant.timezone)}`
+                          : 'Ending soon'}
+                      </Badge>
+                    )}
                   </div>
-                  {p.description && (
-                    <div className="mt-2 text-sm text-slate-500">
-                      {p.description}
-                    </div>
-                  )}
-                  <div className="mt-2 text-sm text-slate-500">
-                    {p.credits_per_week} credit
-                    {p.credits_per_week === 1 ? '' : 's'} per week ·{' '}
-                    {formatAllowedCategories(p.allowed_categories)}
+                  <div className="mt-1 text-sm text-slate-500">
+                    {formatCents(currentSub.monthly_price_cents)}
+                    /mo
+                    {currentSub.credits_per_week != null && (
+                      <>
+                        {' · '}
+                        {currentSub.credits_per_week} credit
+                        {currentSub.credits_per_week === 1 ? '' : 's'} per week
+                      </>
+                    )}
                   </div>
-                  <div className="mt-auto pt-4">
+                </div>
+                <Button
+                  variant="secondary"
+                  onClick={openPortal}
+                  disabled={portalBusy}
+                >
+                  {portalBusy ? 'opening…' : 'Manage'}
+                </Button>
+              </div>
+            </Card>
+          )}
+
+          {/* Purchasable plans. Subscribed members see the rest of the
+              lineup dimmed with a per-card switching note; if there's
+              nothing else to show, show nothing. Not-yet-subscribed
+              members with no purchasable plans get a friendly
+              coming-soon note. */}
+          {currentSub ? (
+            otherPlans.length > 0 && (
+              <>
+                <div className="pt-2">
+                  <h2 className="text-lg font-semibold text-slate-900">
+                    Other plans
+                  </h2>
+                </div>
+                <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {otherPlans.map((p) => (
+                    <li key={p.id}>
+                      <PlanCard plan={p} dimmed>
+                        <p className="text-xs text-slate-400">
+                          Switching plans: cancel your current plan
+                          first, then subscribe.
+                        </p>
+                      </PlanCard>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )
+          ) : otherPlans.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
+              Membership plans are coming soon — check back or ask at
+              the front desk.
+            </div>
+          ) : (
+            <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {otherPlans.map((p) => (
+                <li key={p.id}>
+                  <PlanCard plan={p}>
                     <Button
                       variant="primary"
                       className="w-full"
                       onClick={() => subscribe(p)}
-                      disabled={!!currentSub || busyPlanId === p.id}
+                      disabled={busyPlanId === p.id}
                     >
                       {busyPlanId === p.id ? 'opening…' : 'Subscribe'}
                     </Button>
-                  </div>
-                </Card>
-              </li>
-            );
-          })}
-        </ul>
+                  </PlanCard>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
 
       {/* One-time credit packs — no subscription required. Hidden
@@ -253,6 +348,28 @@ export default function MemberPlans() {
         </>
       )}
     </Page>
+  );
+}
+
+// One purchasable plan. `children` is the footer action area — the
+// Subscribe button normally, or the switching note when the member is
+// already subscribed elsewhere (dimmed).
+function PlanCard({ plan, dimmed = false, children }) {
+  return (
+    <Card className={cn('flex h-full flex-col', dimmed && 'opacity-60')}>
+      <div className="font-semibold text-slate-900">{plan.name}</div>
+      <div className="mt-2">
+        <span className="text-2xl font-semibold text-slate-900">
+          {formatCents(plan.monthly_price_cents)}
+        </span>
+        <span className="ml-1 text-sm text-slate-500">/mo</span>
+      </div>
+      {plan.description && (
+        <div className="mt-2 text-sm text-slate-500">{plan.description}</div>
+      )}
+      <div className="mt-2 text-sm text-slate-500">{planCreditsLine(plan)}</div>
+      <div className="mt-auto pt-4">{children}</div>
+    </Card>
   );
 }
 

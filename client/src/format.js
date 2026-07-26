@@ -39,10 +39,46 @@ export function formatDate(iso, tz) {
 }
 
 // allowed_categories is null (= all categories allowed) or an array.
+// Renders raw category keys — admin surfaces only, where the keys are
+// the admin's own configuration language. Member surfaces use
+// formatCategoryLabel instead.
 export function formatAllowedCategories(arr) {
   if (arr == null) return 'all categories';
   if (Array.isArray(arr) && arr.length === 0) return 'none';
   return arr.join(', ');
+}
+
+// Human label for an internal category key: 'cage-time' → 'Cage Time'.
+// Member/customer surfaces must never show the raw key.
+export function formatCategoryLabel(key) {
+  if (!key) return '';
+  return String(key)
+    .split('-')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+// Short human timezone label for member/customer copy — "ET" instead
+// of "America/New_York". 'shortGeneric' gives the generic zone name
+// ("ET"); some environments/zones don't support it, so fall back to
+// 'short' ("EDT") and finally to the raw IANA name.
+export function formatTimezoneLabel(tz) {
+  if (!tz) return '';
+  for (const timeZoneName of ['shortGeneric', 'short']) {
+    try {
+      const part = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        timeZoneName,
+      })
+        .formatToParts(new Date())
+        .find((p) => p.type === 'timeZoneName');
+      if (part?.value) return part.value;
+    } catch {
+      // Unsupported option or bad tz — try the next fallback.
+    }
+  }
+  return tz;
 }
 
 // Render an ISO instant in the tenant's timezone — used by member &
@@ -88,6 +124,43 @@ export function bookingStatusBadge(status) {
       return { label: 'pending payment', tone: 'info' };
     default:
       return { label: status || '—', tone: 'neutral' };
+  }
+}
+
+// Map a subscription's status enum to a label + tone for <Badge>.
+// Statuses are internal Stripe-mapped enums — never render them raw
+// in member-facing UI (past_due would show its underscore).
+export function subscriptionStatusBadge(status) {
+  switch (status) {
+    case 'active':
+      return { label: 'Active', tone: 'success' };
+    case 'past_due':
+      return { label: 'Past due', tone: 'warning' };
+    case 'cancelled':
+      return { label: 'Cancelled', tone: 'neutral' };
+    case 'pending':
+      return { label: 'Pending', tone: 'info' };
+    case 'incomplete':
+      return { label: 'Payment incomplete', tone: 'warning' };
+    default:
+      return { label: status || '—', tone: 'neutral' };
+  }
+}
+
+// /api/availability returns a machine `reason` string alongside an
+// empty slot list. Map the known reasons to member/customer-friendly
+// copy; anything unrecognized renders nothing rather than leaking
+// backend phrasing into the UI.
+export function formatNoSlotsReason(reason) {
+  switch (reason) {
+    case 'offering inactive':
+      return "This session type isn't currently offered.";
+    case 'offering not offered on this resource':
+      return "This session type isn't offered here right now.";
+    case 'class offerings use pre-generated instances, not slot availability':
+      return 'This session runs as a scheduled class — book a spot from the class schedule instead.';
+    default:
+      return null;
   }
 }
 
