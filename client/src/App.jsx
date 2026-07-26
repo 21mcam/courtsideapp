@@ -22,7 +22,7 @@
 //
 // Wrapping AuthProvider so any page can read tenant + me state.
 
-import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Link, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth.jsx';
 import AppShell from './components/AppShell.jsx';
 import LoginPage from './pages/LoginPage.jsx';
@@ -51,6 +51,7 @@ import AdminMemberDetail from './pages/AdminMemberDetail.jsx';
 import AdminStaff from './pages/AdminStaff.jsx';
 import AdminPacks from './pages/AdminPacks.jsx';
 import AdminReports from './pages/AdminReports.jsx';
+import AdminBilling from './pages/AdminBilling.jsx';
 
 export default function App() {
   return (
@@ -70,6 +71,31 @@ function Shell() {
   }
   if (!tenant || booting) {
     return <Loading />;
+  }
+
+  // Billing hold: the tenant's platform subscription has lapsed.
+  // resolveTenant 402s everything except /api/tenant, /api/auth/*,
+  // /api/me, and /api/admin/billing*, so only auth + the billing page
+  // can work — route everything else to the hold screen. AdminBilling
+  // renders standalone here (no AppShell — the sidebar's targets
+  // would all fail).
+  if (tenant.billing_blocked) {
+    return (
+      <Routes>
+        <Route path="/login" element={<RouteLogin />} />
+        <Route path="/forgot" element={<ForgotPasswordPage />} />
+        <Route path="/reset" element={<ResetPasswordPage />} />
+        <Route
+          path="/admin/settings/billing"
+          element={
+            <RouteAdminOnly>
+              <AdminBilling />
+            </RouteAdminOnly>
+          }
+        />
+        <Route path="*" element={<BillingHold />} />
+      </Routes>
+    );
   }
 
   return (
@@ -104,6 +130,7 @@ function Shell() {
           <Route path="/admin/settings/blackouts" element={<AdminBlackouts />} />
           <Route path="/admin/settings/policies" element={<AdminPolicies />} />
           <Route path="/admin/settings/waivers" element={<AdminWaivers />} />
+          <Route path="/admin/settings/billing" element={<AdminBilling />} />
         </Route>
       </Route>
 
@@ -143,6 +170,43 @@ function RouteAuthed({ children }) {
   const { me } = useAuth();
   if (!me) return <Navigate to="/login" replace />;
   return children ?? <Outlet />;
+}
+
+function BillingHold() {
+  const { tenant, me } = useAuth();
+  const isAdmin = Boolean(me?.memberships?.admin);
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+      <div className="max-w-md rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+        <h1 className="text-lg font-semibold text-slate-900">
+          {tenant.name} is temporarily unavailable
+        </h1>
+        <p className="mt-2 text-sm text-slate-600">
+          Online booking is paused right now. Please check back soon, or
+          contact the facility directly.
+        </p>
+        <p className="mt-6 text-sm">
+          {/* Client-side Links, not anchors: a full page load on bare
+              localhost drops the ?tenant= fallback param. */}
+          {isAdmin ? (
+            <Link
+              to="/admin/settings/billing"
+              className="font-medium text-brand-600 hover:text-brand-500"
+            >
+              Facility owner? Manage billing →
+            </Link>
+          ) : (
+            <Link
+              to="/login"
+              className="font-medium text-slate-500 hover:text-slate-700"
+            >
+              Facility staff? Sign in
+            </Link>
+          )}
+        </p>
+      </div>
+    </main>
+  );
 }
 
 function Loading() {

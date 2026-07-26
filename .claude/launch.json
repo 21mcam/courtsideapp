@@ -8,6 +8,12 @@
       "cwd": "client",
       "port": 5173,
       "url": "http://sunsetpark.localhost:5173"
+    },
+    {
+      "name": "courtside",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start"],
+      "port": 3000
     }
   ]
 }

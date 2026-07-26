@@ -424,6 +424,41 @@ ${detailRowsHtml(rows)}
   return { subject, html, text };
 }
 
+// Platform billing: the tenant's own Courtside subscription payment
+// failed. Addressed to the facility OPERATOR (owner admin), not their
+// members — so the CTA points at the admin billing settings page and
+// the footer's "via Courtside" framing does the platform-speaking.
+export function renderPlatformPaymentFailedEmail({
+  tenantName,
+  accent,
+  billingUrl,
+}) {
+  const subject = `Action needed: Courtside payment failed for ${tenantName}`;
+  const hex = accentHex(accent);
+  const html = renderLayout({
+    tenantName,
+    accent,
+    bodyHtml: `                <p style="margin:0 0 8px;font-size:17px;font-weight:700;">We couldn't process your Courtside payment</p>
+                <p style="margin:0 0 16px;">The latest subscription payment for ${escapeHtml(tenantName)}'s Courtside plan didn't go through. Stripe will retry automatically over the next few days, and your booking site stays online in the meantime.</p>
+                <p style="margin:0 0 16px;">To fix it now, update your payment method:</p>
+                <p style="margin:0 0 16px;">
+                  <a href="${escapeHtml(billingUrl)}" style="display:inline-block;background-color:${hex};color:#ffffff;text-decoration:none;font-weight:600;padding:10px 20px;border-radius:8px;">Update payment method</a>
+                </p>
+                <p style="margin:0;color:#64748b;font-size:13px;">If the retries keep failing, your Courtside subscription will be cancelled and your booking site paused until billing is restored.</p>`,
+  });
+  const text = [
+    "We couldn't process your Courtside payment",
+    '',
+    `The latest subscription payment for ${tenantName}'s Courtside plan didn't go through.`,
+    'Stripe will retry automatically over the next few days, and your booking site stays online in the meantime.',
+    '',
+    `Update your payment method: ${billingUrl}`,
+    '',
+    'If the retries keep failing, your Courtside subscription will be cancelled and your booking site paused until billing is restored.',
+  ].join('\n');
+  return { subject, html, text };
+}
+
 // ---------- send layer ----------
 
 // In-memory record of sends skipped because RESEND_API_KEY is unset.
@@ -581,4 +616,16 @@ export function sendMemberWelcome({ tenant, to, firstName }) {
     loginUrl: tenantUrl(tenant.subdomain, '/login'),
   });
   return sendEmail({ to, subject, html, text, replyTo });
+}
+
+// Platform → operator. Deliberately NO replyTo: tenant.reply_to_email
+// is the tenant's member-facing address; this email is from the
+// platform to the tenant, so replies go to the platform default.
+export function sendPlatformPaymentFailed({ tenant, to }) {
+  const { subject, html, text } = renderPlatformPaymentFailedEmail({
+    tenantName: tenant.name,
+    accent: tenant.theme_accent,
+    billingUrl: tenantUrl(tenant.subdomain, '/admin/settings/billing'),
+  });
+  return sendEmail({ to, subject, html, text });
 }

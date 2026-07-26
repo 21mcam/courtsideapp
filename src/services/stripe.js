@@ -174,6 +174,18 @@ function acctFromOptions(opts) {
   return opts.stripeAccount;
 }
 
+// Calls WITHOUT { stripeAccount } run on the platform's own account
+// (platform billing: tenants paying Courtside). The fake buckets
+// those under a reserved pseudo-account key so per-account isolation
+// still holds. Only the objects platform billing actually uses accept
+// this — products/prices stay Connect-strict via acctFromOptions.
+export const FAKE_PLATFORM_ACCOUNT = '_platform';
+
+function acctOrPlatform(opts) {
+  if (!opts?.stripeAccount) return FAKE_PLATFORM_ACCOUNT;
+  return acctFromOptions(opts);
+}
+
 function testFake() {
   return {
     // webhooks.constructEvent is purely local HMAC math — no API
@@ -257,7 +269,7 @@ function testFake() {
     },
     customers: {
       async create(params, opts) {
-        const acct = acctFromOptions(opts);
+        const acct = acctOrPlatform(opts);
         const id = `cus_test_${Math.random().toString(36).slice(2, 10)}`;
         const row = {
           id,
@@ -272,7 +284,7 @@ function testFake() {
     billingPortal: {
       sessions: {
         async create(params, opts) {
-          const acct = acctFromOptions(opts);
+          const acct = acctOrPlatform(opts);
           if (!params?.customer) {
             const err = new Error('fake stripe: customer required for portal session');
             err.statusCode = 400;
@@ -297,7 +309,7 @@ function testFake() {
     checkout: {
       sessions: {
         async create(params, opts) {
-          const acct = acctFromOptions(opts);
+          const acct = acctOrPlatform(opts);
           if (params?.mode !== 'subscription' && params?.mode !== 'payment') {
             const err = new Error(
               `fake stripe: only mode='subscription' | 'payment' faked, got ${params?.mode}`,

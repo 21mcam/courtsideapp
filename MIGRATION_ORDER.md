@@ -286,6 +286,38 @@ reset.
   `credits_per_week + purchased_credits`, so purchased credits roll
   over until spent.
 
+### 025_platform_billing.sql
+
+Platform billing write paths — tenants paying Courtside via Stripe.
+The billing columns themselves have existed since 002; this adds the
+code paths that use them.
+
+- `create_tenant_with_owner` DROPPED and recreated with an 8th param
+  `p_trial_ends_at timestamptz DEFAULT NULL` (drop first — keeping
+  the 7-arg overload would make 7-arg calls ambiguous). New tenants
+  get a trial clock from `PLATFORM_TRIAL_DAYS`; pre-existing tenants
+  keep `NULL` = trial never expires (deliberately grandfathers
+  Momentum et al.).
+- GUC-guarded SECURITY DEFINER functions for the tenant-admin flow:
+  `get_platform_billing(uuid)`, `set_platform_customer(uuid, text)`
+  (write-once), `set_platform_subscription(uuid, text, text)`.
+- `lookup_tenant_by_platform_customer(text)` — platform webhook
+  bootstrap, mirrors 015.
+- `admin_set_platform_billing(uuid, text, timestamptz, boolean)` —
+  super-admin escape hatch (comp / extend trial / suspend).
+- `tenant_lookup.is_billing_ok` now includes `past_due` (grace while
+  Stripe Smart Retries run; hard lockout only on cancelled/suspended
+  or trial expiry).
+
+**Stripe dashboard setup that goes with this migration:** create a
+recurring monthly Price on the PLATFORM account and set
+`PLATFORM_PRICE_ID`; add a webhook endpoint for
+`https://<apex>/webhooks/stripe-platform` with events
+`checkout.session.completed`, `customer.subscription.updated`,
+`customer.subscription.deleted`, `invoice.payment_failed`, and set
+its signing secret as `PLATFORM_STRIPE_WEBHOOK_SECRET`. (This is a
+separate endpoint + secret from the Connect webhook.)
+
 ## Application of migrations
 
 For each migration file:

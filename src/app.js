@@ -33,6 +33,7 @@ import packsRouter from './routes/packs.js';
 import waiversRouter from './routes/waivers.js';
 import platformRouter from './routes/platform.js';
 import stripeWebhookRouter from './routes/stripeWebhook.js';
+import platformStripeWebhookRouter from './routes/platformStripeWebhook.js';
 import { resolveTenant } from './middleware/resolveTenant.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,6 +50,8 @@ if (process.env.NODE_ENV === 'production') {
 //    be verified against the exact bytes Stripe sent. The router
 //    applies express.raw itself.
 app.use('/webhooks/stripe', stripeWebhookRouter);
+//    Platform-account webhook (tenant billing) — same raw-body rule.
+app.use('/webhooks/stripe-platform', platformStripeWebhookRouter);
 
 // 2. JSON body parsing for everything below.
 app.use(express.json());
