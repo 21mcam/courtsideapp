@@ -162,7 +162,7 @@ export default function AdminBilling() {
     <Page>
       <PageHeader
         title="Settings"
-        subtitle="Your Courtside subscription — the plan this facility pays for."
+        description="Your Courtside subscription — the plan this facility pays for."
       />
       {onHold ? (
         <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">

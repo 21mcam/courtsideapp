@@ -37,10 +37,11 @@ export default [
       // PascalCase identifiers are React components; without
       // eslint-plugin-react, plain ESLint doesn't see <App /> as a
       // use of `App`, so we exempt PascalCase from the unused-vars
-      // check on the client side. lowerCamelCase locals still warn.
+      // check on the client side — for locals AND destructured params
+      // (`{ icon: Icon }`). lowerCamelCase still warns.
       'no-unused-vars': [
         'warn',
-        { argsIgnorePattern: '^_', varsIgnorePattern: '^[A-Z]' },
+        { argsIgnorePattern: '^_|^[A-Z]', varsIgnorePattern: '^[A-Z]' },
       ],
     },
   },

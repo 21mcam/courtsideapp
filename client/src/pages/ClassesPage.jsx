@@ -13,7 +13,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import { formatTimeLocal } from '../format.js';
+import { formatTimeLocal, formatTimezoneLabel } from '../format.js';
 import WaiverModal from '../components/WaiverModal.jsx';
 import {
   Page,
@@ -105,8 +105,8 @@ export default function ClassesPage() {
         <PageHeader title="Classes" />
         <Card>
           <p className="text-sm text-slate-600">
-            Class booking requires a member account. Contact an admin
-            to be added as a member.
+            Class booking requires a member account. Ask at the front
+            desk to get set up.
           </p>
         </Card>
       </Page>
@@ -119,7 +119,7 @@ export default function ClassesPage() {
         title="Classes"
         description={
           <>
-            Times shown in {tz}. Available credits:{' '}
+            Times shown in {formatTimezoneLabel(tz)}. Available credits:{' '}
             <span className="font-medium text-slate-800">
               {me.credits?.current_credits ?? 0}
             </span>

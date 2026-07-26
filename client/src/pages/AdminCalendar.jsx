@@ -6,6 +6,15 @@
 // on an open area to create a booking (15-min snap; drag defines a
 // custom-length window).
 //
+// Small screens (below md, matching AppShell's drawer breakpoint)
+// get a phone layout: the resource-checkbox sidebar collapses into a
+// single-select chip row, the grid shows ONE resource at a time at
+// full width, and tapping an open slot opens the same create-booking
+// modal the desktop click/drag path uses (no drag handling on touch —
+// native scroll must keep working). Desktop keeps the multi-column
+// click/drag flow; shared copy (header, empty state, gutter label)
+// serves both.
+//
 // Date filtering is generous (±24h around the selected day) and the
 // frontend filters by tenant-local date so DST and midnight
 // boundaries are handled without tripping over UTC↔local conversion.
@@ -44,6 +53,7 @@ import {
   formatCents,
   formatSlotLocal,
   formatTimeLocal,
+  formatTimezoneLabel,
 } from '../format.js';
 import {
   assignLanes,
@@ -52,7 +62,28 @@ import {
 } from '../lib/calendarLayout.js';
 import { zonedTimeToUtc } from '../lib/tz.js';
 
-const PX_PER_MIN = 1.0; // 1px per minute → ~1020px tall grid by default
+// Desktop vertical scale: 1px per minute → ~1020px tall grid by
+// default. Phones double it (see pxPerMin in Grid) so short bookings
+// stay tappable.
+const PX_PER_MIN = 1.0;
+
+// Interaction split only: below Tailwind's md the grid shows one
+// resource and creates bookings by tap instead of mouse drag. Layout
+// differences stay in responsive classes; this hook exists because
+// WHICH columns render and WHICH pointer handlers attach genuinely
+// differ, not just their styling. Must mirror AppShell's md breakpoint.
+function useIsSmallScreen() {
+  const [isSmall, setIsSmall] = useState(
+    () => !window.matchMedia('(min-width: 768px)').matches,
+  );
+  useEffect(() => {
+    const mql = window.matchMedia('(min-width: 768px)');
+    const onChange = (e) => setIsSmall(!e.matches);
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, []);
+  return isSmall;
+}
 
 export default function AdminCalendar() {
   const { me } = useAuth();
@@ -68,6 +99,9 @@ export default function AdminCalendar() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [loadError, setLoadError] = useState(null);
   const [hiddenResourceIds, setHiddenResourceIds] = useState(() => new Set());
+  // Phone layout shows one resource at a time; null = first active.
+  const [mobileResourceId, setMobileResourceId] = useState(null);
+  const isSmall = useIsSmallScreen();
   const [actionMessage, setActionMessage] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null); // { kind, ...row }
   // Click/drag creation draft: { resourceId, resourceName, startMin,
@@ -128,12 +162,40 @@ export default function AdminCalendar() {
     };
   }, [fromIso, toIso, refreshKey]);
 
-  // Active resources only, optionally narrowed by hide toggles
-  const visibleResources = useMemo(() => {
-    return (resources ?? [])
-      .filter((r) => r.active)
-      .filter((r) => !hiddenResourceIds.has(r.id));
-  }, [resources, hiddenResourceIds]);
+  const activeResources = useMemo(
+    () => (resources ?? []).filter((r) => r.active),
+    [resources],
+  );
+
+  // Desktop: active resources, optionally narrowed by hide toggles
+  const visibleResources = useMemo(
+    () => activeResources.filter((r) => !hiddenResourceIds.has(r.id)),
+    [activeResources, hiddenResourceIds],
+  );
+
+  // Phone: exactly one resource column. Derived (not effect-set) so a
+  // deleted/deactivated selection falls back to the first active
+  // resource without a flash of empty grid.
+  const mobileResource =
+    activeResources.find((r) => r.id === mobileResourceId) ??
+    activeResources[0] ??
+    null;
+
+  // What the grid actually renders. Desktop path is untouched.
+  const gridResources = useMemo(() => {
+    if (!isSmall) return visibleResources;
+    return mobileResource ? [mobileResource] : [];
+  }, [isSmall, visibleResources, mobileResource]);
+
+  // Empty-grid copy must only point at UI the admin can actually see:
+  // "resource filters" exist solely on desktop, and only when there
+  // ARE active resources whose checkboxes were all unticked. On
+  // mobile (no filter UI) and in the true zero-resource case, the
+  // wizard is the only fix.
+  const gridEmptyMessage =
+    activeResources.length === 0
+      ? 'No active resources to display. Add resources via the setup wizard.'
+      : 'All resources are hidden — tick one in the Resources list.';
 
   // Filter to items whose start_time lands on the selected local date
   const dayBookings = useMemo(
@@ -170,7 +232,7 @@ export default function AdminCalendar() {
   // column rendering
   const itemsByResource = useMemo(() => {
     const m = new Map();
-    for (const r of visibleResources) m.set(r.id, []);
+    for (const r of gridResources) m.set(r.id, []);
     for (const b of dayBookings) {
       if (b.status === 'cancelled') continue;
       const list = m.get(b.resource_id);
@@ -182,7 +244,7 @@ export default function AdminCalendar() {
       if (list) list.push({ kind: 'class', ...ci });
     }
     return m;
-  }, [visibleResources, dayBookings, dayClassInstances]);
+  }, [gridResources, dayBookings, dayClassInstances]);
 
   function shiftDate(days) {
     const d = new Date(`${dateStr}T12:00:00.000Z`); // noon to dodge DST issues
@@ -205,7 +267,17 @@ export default function AdminCalendar() {
         <div className="max-w-[1600px] mx-auto space-y-3">
         <PageHeader
           title="Calendar"
-          description={`All times in ${tz}. Click or drag on an open area to create a booking.`}
+          description={
+            <>
+              All times in {formatTimezoneLabel(tz)}.{' '}
+              <span className="hidden md:inline">
+                Click or drag on an open area to create a booking.
+              </span>
+              <span className="md:hidden">
+                Tap an open slot to add a booking.
+              </span>
+            </>
+          }
           actions={
             <DateNav
               dateStr={dateStr}
@@ -222,35 +294,46 @@ export default function AdminCalendar() {
             {loadError}
           </div>
         )}
+        {/* Action feedback (create/cancel/no-show results — including
+            failures). On phones the admin is usually scrolled deep
+            into the ~2000px grid when the acting panel closes, so an
+            in-flow banner at the top of the page is invisible;
+            anchor it to the viewport bottom there. Dismissible so a
+            failure message doesn't cover the grid forever. */}
         {actionMessage && (
-          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-            {actionMessage}
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 max-md:fixed max-md:inset-x-4 max-md:bottom-4 max-md:z-40 max-md:bg-white max-md:shadow-lg">
+            <span>{actionMessage}</span>
+            <button
+              onClick={() => setActionMessage(null)}
+              aria-label="Dismiss"
+              className="-my-3 -mr-2 flex h-11 w-11 shrink-0 items-center justify-center text-lg leading-none text-slate-400 hover:text-slate-700"
+            >
+              ×
+            </button>
           </div>
         )}
 
         <div className="flex gap-3">
-          {/* Sidebar: resource toggles */}
-          <aside className="w-48 shrink-0 rounded border border-slate-200 bg-white p-3 self-start">
+          {/* Desktop sidebar: resource show/hide toggles */}
+          <aside className="hidden md:block w-48 shrink-0 rounded border border-slate-200 bg-white p-3 self-start">
             <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">
-              Resources ({(resources ?? []).filter((r) => r.active).length})
+              Resources ({activeResources.length})
             </h2>
             <ul className="space-y-1">
-              {(resources ?? [])
-                .filter((r) => r.active)
-                .map((r) => (
-                  <li key={r.id} className="flex items-center gap-2">
-                    <input
-                      id={`r-${r.id}`}
-                      type="checkbox"
-                      checked={!hiddenResourceIds.has(r.id)}
-                      onChange={() => toggleResource(r.id)}
-                      className="rounded border-slate-300"
-                    />
-                    <label htmlFor={`r-${r.id}`} className="text-sm">
-                      {r.name}
-                    </label>
-                  </li>
-                ))}
+              {activeResources.map((r) => (
+                <li key={r.id} className="flex items-center gap-2">
+                  <input
+                    id={`r-${r.id}`}
+                    type="checkbox"
+                    checked={!hiddenResourceIds.has(r.id)}
+                    onChange={() => toggleResource(r.id)}
+                    className="rounded border-slate-300"
+                  />
+                  <label htmlFor={`r-${r.id}`} className="text-sm">
+                    {r.name}
+                  </label>
+                </li>
+              ))}
             </ul>
             {(resources ?? []).filter((r) => !r.active).length > 0 && (
               <p className="mt-3 text-xs text-slate-400">
@@ -262,12 +345,42 @@ export default function AdminCalendar() {
 
           {/* Calendar grid + cancelled list */}
           <div className="flex-1 min-w-0 space-y-3">
+            {/* Phone resource selector: single-select chips — the grid
+                shows one resource at a time at this width. Sticky
+                below AppShell's h-14 mobile top bar so the selected
+                resource stays visible while scrolled deep into the
+                day (the column header scrolls away with the grid).
+                min-h-11 = 44pt touch targets. */}
+            {activeResources.length > 0 && (
+              <div className="sticky top-14 z-30 flex gap-2 overflow-x-auto bg-slate-50 pb-1 md:hidden">
+                {activeResources.map((r) => {
+                  const selected = mobileResource?.id === r.id;
+                  return (
+                    <button
+                      key={r.id}
+                      onClick={() => setMobileResourceId(r.id)}
+                      aria-pressed={selected}
+                      className={`min-h-11 shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition ${
+                        selected
+                          ? 'border-brand-600 bg-brand-50 text-brand-700'
+                          : 'border-slate-200 bg-white text-slate-600'
+                      }`}
+                    >
+                      {r.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             <div className="overflow-x-auto rounded border border-slate-200 bg-white">
               <Grid
                 tz={tz}
                 loading={loading}
-                resources={visibleResources}
+                resources={gridResources}
                 itemsByResource={itemsByResource}
+                isSmall={isSmall}
+                emptyMessage={gridEmptyMessage}
                 onItemClick={setSelectedItem}
                 onSelectRange={setCreateDraft}
               />
@@ -351,19 +464,46 @@ function DateNav({ dateStr, tz, onPrev, onToday, onNext }) {
     day: 'numeric',
     year: 'numeric',
   });
+  // Short form so prev / Today / next + date stay on one line on a phone.
+  const displayShort = new Date(`${dateStr}T12:00:00Z`).toLocaleDateString(
+    'en-US',
+    { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' },
+  );
+  // max-md:h-11 / min-w-11 lift the most-tapped controls at the
+  // counter to the 44pt touch bar on phones; desktop keeps the
+  // compact sm size.
   return (
     <div className="flex items-center gap-2">
-      <Button variant="secondary" size="sm" onClick={onPrev}>
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onPrev}
+        aria-label="Previous day"
+        className="max-md:h-11 max-md:min-w-11"
+      >
         ←
       </Button>
-      <Button variant="secondary" size="sm" onClick={onToday} disabled={isToday}>
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onToday}
+        disabled={isToday}
+        className="max-md:h-11"
+      >
         Today
       </Button>
-      <Button variant="secondary" size="sm" onClick={onNext}>
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onNext}
+        aria-label="Next day"
+        className="max-md:h-11 max-md:min-w-11"
+      >
         →
       </Button>
-      <span className="ml-3 text-sm font-medium text-slate-700">
-        {display}
+      <span className="ml-1 md:ml-3 text-sm font-medium text-slate-700">
+        <span className="hidden md:inline">{display}</span>
+        <span className="md:hidden">{displayShort}</span>
       </span>
     </div>
   );
@@ -377,7 +517,7 @@ const SNAP_MIN = 15;
 const snapDown = (m) => Math.floor(m / SNAP_MIN) * SNAP_MIN;
 const snapUp = (m) => Math.ceil(m / SNAP_MIN) * SNAP_MIN;
 
-function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRange }) {
+function Grid({ tz, loading, resources, itemsByResource, isSmall, emptyMessage, onItemClick, onSelectRange }) {
   // Click/drag-to-create. `drag` drives the ghost overlay; dragRef
   // mirrors it so the window-level mouseup handler reads the latest
   // value without re-subscribing on every mousemove.
@@ -385,6 +525,13 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
   const dragRef = useRef(null);
   const colRectRef = useRef(null);
   const boundsRef = useRef({ startMin: 0, endMin: 1440 });
+
+  // Phones get double the vertical scale: at 1px/min a 15-min cage
+  // slot is a 15px sliver — hopeless as a tap target. 2px/min makes
+  // it 30px and the day ~2040px tall, which is fine to flick-scroll.
+  // Desktop keeps the compact scale so a full day fits a laptop
+  // screen.
+  const pxPerMin = isSmall ? 2 : PX_PER_MIN;
 
   // Normalize every visible item to tenant-local minutes once, then
   // derive the visible window (expanded to fit the data) and the
@@ -414,7 +561,7 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
   function minuteFromY(clientY) {
     const rect = colRectRef.current;
     const { startMin, endMin } = boundsRef.current;
-    const raw = (clientY - rect.top - 30) / PX_PER_MIN + startMin;
+    const raw = (clientY - rect.top - 30) / pxPerMin + startMin;
     return Math.max(startMin, Math.min(endMin, raw));
   }
 
@@ -435,6 +582,42 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
     };
     dragRef.current = next;
     setDrag(next);
+  }
+
+  // Phone create path: plain tap on an open slot. Click fires after
+  // the browser has ruled out a scroll gesture, so native scrolling
+  // keeps working — no touchstart/touchmove handling here, ever.
+  // Mirrors the desktop click case: snap down, default 60-min window
+  // (the modal re-snaps the end to the chosen offering's duration).
+  function tapCreate(e, resource) {
+    // Taps on a booking/class card open the detail panel, not a draft.
+    if (e.target.closest('button')) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (e.clientY - rect.top < 30) return; // resource-name header row
+    colRectRef.current = rect;
+    const rawMin = minuteFromY(e.clientY);
+    // Near-miss dead zone: a tap landing within ~12px of an existing
+    // card is far more likely a missed attempt to OPEN that card than
+    // a deliberate create — silently opening the create modal there
+    // turns a fat-finger into a wrong booking. Do nothing; the admin
+    // re-taps. (A tap ON a card never reaches here — the closest()
+    // guard above catches it.)
+    const padMin = 12 / pxPerMin;
+    const { norm } = layout.byResource.get(resource.id);
+    const nearCard = norm.some(
+      (n) => rawMin >= n.startMin - padMin && rawMin <= n.endMin + padMin,
+    );
+    if (nearCard) return;
+    const startMin = snapDown(rawMin);
+    const endMin = Math.min(startMin + 60, 1440);
+    if (startMin >= endMin) return;
+    onSelectRange({
+      resourceId: resource.id,
+      resourceName: resource.name,
+      startMin,
+      endMin,
+      dragged: false,
+    });
   }
 
   useEffect(() => {
@@ -479,14 +662,12 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
   if (resources.length === 0) {
     return (
       <p className="p-6 text-sm text-slate-500">
-        {loading
-          ? 'Loading calendar…'
-          : 'No active resources to display. Add resources via the wizard or unhide them in the sidebar.'}
+        {loading ? 'Loading calendar…' : emptyMessage}
       </p>
     );
   }
 
-  const totalHeight = (gridEnd - gridStart) * PX_PER_MIN;
+  const totalHeight = (gridEnd - gridStart) * pxPerMin;
   const hourLines = [];
   for (let m = gridStart; m <= gridEnd; m += 60) {
     hourLines.push(m);
@@ -494,16 +675,27 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
 
   return (
     <div className="flex" style={{ minWidth: `${120 + resources.length * 160}px` }}>
-      {/* Time gutter */}
-      <div className="w-16 shrink-0 border-r border-slate-200 relative" style={{ height: totalHeight + 30 }}>
-        <div className="h-[30px] border-b border-slate-200 text-[10px] uppercase text-slate-400 flex items-center justify-end pr-2">
-          {tz?.split('/')[1] ? tz.split('/')[1].slice(0, 3) : 'UTC'}
+      {/* Time gutter. Sticky below md so the hour labels stay on
+          screen if the grid ever scrolls sideways on a phone. */}
+      <div
+        className="w-16 shrink-0 border-r border-slate-200 relative max-md:sticky max-md:left-0 max-md:z-20 max-md:bg-white"
+        style={{ height: totalHeight + 30 }}
+      >
+        <div className="h-[30px] border-b border-slate-200 text-[10px] uppercase text-slate-400 flex items-center justify-end pr-2 overflow-hidden">
+          {/* US zones give short labels ("ET"); many others give long
+              ones ("United Kingdom Time") that would wrap out of this
+              64×30px cell onto the first hour labels — truncate, and
+              put the full label in the title. The page header shows
+              it untruncated. */}
+          <span className="truncate" title={formatTimezoneLabel(tz)}>
+            {formatTimezoneLabel(tz)}
+          </span>
         </div>
         {hourLines.map((m) => (
           <div
             key={m}
             className="absolute right-2 text-xs text-slate-500"
-            style={{ top: 30 + (m - gridStart) * PX_PER_MIN - 6 }}
+            style={{ top: 30 + (m - gridStart) * pxPerMin - 6 }}
           >
             {formatHourLabel(m)}
           </div>
@@ -516,7 +708,11 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
         return (
           <div
             key={r.id}
-            onMouseDown={(e) => beginDrag(e, r)}
+            // Tap on phones, mouse click/drag on desktop. Never both:
+            // attaching mousedown on touch devices would fight native
+            // scrolling via the synthesized mouse events after a tap.
+            onMouseDown={isSmall ? undefined : (e) => beginDrag(e, r)}
+            onClick={isSmall ? (e) => tapCreate(e, r) : undefined}
             className="flex-1 min-w-[160px] border-r border-slate-200 relative cursor-crosshair select-none"
             style={{ height: totalHeight + 30 }}
           >
@@ -530,7 +726,7 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
               <div
                 key={m}
                 className="absolute left-0 right-0 border-t border-slate-100"
-                style={{ top: 30 + (m - gridStart) * PX_PER_MIN }}
+                style={{ top: 30 + (m - gridStart) * pxPerMin }}
               />
             ))}
 
@@ -542,10 +738,10 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
               const clampedEnd = Math.min(endMin, gridEnd);
               if (clampedEnd <= clampedStart) return null;
 
-              const top = 30 + (clampedStart - gridStart) * PX_PER_MIN;
+              const top = 30 + (clampedStart - gridStart) * pxPerMin;
               const height = Math.max(
                 20,
-                (clampedEnd - clampedStart) * PX_PER_MIN,
+                (clampedEnd - clampedStart) * pxPerMin,
               );
               const { lane, laneCount } = lanes.get(key);
 
@@ -574,8 +770,8 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
                 <div
                   className="absolute left-0.5 right-0.5 z-10 rounded border-2 border-dashed border-sky-400 bg-sky-100/60 pointer-events-none"
                   style={{
-                    top: 30 + (a - gridStart) * PX_PER_MIN,
-                    height: (Math.min(b, gridEnd) - a) * PX_PER_MIN,
+                    top: 30 + (a - gridStart) * pxPerMin,
+                    height: (Math.min(b, gridEnd) - a) * pxPerMin,
                   }}
                 />
               );
@@ -653,6 +849,19 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
   // time has passed — you can't no-show someone who isn't late yet.
   const isPast = new Date(item.start_time).getTime() <= Date.now();
 
+  // Escape closes the panel — matching DialogShell. Gated so that
+  // when a nested confirm dialog is open, Escape closes only the
+  // dialog (its own handler), not the panel underneath it too.
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === 'Escape' && !confirmingCancel && !confirmingNoShow) {
+        onClose();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, confirmingCancel, confirmingNoShow]);
+
   // Runs after the admin submits the cancel InputDialog.
   async function cancel(reason) {
     if (busy) return;
@@ -721,14 +930,21 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
         onClick={onClose}
         aria-label="Close"
       />
-      <aside className="w-full sm:w-96 bg-white shadow-xl border-l border-slate-200 p-5 overflow-y-auto">
+      {/* w-[calc(100%-3rem)] below sm keeps a 48px backdrop strip on
+          phones so tap-outside-to-close exists there too — w-full
+          would collapse the flex-1 backdrop to 0px and leave the ×
+          as the only way out. */}
+      <aside className="w-[calc(100%-3rem)] sm:w-96 bg-white shadow-xl border-l border-slate-200 p-5 overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">
             {isClass ? 'Class instance' : 'Booking'}
           </h2>
+          {/* 44×44px tap target (negative margins keep the visual
+              layout tight) — the bare glyph was ~20px. */}
           <button
             onClick={onClose}
-            className="text-slate-500 hover:text-slate-800 text-xl leading-none"
+            aria-label="Close"
+            className="-m-2 flex h-11 w-11 items-center justify-center rounded-lg text-xl leading-none text-slate-500 hover:bg-slate-100 hover:text-slate-800"
           >
             ×
           </button>
@@ -1050,7 +1266,8 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
           <h2 className="text-lg font-semibold">New booking</h2>
           <button
             onClick={onClose}
-            className="text-slate-500 hover:text-slate-800 text-xl leading-none"
+            aria-label="Close"
+            className="-m-2 flex h-11 w-11 items-center justify-center rounded-lg text-xl leading-none text-slate-500 hover:bg-slate-100 hover:text-slate-800"
           >
             ×
           </button>

@@ -23,30 +23,58 @@ import {
   UserCog,
   Users,
   UsersRound,
-  Wand2,
   X,
 } from 'lucide-react';
 import { useAuth } from '../auth.jsx';
 
+// Nav is a list of sections: a heading (null = no label) plus items.
+// Grouping keeps the 11-item admin sidebar scannable. The setup
+// wizard is deliberately NOT here — it's reachable from the Catalog
+// page and the first-run dashboard banner, not day-to-day nav.
 const ADMIN_NAV = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/admin/calendar', label: 'Calendar', icon: CalendarDays },
-  { to: '/admin/bookings', label: 'Bookings', icon: BookOpenCheck },
-  { to: '/admin/classes', label: 'Classes', icon: Users },
-  { to: '/admin/members', label: 'Members', icon: UsersRound },
-  { to: '/admin/staff', label: 'Staff', icon: UserCog },
-  { to: '/admin/packs', label: 'Credit packs', icon: Package },
-  { to: '/admin/reports', label: 'Reports', icon: BarChart3 },
-  { to: '/admin/stripe', label: 'Payments', icon: CreditCard },
-  { to: '/admin/settings', label: 'Settings', icon: Settings },
-  { to: '/wizard', label: 'Setup wizard', icon: Wand2 },
+  {
+    heading: null,
+    items: [
+      { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
+      { to: '/admin/calendar', label: 'Calendar', icon: CalendarDays },
+      { to: '/admin/bookings', label: 'Bookings', icon: BookOpenCheck },
+      { to: '/admin/classes', label: 'Classes', icon: Users },
+    ],
+  },
+  {
+    heading: 'People',
+    items: [
+      { to: '/admin/members', label: 'Members', icon: UsersRound },
+      { to: '/admin/staff', label: 'Staff', icon: UserCog },
+    ],
+  },
+  {
+    heading: 'Revenue',
+    items: [
+      { to: '/admin/packs', label: 'Credit packs', icon: Ticket },
+      { to: '/admin/stripe', label: 'Payments', icon: CreditCard },
+      { to: '/admin/reports', label: 'Reports', icon: BarChart3 },
+    ],
+  },
+  {
+    heading: 'Configure',
+    items: [
+      { to: '/admin/catalog', label: 'Catalog', icon: Package },
+      { to: '/admin/settings', label: 'Settings', icon: Settings },
+    ],
+  },
 ];
 
 const MEMBER_NAV = [
-  { to: '/', label: 'Home', icon: Home, end: true },
-  { to: '/book', label: 'Book', icon: CalendarDays },
-  { to: '/classes', label: 'Classes', icon: Users },
-  { to: '/plans', label: 'Plans', icon: Ticket },
+  {
+    heading: null,
+    items: [
+      { to: '/', label: 'Home', icon: Home, end: true },
+      { to: '/book', label: 'Book', icon: CalendarDays },
+      { to: '/classes', label: 'Classes', icon: Users },
+      { to: '/plans', label: 'Plans', icon: Ticket },
+    ],
+  },
 ];
 
 export default function AppShell() {
@@ -123,23 +151,34 @@ function SidebarContent({ nav, onClose }) {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-        {nav.map(({ to, label, icon: Icon, end }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={end}
-            className={({ isActive }) =>
-              `flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                isActive
-                  ? 'bg-brand-50 text-brand-700'
-                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-              }`
-            }
-          >
-            <Icon size={18} className="shrink-0" />
-            {label}
-          </NavLink>
+      <nav className="flex-1 overflow-y-auto p-3">
+        {nav.map(({ heading, items }, i) => (
+          <div key={heading ?? i} className={i > 0 ? 'mt-5' : undefined}>
+            {heading && (
+              <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                {heading}
+              </div>
+            )}
+            <div className="space-y-1">
+              {items.map(({ to, label, icon: Icon, end }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  end={end}
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                      isActive
+                        ? 'bg-brand-50 text-brand-700'
+                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                    }`
+                  }
+                >
+                  <Icon size={18} className="shrink-0" />
+                  {label}
+                </NavLink>
+              ))}
+            </div>
+          </div>
         ))}
       </nav>
 

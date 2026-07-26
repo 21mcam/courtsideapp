@@ -2,8 +2,17 @@
 //
 // Single page, three sequential decisions:
 //   1. Offering — what kind of session (cage, sim bay, etc.)
-//   2. Resource — which physical thing to use (Cage 1 vs Cage 2)
+//   2. Resource — which physical thing to use (Cage 1 vs Cage 2).
+//      Most members don't care, so this step defaults to a
+//      preselected "No preference" chip; the step is hidden entirely
+//      when the offering runs on a single resource (auto-selected).
 //   3. Date + slot — pick a day, see available slots, click to book
+//
+// "No preference" fetches availability for every resource of the
+// offering in parallel and shows the union of start times. The
+// concrete resource is chosen at confirm time (emptiest first — see
+// lib/availability.js); a 409 slot conflict transparently retries
+// the same time on the next resource that had it before giving up.
 //
 // State machine is intentionally linear: changing the offering resets
 // resource and slot, changing the resource resets the slot, changing
@@ -19,7 +28,17 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
-import { formatTimeLocal } from '../format.js';
+import {
+  formatNoSlotsReason,
+  formatTimeLocal,
+  formatTimezoneLabel,
+} from '../format.js';
+import {
+  ANY_RESOURCE,
+  SLOT_TAKEN_MESSAGE,
+  isRetryableConflict,
+  mergeAvailability,
+} from '../lib/availability.js';
 import WaiverModal from '../components/WaiverModal.jsx';
 import {
   Page,
@@ -75,6 +94,12 @@ export default function BookingPage() {
   const [slotsError, setSlotsError] = useState(null);
   const [slotsReason, setSlotsReason] = useState(null);
   const [loadingSlots, setLoadingSlots] = useState(false);
+  // "No preference" bookkeeping: start ISO → resource ids that had
+  // that slot, ordered by booking preference (lib/availability.js).
+  const [slotResourceIds, setSlotResourceIds] = useState({});
+  // Bumped to force a slot refetch after a confirm-time conflict, so
+  // the just-taken time drops out of the list.
+  const [slotsNonce, setSlotsNonce] = useState(0);
 
   const [selectedSlotStart, setSelectedSlotStart] = useState(null);
 
@@ -103,45 +128,62 @@ export default function BookingPage() {
     [offerings, selectedOfferingId],
   );
 
-  // When the offering changes, default the resource to the first one
-  // (or clear if the new offering has none). When it clears, slot
-  // listing also clears.
+  // When the offering changes, default the resource: "No preference"
+  // when there's a real choice, the lone resource when there isn't
+  // (the picker card is hidden then — asking "which cage?" with one
+  // button is noise), or clear if the offering has none. When it
+  // clears, slot listing also clears.
   useEffect(() => {
     if (!selectedOffering) {
       setSelectedResourceId('');
       return;
     }
-    const first = selectedOffering.resources[0]?.id ?? '';
-    setSelectedResourceId(first);
+    setSelectedResourceId(
+      selectedOffering.resources.length > 1
+        ? ANY_RESOURCE
+        : (selectedOffering.resources[0]?.id ?? ''),
+    );
     // selectedOffering is derived from selectedOfferingId via useMemo,
     // so depending on selectedOfferingId is sufficient.
   }, [selectedOfferingId, selectedOffering]);
 
   // Fetch slots whenever (offering, resource, date) is fully picked.
+  // "No preference" queries every resource of the offering in
+  // parallel and shows the merged union of start times.
   useEffect(() => {
     if (!selectedOfferingId || !selectedResourceId || !date) {
       setSlots(null);
       setSlotsReason(null);
+      setSlotResourceIds({});
       return;
     }
+    const resourceIds =
+      selectedResourceId === ANY_RESOURCE
+        ? (selectedOffering?.resources ?? []).map((r) => r.id)
+        : [selectedResourceId];
     let cancelled = false;
     setLoadingSlots(true);
     setSlotsError(null);
     setSlotsReason(null);
-    api(
-      `/api/availability?offering_id=${selectedOfferingId}&resource_id=${selectedResourceId}&date=${date}`,
+    Promise.all(
+      resourceIds.map((resourceId) =>
+        api(
+          `/api/availability?offering_id=${selectedOfferingId}&resource_id=${resourceId}&date=${date}`,
+        ).then(async (res) => {
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(body.error || `HTTP ${res.status}`);
+          }
+          return res.json();
+        }),
+      ),
     )
-      .then(async (res) => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || `HTTP ${res.status}`);
-        }
-        return res.json();
-      })
-      .then((data) => {
+      .then((results) => {
         if (cancelled) return;
-        setSlots(data.slots ?? []);
-        setSlotsReason(data.reason ?? null);
+        const merged = mergeAvailability(resourceIds, results);
+        setSlots(merged.slots);
+        setSlotsReason(merged.reason);
+        setSlotResourceIds(merged.resourceIdsBySlot);
       })
       .catch((err) => {
         if (!cancelled) setSlotsError(err.message);
@@ -152,7 +194,7 @@ export default function BookingPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedOfferingId, selectedResourceId, date]);
+  }, [selectedOfferingId, selectedResourceId, selectedOffering, date, slotsNonce]);
 
   // The selected slot is only honored while it exists in the current
   // slot list — changing offering/resource/date refetches slots, so a
@@ -164,19 +206,38 @@ export default function BookingPage() {
 
   async function bookSlot(slot) {
     if (submitting) return;
+    // The booking POST needs a concrete resource. With "No
+    // preference" the candidates are every resource that had this
+    // slot, emptiest first (lib/availability.js); an explicit pick
+    // is its own single candidate.
+    const noPreference = selectedResourceId === ANY_RESOURCE;
+    const candidates = noPreference
+      ? (slotResourceIds[slot.start] ?? [])
+      : [selectedResourceId];
+    if (candidates.length === 0) return; // stale selection mid-refetch
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const res = await api('/api/bookings', {
-        method: 'POST',
-        body: JSON.stringify({
-          offering_id: selectedOfferingId,
-          resource_id: selectedResourceId,
-          start_time: slot.start,
-        }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
+      for (let i = 0; i < candidates.length; i += 1) {
+        const res = await api('/api/bookings', {
+          method: 'POST',
+          body: JSON.stringify({
+            offering_id: selectedOfferingId,
+            resource_id: candidates[i],
+            start_time: slot.start,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok) {
+          // Best-effort refresh of /api/me so the credit balance on
+          // the home page is correct. The booking already succeeded —
+          // a refresh failure must NOT fall into the booking-failure
+          // catch (the member would see "Booking failed", retry, and
+          // could double-book on another resource).
+          await refresh().catch(() => {});
+          navigate('/');
+          return;
+        }
         // Waiver gate: open the signing modal instead of erroring;
         // the booking retries automatically once signed.
         if (res.status === 409 && body.code === 'waiver_signature_required') {
@@ -184,12 +245,20 @@ export default function BookingPage() {
           setSubmitting(false);
           return;
         }
+        if (isRetryableConflict(res.status, body)) {
+          // Someone grabbed this time on this resource between
+          // listing and confirming — try the same time on the next
+          // candidate before giving up.
+          if (i < candidates.length - 1) continue;
+          // Every candidate (or the explicitly picked resource) just
+          // became unavailable. Refetch so the stale time drops out
+          // of the list, then ask for another pick.
+          setSelectedSlotStart(null);
+          setSlotsNonce((n) => n + 1);
+          throw new Error(SLOT_TAKEN_MESSAGE);
+        }
         throw new Error(body.error || `HTTP ${res.status}`);
       }
-      // Refresh /api/me so the credit balance on the home page is
-      // correct, then navigate back.
-      await refresh();
-      navigate('/');
     } catch (err) {
       setSubmitError(err.message);
       setSubmitting(false);
@@ -202,8 +271,8 @@ export default function BookingPage() {
         <PageHeader title="Book" />
         <Card>
           <p className="text-sm text-slate-600">
-            Booking requires a member account. Contact an admin to be
-            added as a member.
+            Booking requires a member account. Ask at the front desk to
+            get set up.
           </p>
         </Card>
       </Page>
@@ -216,7 +285,7 @@ export default function BookingPage() {
         title="Book"
         description={
           <>
-            Times shown in {tz}. Available credits:{' '}
+            Times shown in {formatTimezoneLabel(tz)}. Available credits:{' '}
             <span className="font-medium text-slate-800">
               {me.credits?.current_credits ?? 0}
             </span>
@@ -237,7 +306,8 @@ export default function BookingPage() {
           <p className="mt-3 text-sm text-slate-400">loading…</p>
         ) : offerings.length === 0 ? (
           <div className="mt-3 rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-            No member-bookable offerings configured yet.
+            Online booking isn't set up yet — check back soon or ask at
+            the front desk.
           </div>
         ) : (
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -268,11 +338,25 @@ export default function BookingPage() {
         )}
       </Card>
 
-      {/* Resource picker — only if the offering has multiple resources */}
+      {/* Resource picker — only if the offering has multiple
+          resources (a single resource is auto-selected and the step
+          hidden). "No preference" is preselected; picking a specific
+          resource stays one tap away. */}
       {selectedOffering && selectedOffering.resources.length > 1 && (
         <Card>
-          <StepLabel>Step 2 · Which {selectedOffering.name}?</StepLabel>
+          <StepLabel>Step 2 · Any preference?</StepLabel>
           <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              onClick={() => setSelectedResourceId(ANY_RESOURCE)}
+              className={cn(
+                'rounded-lg border px-3 py-1.5 text-sm transition',
+                selectedResourceId === ANY_RESOURCE
+                  ? 'border-brand-600 bg-brand-50 ring-1 ring-brand-600'
+                  : 'border-slate-200 bg-white hover:bg-slate-50',
+              )}
+            >
+              No preference
+            </button>
             {selectedOffering.resources.map((r) => (
               <button
                 key={r.id}
@@ -293,8 +377,8 @@ export default function BookingPage() {
 
       {selectedOffering && selectedOffering.resources.length === 0 && (
         <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-          This offering isn't currently linked to any active resources.
-          Ask an admin to link one.
+          This session type isn't available to book online right now —
+          check back soon or ask at the front desk.
         </div>
       )}
 
@@ -328,8 +412,10 @@ export default function BookingPage() {
               ) : slots && slots.length === 0 ? (
                 <div className="mt-2 rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
                   No open slots on this day.
-                  {slotsReason && (
-                    <span className="ml-1 text-slate-400">({slotsReason})</span>
+                  {formatNoSlotsReason(slotsReason) && (
+                    <span className="ml-1 text-slate-400">
+                      {formatNoSlotsReason(slotsReason)}
+                    </span>
                   )}
                 </div>
               ) : slots ? (

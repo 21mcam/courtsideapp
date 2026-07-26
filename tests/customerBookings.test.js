@@ -345,6 +345,9 @@ test('public booking 409 when slot already booked', { skip }, async () => {
     body: JSON.stringify(bookingBody(slot)),
   });
   assert.equal(r2.status, 409);
+  // Tagged so the no-preference UI may retry another resource.
+  const body = await r2.json();
+  assert.equal(body.code, 'slot_conflict');
 });
 
 test('public booking 409 when tenant connection not charges-enabled', { skip }, async () => {
@@ -403,6 +406,10 @@ test('public booking 409 when tenant connection not charges-enabled', { skip }, 
     assert.equal(res.status, 409);
     const body = await res.json();
     assert.match(body.error, /card payments/i);
+    // Resource-INDEPENDENT: must NOT be tagged slot_conflict, or the
+    // no-preference UI would mask it as "that time was just taken"
+    // and retry-loop across resources forever.
+    assert.equal(body.code, undefined);
   } finally {
     await privilegedPool.query(`DELETE FROM tenants WHERE id = $1`, [otherTid]);
   }

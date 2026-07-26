@@ -52,6 +52,7 @@ import AdminStaff from './pages/AdminStaff.jsx';
 import AdminPacks from './pages/AdminPacks.jsx';
 import AdminReports from './pages/AdminReports.jsx';
 import AdminBilling from './pages/AdminBilling.jsx';
+import AdminCatalog from './pages/AdminCatalog.jsx';
 
 export default function App() {
   return (
@@ -119,6 +120,7 @@ function Shell() {
           <Route path="/admin/bookings" element={<AdminBookings />} />
           <Route path="/admin/classes" element={<AdminClasses />} />
           <Route path="/admin/calendar" element={<AdminCalendar />} />
+          <Route path="/admin/catalog" element={<AdminCatalog />} />
           <Route path="/admin/members" element={<AdminMembers />} />
           <Route path="/admin/members/:id" element={<AdminMemberDetail />} />
           <Route path="/admin/staff" element={<AdminStaff />} />
