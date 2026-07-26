@@ -63,11 +63,23 @@ export function formatCategoryLabel(key) {
 // of "America/New_York". 'shortGeneric' gives the generic zone name
 // ("ET"); some environments/zones don't support it, so fall back to
 // 'short' ("EDT") and finally to the raw IANA name.
+//
+// Cached per tz for the session: this runs in render paths that are
+// hot on desktop (AdminCalendar's grid re-renders on every mousemove
+// during drag-to-create), and Intl.DateTimeFormat construction is
+// expensive. The 'shortGeneric' label is DST-agnostic; only the rare
+// 'short' fallback ("EDT") could drift across a DST switch mid-
+// session, which is an acceptable trade for a per-frame hot path.
+const tzLabelCache = new Map();
+
 export function formatTimezoneLabel(tz) {
   if (!tz) return '';
   // Intl renders UTC as "GMT+0", which reads like a glitch in member
   // copy ("Times shown in GMT+0") — say "UTC" outright.
   if (tz === 'UTC' || tz === 'Etc/UTC') return 'UTC';
+  const cached = tzLabelCache.get(tz);
+  if (cached) return cached;
+  let label = tz;
   for (const timeZoneName of ['shortGeneric', 'short']) {
     try {
       const part = new Intl.DateTimeFormat('en-US', {
@@ -76,12 +88,16 @@ export function formatTimezoneLabel(tz) {
       })
         .formatToParts(new Date())
         .find((p) => p.type === 'timeZoneName');
-      if (part?.value) return part.value;
+      if (part?.value) {
+        label = part.value;
+        break;
+      }
     } catch {
       // Unsupported option or bad tz — try the next fallback.
     }
   }
-  return tz;
+  tzLabelCache.set(tz, label);
+  return label;
 }
 
 // Render an ISO instant in the tenant's timezone — used by member &
