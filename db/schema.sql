@@ -164,7 +164,10 @@ SELECT
   name,
   timezone,
   (
-    platform_subscription_status = 'active'
+    -- past_due keeps access: Stripe Smart Retries usually recover a
+    -- failed card within days; hard lockout waits for
+    -- cancelled/suspended or trial expiry. (Migration 025.)
+    platform_subscription_status IN ('active', 'past_due')
     OR (
       platform_subscription_status = 'trial'
       AND (trial_ends_at IS NULL OR trial_ends_at > now())
@@ -200,6 +203,164 @@ $$;
 
 REVOKE ALL ON FUNCTION set_tenant_reply_to(uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION set_tenant_reply_to(uuid, text) TO app_runtime;
+
+-- ----------------------------------------------------------
+-- Platform billing functions (migration 025) — tenants paying
+-- Courtside. app_runtime has REVOKE ALL on tenants, so all access to
+-- the billing columns flows through these SECURITY DEFINER functions.
+-- The first three are GUC-guarded (tenant-admin request paths); the
+-- lookup bootstraps the platform Stripe webhook (no tenant context
+-- yet); the admin_set variant is the super-admin escape hatch,
+-- reachable only via X-Super-Admin-Token routes.
+
+CREATE OR REPLACE FUNCTION get_platform_billing(p_tenant_id uuid)
+RETURNS TABLE (
+  status             text,
+  trial_ends_at      timestamptz,
+  stripe_customer_id text,
+  has_subscription   boolean
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF p_tenant_id IS DISTINCT FROM current_setting('app.current_tenant_id', true)::uuid THEN
+    RAISE EXCEPTION 'tenant mismatch';
+  END IF;
+
+  RETURN QUERY
+  SELECT
+    t.platform_subscription_status,
+    t.trial_ends_at,
+    t.platform_stripe_customer_id,
+    (t.platform_stripe_subscription_id IS NOT NULL)
+  FROM tenants t
+  WHERE t.id = p_tenant_id;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION get_platform_billing(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION get_platform_billing(uuid) TO app_runtime;
+
+-- Write-once: refuses to overwrite a DIFFERENT existing customer id
+-- (same-tenant clobbering would orphan the subscription hanging off
+-- the old customer; cross-tenant reuse is blocked by the partial
+-- unique index on tenants).
+CREATE OR REPLACE FUNCTION set_platform_customer(
+  p_tenant_id   uuid,
+  p_customer_id text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_existing text;
+BEGIN
+  IF p_tenant_id IS DISTINCT FROM current_setting('app.current_tenant_id', true)::uuid THEN
+    RAISE EXCEPTION 'tenant mismatch';
+  END IF;
+  IF p_customer_id IS NULL OR btrim(p_customer_id) = '' THEN
+    RAISE EXCEPTION 'customer id required';
+  END IF;
+
+  SELECT platform_stripe_customer_id INTO v_existing
+    FROM tenants WHERE id = p_tenant_id
+    FOR UPDATE;
+
+  IF v_existing IS NOT NULL AND v_existing <> p_customer_id THEN
+    RAISE EXCEPTION 'platform customer already set';
+  END IF;
+
+  UPDATE tenants
+     SET platform_stripe_customer_id = p_customer_id
+   WHERE id = p_tenant_id;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION set_platform_customer(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION set_platform_customer(uuid, text) TO app_runtime;
+
+-- Status goes through the tenants CHECK constraint — an unexpected
+-- value fails loudly rather than writing garbage.
+CREATE OR REPLACE FUNCTION set_platform_subscription(
+  p_tenant_id       uuid,
+  p_subscription_id text,
+  p_status          text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF p_tenant_id IS DISTINCT FROM current_setting('app.current_tenant_id', true)::uuid THEN
+    RAISE EXCEPTION 'tenant mismatch';
+  END IF;
+
+  UPDATE tenants
+     SET platform_stripe_subscription_id = p_subscription_id,
+         platform_subscription_status    = p_status
+   WHERE id = p_tenant_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'tenant not found';
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION set_platform_subscription(uuid, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION set_platform_subscription(uuid, text, text) TO app_runtime;
+
+-- Platform webhook bootstrap — mirrors
+-- lookup_tenant_by_stripe_account (015). NULL for unknown customers
+-- (caller logs + ignores).
+CREATE OR REPLACE FUNCTION lookup_tenant_by_platform_customer(p_customer_id text)
+RETURNS uuid
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT id FROM tenants WHERE platform_stripe_customer_id = p_customer_id;
+$$;
+
+REVOKE ALL ON FUNCTION lookup_tenant_by_platform_customer(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION lookup_tenant_by_platform_customer(text) TO app_runtime;
+
+-- Super-admin escape hatch: comp a tenant, extend a trial, suspend.
+-- p_status NULL = unchanged; p_clear_trial true → trial_ends_at NULL;
+-- otherwise p_trial_ends_at NULL = unchanged.
+CREATE OR REPLACE FUNCTION admin_set_platform_billing(
+  p_tenant_id     uuid,
+  p_status        text DEFAULT NULL,
+  p_trial_ends_at timestamptz DEFAULT NULL,
+  p_clear_trial   boolean DEFAULT false
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  UPDATE tenants
+     SET platform_subscription_status =
+           COALESCE(p_status, platform_subscription_status),
+         trial_ends_at = CASE
+           WHEN p_clear_trial THEN NULL
+           ELSE COALESCE(p_trial_ends_at, trial_ends_at)
+         END
+   WHERE id = p_tenant_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'tenant not found';
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION admin_set_platform_billing(uuid, text, timestamptz, boolean) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION admin_set_platform_billing(uuid, text, timestamptz, boolean) TO app_runtime;
 
 -- ----------------------------------------------------------
 CREATE TABLE users (

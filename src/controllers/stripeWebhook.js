@@ -176,7 +176,9 @@ function tsOrNull(s) {
 // Run a callback inside a transaction with the tenant GUC set. Used
 // by webhook handlers that bootstrapped tenant context from
 // event.account.
-async function withTenantContextById(tenantId, fn) {
+// Exported for the platform webhook (platformStripeWebhook.js), which
+// bootstraps tenant context the same way from a different event source.
+export async function withTenantContextById(tenantId, fn) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -201,7 +203,7 @@ async function withTenantContextById(tenantId, fn) {
 // unprivileged tenant_lookup view directly via the pool, same as
 // resolveTenant does for subdomains. Returns null if the tenant is
 // gone (nothing to email about).
-async function loadTenantEmailContext(tenantId) {
+export async function loadTenantEmailContext(tenantId) {
   const r = await pool.query(`SELECT * FROM tenant_lookup WHERE id = $1`, [
     tenantId,
   ]);

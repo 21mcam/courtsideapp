@@ -10,6 +10,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 
 import { pool } from '../db/pool.js';
+import { platformTrialEndsAt } from './platformBilling.js';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -53,7 +54,7 @@ export async function signupTenant(req, res, next) {
       // do. No app-level transaction wrapping needed.
       const result = await pool.query(
         `SELECT tenant_id, user_id, admin_id
-           FROM create_tenant_with_owner($1, $2, $3, $4, $5, $6, $7)`,
+           FROM create_tenant_with_owner($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           data.subdomain,
           data.name,
@@ -62,6 +63,10 @@ export async function signupTenant(req, res, next) {
           owner_password_hash,
           data.owner_first_name,
           data.owner_last_name,
+          // Trial clock starts at signup (PLATFORM_TRIAL_DAYS, default
+          // 30; '0' = no clock → NULL, trial never expires). Existing
+          // tenants created before migration 025 keep NULL too.
+          platformTrialEndsAt(),
         ],
       );
       row = result.rows[0];
@@ -85,6 +90,56 @@ export async function signupTenant(req, res, next) {
       admin_id: row.admin_id,
       subdomain: data.subdomain,
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+const setBillingSchema = z.object({
+  status: z
+    .enum(['trial', 'active', 'past_due', 'cancelled', 'suspended'])
+    .optional(),
+  // ISO timestamp to (re)set the trial clock, or explicit null to
+  // clear it (trial never expires — the "comp this tenant" shape,
+  // combined with status 'trial'). Absent = leave unchanged.
+  trial_ends_at: z.string().datetime({ offset: true }).nullable().optional(),
+});
+
+// PATCH /api/platform/tenants/:subdomain/billing — super-admin
+// escape hatch: comp a tenant, extend a trial, suspend, or manually
+// reactivate. The automated path is the platform Stripe webhook;
+// this exists for the cases Stripe doesn't cover (and for un-bricking
+// a tenant whose status was mangled).
+export async function setTenantBilling(req, res, next) {
+  try {
+    const parsed = setBillingSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const { status, trial_ends_at } = parsed.data;
+    const clearTrial = 'trial_ends_at' in req.body && trial_ends_at === null;
+    if (status === undefined && trial_ends_at === undefined && !clearTrial) {
+      return res.status(400).json({ error: 'nothing to update' });
+    }
+
+    const t = await pool.query(
+      `SELECT id FROM tenant_lookup WHERE subdomain = $1`,
+      [req.params.subdomain],
+    );
+    if (t.rows.length === 0) {
+      return res.status(404).json({ error: 'tenant not found' });
+    }
+
+    await pool.query(`SELECT admin_set_platform_billing($1, $2, $3, $4)`, [
+      t.rows[0].id,
+      status ?? null,
+      clearTrial ? null : (trial_ends_at ?? null),
+      clearTrial,
+    ]);
+
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

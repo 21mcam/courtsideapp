@@ -17,6 +17,7 @@ const TABS = [
   { to: '/admin/settings/blackouts', label: 'Blackouts' },
   { to: '/admin/settings/policies', label: 'Policies' },
   { to: '/admin/settings/waivers', label: 'Waivers' },
+  { to: '/admin/settings/billing', label: 'Billing' },
 ];
 
 export default function SettingsNav() {

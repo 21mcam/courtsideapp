@@ -36,6 +36,25 @@ function extractSubdomain(hostname, query) {
   return hostname.slice(0, -suffix.length);
 }
 
+// Paths that stay reachable when the tenant's platform billing has
+// lapsed (trial expired / subscription cancelled). Without this, a
+// lapsed tenant is bricked: the admin can't even sign in to pay.
+// Everything else still 402s. This middleware is mounted at /api, so
+// req.path is the full /api/... path when matching here — use
+// req.originalUrl (minus query) to stay mount-point-independent.
+//
+//   * /api/tenant          the client's bootstrap call (renders the
+//                          billing-hold screen instead of a hard error)
+//   * /api/auth/*          sign in / password reset
+//   * /api/me              the session probe the client boots with
+//   * /api/admin/billing*  view billing, start checkout, open portal
+const BILLING_EXEMPT = /^\/api\/(tenant$|auth\/|me$|admin\/billing($|\/))/;
+
+function isBillingExemptPath(req) {
+  const path = (req.originalUrl ?? '').split('?')[0];
+  return BILLING_EXEMPT.test(path);
+}
+
 export async function resolveTenant(req, res, next) {
   try {
     const subdomain = extractSubdomain(req.hostname, req.query);
@@ -61,7 +80,7 @@ export async function resolveTenant(req, res, next) {
 
     const tenant = result.rows[0];
 
-    if (!tenant.is_billing_ok) {
+    if (!tenant.is_billing_ok && !isBillingExemptPath(req)) {
       // 402 Payment Required — tenant subscription not in good standing.
       return res.status(402).json({ error: 'tenant billing not in good standing' });
     }

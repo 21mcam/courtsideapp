@@ -7,11 +7,16 @@
 import express from 'express';
 
 import { requireSuperAdmin } from '../middleware/superAdmin.js';
-import { signupTenant } from '../controllers/platform.js';
+import { signupTenant, setTenantBilling } from '../controllers/platform.js';
 
 const router = express.Router();
 
 router.post('/signup-tenant', requireSuperAdmin, signupTenant);
+router.patch(
+  '/tenants/:subdomain/billing',
+  requireSuperAdmin,
+  setTenantBilling,
+);
 
 // Catch-all for /api/platform/* paths that don't match — return JSON
 // 404 so the request doesn't fall through to the tenant chain below.

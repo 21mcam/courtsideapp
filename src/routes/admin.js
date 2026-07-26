@@ -74,6 +74,11 @@ import {
   exportMembersCsv,
   exportBookingsCsv,
 } from '../controllers/reports.js';
+import {
+  getBilling,
+  startBillingCheckout,
+  openBillingPortal,
+} from '../controllers/platformBilling.js';
 
 const router = express.Router();
 
@@ -136,6 +141,14 @@ router.put('/theme', updateTenantTheme);
 
 // Transactional-email reply-to address (admin Settings page)
 router.put('/reply-to-email', updateTenantReplyTo);
+
+// Platform billing — what this tenant pays Courtside. These three
+// routes (plus /api/auth/* and /api/tenant) stay reachable when
+// is_billing_ok is false, so a lapsed tenant's admin can sign in and
+// reactivate — see the exemption list in resolveTenant.
+router.get('/billing', getBilling);
+router.post('/billing/checkout', startBillingCheckout);
+router.post('/billing/portal', openBillingPortal);
 
 // Liability waiver signatures (waivers v1 slice). Config lives on
 // booking_policies (PUT above bumps waiver_version on text change);
