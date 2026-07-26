@@ -6,6 +6,13 @@
 // on an open area to create a booking (15-min snap; drag defines a
 // custom-length window).
 //
+// Small screens (below md, matching AppShell's drawer breakpoint)
+// get a phone layout: the resource-checkbox sidebar collapses into a
+// single-select chip row, the grid shows ONE resource at a time at
+// full width, and tapping an open slot opens the same create-booking
+// modal the desktop click/drag path uses (no drag handling on touch —
+// native scroll must keep working). Desktop is unchanged.
+//
 // Date filtering is generous (±24h around the selected day) and the
 // frontend filters by tenant-local date so DST and midnight
 // boundaries are handled without tripping over UTC↔local conversion.
@@ -44,6 +51,7 @@ import {
   formatCents,
   formatSlotLocal,
   formatTimeLocal,
+  formatTimezoneLabel,
 } from '../format.js';
 import {
   assignLanes,
@@ -53,6 +61,24 @@ import {
 import { zonedTimeToUtc } from '../lib/tz.js';
 
 const PX_PER_MIN = 1.0; // 1px per minute → ~1020px tall grid by default
+
+// Interaction split only: below Tailwind's md the grid shows one
+// resource and creates bookings by tap instead of mouse drag. Layout
+// differences stay in responsive classes; this hook exists because
+// WHICH columns render and WHICH pointer handlers attach genuinely
+// differ, not just their styling. Must mirror AppShell's md breakpoint.
+function useIsSmallScreen() {
+  const [isSmall, setIsSmall] = useState(
+    () => !window.matchMedia('(min-width: 768px)').matches,
+  );
+  useEffect(() => {
+    const mql = window.matchMedia('(min-width: 768px)');
+    const onChange = (e) => setIsSmall(!e.matches);
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, []);
+  return isSmall;
+}
 
 export default function AdminCalendar() {
   const { me } = useAuth();
@@ -68,6 +94,9 @@ export default function AdminCalendar() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [loadError, setLoadError] = useState(null);
   const [hiddenResourceIds, setHiddenResourceIds] = useState(() => new Set());
+  // Phone layout shows one resource at a time; null = first active.
+  const [mobileResourceId, setMobileResourceId] = useState(null);
+  const isSmall = useIsSmallScreen();
   const [actionMessage, setActionMessage] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null); // { kind, ...row }
   // Click/drag creation draft: { resourceId, resourceName, startMin,
@@ -128,12 +157,30 @@ export default function AdminCalendar() {
     };
   }, [fromIso, toIso, refreshKey]);
 
-  // Active resources only, optionally narrowed by hide toggles
-  const visibleResources = useMemo(() => {
-    return (resources ?? [])
-      .filter((r) => r.active)
-      .filter((r) => !hiddenResourceIds.has(r.id));
-  }, [resources, hiddenResourceIds]);
+  const activeResources = useMemo(
+    () => (resources ?? []).filter((r) => r.active),
+    [resources],
+  );
+
+  // Desktop: active resources, optionally narrowed by hide toggles
+  const visibleResources = useMemo(
+    () => activeResources.filter((r) => !hiddenResourceIds.has(r.id)),
+    [activeResources, hiddenResourceIds],
+  );
+
+  // Phone: exactly one resource column. Derived (not effect-set) so a
+  // deleted/deactivated selection falls back to the first active
+  // resource without a flash of empty grid.
+  const mobileResource =
+    activeResources.find((r) => r.id === mobileResourceId) ??
+    activeResources[0] ??
+    null;
+
+  // What the grid actually renders. Desktop path is untouched.
+  const gridResources = useMemo(() => {
+    if (!isSmall) return visibleResources;
+    return mobileResource ? [mobileResource] : [];
+  }, [isSmall, visibleResources, mobileResource]);
 
   // Filter to items whose start_time lands on the selected local date
   const dayBookings = useMemo(
@@ -170,7 +217,7 @@ export default function AdminCalendar() {
   // column rendering
   const itemsByResource = useMemo(() => {
     const m = new Map();
-    for (const r of visibleResources) m.set(r.id, []);
+    for (const r of gridResources) m.set(r.id, []);
     for (const b of dayBookings) {
       if (b.status === 'cancelled') continue;
       const list = m.get(b.resource_id);
@@ -182,7 +229,7 @@ export default function AdminCalendar() {
       if (list) list.push({ kind: 'class', ...ci });
     }
     return m;
-  }, [visibleResources, dayBookings, dayClassInstances]);
+  }, [gridResources, dayBookings, dayClassInstances]);
 
   function shiftDate(days) {
     const d = new Date(`${dateStr}T12:00:00.000Z`); // noon to dodge DST issues
@@ -205,7 +252,17 @@ export default function AdminCalendar() {
         <div className="max-w-[1600px] mx-auto space-y-3">
         <PageHeader
           title="Calendar"
-          description={`All times in ${tz}. Click or drag on an open area to create a booking.`}
+          description={
+            <>
+              All times in {formatTimezoneLabel(tz)}.{' '}
+              <span className="hidden md:inline">
+                Click or drag on an open area to create a booking.
+              </span>
+              <span className="md:hidden">
+                Tap an open slot to add a booking.
+              </span>
+            </>
+          }
           actions={
             <DateNav
               dateStr={dateStr}
@@ -229,28 +286,26 @@ export default function AdminCalendar() {
         )}
 
         <div className="flex gap-3">
-          {/* Sidebar: resource toggles */}
-          <aside className="w-48 shrink-0 rounded border border-slate-200 bg-white p-3 self-start">
+          {/* Desktop sidebar: resource show/hide toggles */}
+          <aside className="hidden md:block w-48 shrink-0 rounded border border-slate-200 bg-white p-3 self-start">
             <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">
-              Resources ({(resources ?? []).filter((r) => r.active).length})
+              Resources ({activeResources.length})
             </h2>
             <ul className="space-y-1">
-              {(resources ?? [])
-                .filter((r) => r.active)
-                .map((r) => (
-                  <li key={r.id} className="flex items-center gap-2">
-                    <input
-                      id={`r-${r.id}`}
-                      type="checkbox"
-                      checked={!hiddenResourceIds.has(r.id)}
-                      onChange={() => toggleResource(r.id)}
-                      className="rounded border-slate-300"
-                    />
-                    <label htmlFor={`r-${r.id}`} className="text-sm">
-                      {r.name}
-                    </label>
-                  </li>
-                ))}
+              {activeResources.map((r) => (
+                <li key={r.id} className="flex items-center gap-2">
+                  <input
+                    id={`r-${r.id}`}
+                    type="checkbox"
+                    checked={!hiddenResourceIds.has(r.id)}
+                    onChange={() => toggleResource(r.id)}
+                    className="rounded border-slate-300"
+                  />
+                  <label htmlFor={`r-${r.id}`} className="text-sm">
+                    {r.name}
+                  </label>
+                </li>
+              ))}
             </ul>
             {(resources ?? []).filter((r) => !r.active).length > 0 && (
               <p className="mt-3 text-xs text-slate-400">
@@ -262,12 +317,37 @@ export default function AdminCalendar() {
 
           {/* Calendar grid + cancelled list */}
           <div className="flex-1 min-w-0 space-y-3">
+            {/* Phone resource selector: single-select chips — the grid
+                shows one resource at a time at this width */}
+            {activeResources.length > 0 && (
+              <div className="flex gap-2 overflow-x-auto pb-1 md:hidden">
+                {activeResources.map((r) => {
+                  const selected = mobileResource?.id === r.id;
+                  return (
+                    <button
+                      key={r.id}
+                      onClick={() => setMobileResourceId(r.id)}
+                      aria-pressed={selected}
+                      className={`shrink-0 rounded-full border px-3.5 py-2 text-sm font-medium transition ${
+                        selected
+                          ? 'border-brand-600 bg-brand-50 text-brand-700'
+                          : 'border-slate-200 bg-white text-slate-600'
+                      }`}
+                    >
+                      {r.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             <div className="overflow-x-auto rounded border border-slate-200 bg-white">
               <Grid
                 tz={tz}
                 loading={loading}
-                resources={visibleResources}
+                resources={gridResources}
                 itemsByResource={itemsByResource}
+                isSmall={isSmall}
                 onItemClick={setSelectedItem}
                 onSelectRange={setCreateDraft}
               />
@@ -351,6 +431,11 @@ function DateNav({ dateStr, tz, onPrev, onToday, onNext }) {
     day: 'numeric',
     year: 'numeric',
   });
+  // Short form so prev / Today / next + date stay on one line on a phone.
+  const displayShort = new Date(`${dateStr}T12:00:00Z`).toLocaleDateString(
+    'en-US',
+    { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' },
+  );
   return (
     <div className="flex items-center gap-2">
       <Button variant="secondary" size="sm" onClick={onPrev}>
@@ -362,8 +447,9 @@ function DateNav({ dateStr, tz, onPrev, onToday, onNext }) {
       <Button variant="secondary" size="sm" onClick={onNext}>
         →
       </Button>
-      <span className="ml-3 text-sm font-medium text-slate-700">
-        {display}
+      <span className="ml-1 md:ml-3 text-sm font-medium text-slate-700">
+        <span className="hidden md:inline">{display}</span>
+        <span className="md:hidden">{displayShort}</span>
       </span>
     </div>
   );
@@ -377,7 +463,7 @@ const SNAP_MIN = 15;
 const snapDown = (m) => Math.floor(m / SNAP_MIN) * SNAP_MIN;
 const snapUp = (m) => Math.ceil(m / SNAP_MIN) * SNAP_MIN;
 
-function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRange }) {
+function Grid({ tz, loading, resources, itemsByResource, isSmall, onItemClick, onSelectRange }) {
   // Click/drag-to-create. `drag` drives the ghost overlay; dragRef
   // mirrors it so the window-level mouseup handler reads the latest
   // value without re-subscribing on every mousemove.
@@ -437,6 +523,29 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
     setDrag(next);
   }
 
+  // Phone create path: plain tap on an open slot. Click fires after
+  // the browser has ruled out a scroll gesture, so native scrolling
+  // keeps working — no touchstart/touchmove handling here, ever.
+  // Mirrors the desktop click case: snap down, default 60-min window
+  // (the modal re-snaps the end to the chosen offering's duration).
+  function tapCreate(e, resource) {
+    // Taps on a booking/class card open the detail panel, not a draft.
+    if (e.target.closest('button')) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (e.clientY - rect.top < 30) return; // resource-name header row
+    colRectRef.current = rect;
+    const startMin = snapDown(minuteFromY(e.clientY));
+    const endMin = Math.min(startMin + 60, 1440);
+    if (startMin >= endMin) return;
+    onSelectRange({
+      resourceId: resource.id,
+      resourceName: resource.name,
+      startMin,
+      endMin,
+      dragged: false,
+    });
+  }
+
   useEffect(() => {
     if (!drag) return undefined;
     function onMove(e) {
@@ -481,7 +590,7 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
       <p className="p-6 text-sm text-slate-500">
         {loading
           ? 'Loading calendar…'
-          : 'No active resources to display. Add resources via the wizard or unhide them in the sidebar.'}
+          : 'No active resources to display. Add resources via the setup wizard, or adjust the resource filters.'}
       </p>
     );
   }
@@ -494,10 +603,14 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
 
   return (
     <div className="flex" style={{ minWidth: `${120 + resources.length * 160}px` }}>
-      {/* Time gutter */}
-      <div className="w-16 shrink-0 border-r border-slate-200 relative" style={{ height: totalHeight + 30 }}>
+      {/* Time gutter. Sticky below md so the hour labels stay on
+          screen if the grid ever scrolls sideways on a phone. */}
+      <div
+        className="w-16 shrink-0 border-r border-slate-200 relative max-md:sticky max-md:left-0 max-md:z-20 max-md:bg-white"
+        style={{ height: totalHeight + 30 }}
+      >
         <div className="h-[30px] border-b border-slate-200 text-[10px] uppercase text-slate-400 flex items-center justify-end pr-2">
-          {tz?.split('/')[1] ? tz.split('/')[1].slice(0, 3) : 'UTC'}
+          {formatTimezoneLabel(tz)}
         </div>
         {hourLines.map((m) => (
           <div
@@ -516,7 +629,11 @@ function Grid({ tz, loading, resources, itemsByResource, onItemClick, onSelectRa
         return (
           <div
             key={r.id}
-            onMouseDown={(e) => beginDrag(e, r)}
+            // Tap on phones, mouse click/drag on desktop. Never both:
+            // attaching mousedown on touch devices would fight native
+            // scrolling via the synthesized mouse events after a tap.
+            onMouseDown={isSmall ? undefined : (e) => beginDrag(e, r)}
+            onClick={isSmall ? (e) => tapCreate(e, r) : undefined}
             className="flex-1 min-w-[160px] border-r border-slate-200 relative cursor-crosshair select-none"
             style={{ height: totalHeight + 30 }}
           >
