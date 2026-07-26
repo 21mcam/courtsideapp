@@ -7,6 +7,17 @@
 //     fills in contact info and is redirected to Stripe Checkout;
 //     the booking confirms when the webhook sees the payment.
 //
+// Resource selection mirrors BookingPage: "No preference" is the
+// preselected default when the offering runs on several resources
+// (slots shown are the union across resources; the concrete resource
+// is picked at submit time, emptiest first — lib/availability.js),
+// and the step is hidden entirely for single-resource offerings. On
+// a 409 slot conflict the submit retries the same time on the next
+// resource that had it. Safe here even with the hold + checkout
+// lifecycle: a 409 response rolls the whole transaction back (no
+// booking row, no hold), and each retry POST creates a fresh booking
+// with its own hold_expires_at and Checkout session.
+//
 // Auth context: `me` is null here. Tenant name + timezone come from
 // useAuth().tenant, which loads for everyone (GET /api/tenant is
 // public). Offerings come from GET /api/customers/offerings and slots
@@ -23,6 +34,12 @@ import {
   formatTimeLocal,
   formatTimezoneLabel,
 } from '../format.js';
+import {
+  ANY_RESOURCE,
+  SLOT_TAKEN_MESSAGE,
+  isRetryableConflict,
+  mergeAvailability,
+} from '../lib/availability.js';
 import { Button, Card, Field, Input, cn } from '../components/ui/index.js';
 
 // Tenant-local YYYY-MM-DD for "today" — same helper as BookingPage.
@@ -59,6 +76,12 @@ export default function WalkInPage() {
   const [slotsError, setSlotsError] = useState(null);
   const [slotsReason, setSlotsReason] = useState(null);
   const [loadingSlots, setLoadingSlots] = useState(false);
+  // "No preference" bookkeeping: start ISO → resource ids that had
+  // that slot, ordered by booking preference (lib/availability.js).
+  const [slotResourceIds, setSlotResourceIds] = useState({});
+  // Bumped to force a slot refetch after a submit-time conflict, so
+  // the just-taken time drops out of the list.
+  const [slotsNonce, setSlotsNonce] = useState(0);
 
   const [contact, setContact] = useState({
     first_name: '',
@@ -105,12 +128,19 @@ export default function WalkInPage() {
     [offerings, selectedOfferingId],
   );
 
+  // Default the resource: "No preference" when there's a real
+  // choice, the lone resource when there isn't (the picker card is
+  // hidden then), or clear if the offering has none.
   useEffect(() => {
     if (!selectedOffering) {
       setSelectedResourceId('');
       return;
     }
-    setSelectedResourceId(selectedOffering.resources[0]?.id ?? '');
+    setSelectedResourceId(
+      selectedOffering.resources.length > 1
+        ? ANY_RESOURCE
+        : (selectedOffering.resources[0]?.id ?? ''),
+    );
   }, [selectedOfferingId, selectedOffering]);
 
   // Any change upstream of the slot invalidates the selected slot.
@@ -119,30 +149,42 @@ export default function WalkInPage() {
     setSubmitError(null);
   }, [selectedOfferingId, selectedResourceId, date]);
 
+  // Fetch slots. "No preference" queries every resource of the
+  // offering in parallel and shows the merged union of start times.
   useEffect(() => {
     if (!selectedOfferingId || !selectedResourceId || !date) {
       setSlots(null);
       setSlotsReason(null);
+      setSlotResourceIds({});
       return;
     }
+    const resourceIds =
+      selectedResourceId === ANY_RESOURCE
+        ? (selectedOffering?.resources ?? []).map((r) => r.id)
+        : [selectedResourceId];
     let cancelled = false;
     setLoadingSlots(true);
     setSlotsError(null);
     setSlotsReason(null);
-    api(
-      `/api/availability?offering_id=${selectedOfferingId}&resource_id=${selectedResourceId}&date=${date}`,
+    Promise.all(
+      resourceIds.map((resourceId) =>
+        api(
+          `/api/availability?offering_id=${selectedOfferingId}&resource_id=${resourceId}&date=${date}`,
+        ).then(async (res) => {
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(body.error || `HTTP ${res.status}`);
+          }
+          return res.json();
+        }),
+      ),
     )
-      .then(async (res) => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || `HTTP ${res.status}`);
-        }
-        return res.json();
-      })
-      .then((data) => {
+      .then((results) => {
         if (cancelled) return;
-        setSlots(data.slots ?? []);
-        setSlotsReason(data.reason ?? null);
+        const merged = mergeAvailability(resourceIds, results);
+        setSlots(merged.slots);
+        setSlotsReason(merged.reason);
+        setSlotResourceIds(merged.resourceIdsBySlot);
       })
       .catch((err) => {
         if (!cancelled) setSlotsError(err.message);
@@ -153,7 +195,7 @@ export default function WalkInPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedOfferingId, selectedResourceId, date]);
+  }, [selectedOfferingId, selectedResourceId, selectedOffering, date, slotsNonce]);
 
   const waiverRequired = waiver?.waiver_required === true;
   const waiverComplete =
@@ -171,44 +213,78 @@ export default function WalkInPage() {
     e.preventDefault();
     if (submitting || !selectedSlot || !contactComplete || !waiverComplete)
       return;
+    // The booking POST needs a concrete resource. With "No
+    // preference" the candidates are every resource that had this
+    // slot, emptiest first (lib/availability.js); an explicit pick
+    // is its own single candidate. Each POST is a self-contained
+    // hold + Checkout session, and a 409 rolls back holding nothing,
+    // so retrying the next candidate is safe.
+    const noPreference = selectedResourceId === ANY_RESOURCE;
+    const candidates = noPreference
+      ? (slotResourceIds[selectedSlot.start] ?? [])
+      : [selectedResourceId];
+    if (candidates.length === 0) return; // stale selection mid-refetch
     setSubmitting(true);
     setSubmitError(null);
+    const payload = {
+      offering_id: selectedOfferingId,
+      start_time: selectedSlot.start,
+      customer: {
+        first_name: contact.first_name.trim(),
+        last_name: contact.last_name.trim(),
+        email: contact.email.trim(),
+        ...(contact.phone.trim() ? { phone: contact.phone.trim() } : {}),
+      },
+      ...(waiverRequired
+        ? {
+            waiver: {
+              signer_name: waiverForm.signer_name.trim(),
+              // Echo the version whose text the form rendered —
+              // the server 409s (waiver_version_mismatch) if the
+              // waiver changed after the page loaded.
+              waiver_version: waiver?.waiver_version,
+              ...(waiverForm.is_minor
+                ? {
+                    is_minor: true,
+                    guardian_name: waiverForm.guardian_name.trim(),
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      success_url: `${window.location.origin}/walk-in/success`,
+      cancel_url: `${window.location.origin}/walk-in?cancelled=1`,
+    };
     try {
-      const res = await api('/api/customers/bookings', {
-        method: 'POST',
-        body: JSON.stringify({
-          offering_id: selectedOfferingId,
-          resource_id: selectedResourceId,
-          start_time: selectedSlot.start,
-          customer: {
-            first_name: contact.first_name.trim(),
-            last_name: contact.last_name.trim(),
-            email: contact.email.trim(),
-            ...(contact.phone.trim() ? { phone: contact.phone.trim() } : {}),
-          },
-          ...(waiverRequired
-            ? {
-                waiver: {
-                  signer_name: waiverForm.signer_name.trim(),
-                  // Echo the version whose text the form rendered —
-                  // the server 409s (waiver_version_mismatch) if the
-                  // waiver changed after the page loaded.
-                  waiver_version: waiver?.waiver_version,
-                  ...(waiverForm.is_minor
-                    ? {
-                        is_minor: true,
-                        guardian_name: waiverForm.guardian_name.trim(),
-                      }
-                    : {}),
-                },
-              }
-            : {}),
-          success_url: `${window.location.origin}/walk-in/success`,
-          cancel_url: `${window.location.origin}/walk-in?cancelled=1`,
-        }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
+      for (let i = 0; i < candidates.length; i += 1) {
+        const res = await api('/api/customers/bookings', {
+          method: 'POST',
+          body: JSON.stringify({ ...payload, resource_id: candidates[i] }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok) {
+          // Success-page context: the server appends booking_id to
+          // the Checkout success_url; the email needed for the
+          // lookup rides in sessionStorage so it never appears in a
+          // URL. Same tab through Stripe and back, so sessionStorage
+          // survives.
+          try {
+            sessionStorage.setItem(
+              'courtside_walkin_email',
+              contact.email.trim().toLowerCase(),
+            );
+            sessionStorage.setItem(
+              'courtside_walkin_booking_id',
+              body.booking.id,
+            );
+          } catch {
+            // Storage unavailable (private mode) — the success page
+            // asks for the email instead.
+          }
+          // Off to Stripe Checkout; the webhook confirms the booking.
+          window.location.assign(body.checkout_url);
+          return;
+        }
         if (body.code === 'waiver_version_mismatch') {
           // Admin updated the waiver text after the page loaded —
           // reload the new text, clear the agreement, re-prompt.
@@ -221,24 +297,22 @@ export default function WalkInPage() {
             'The waiver was updated — please review the new version and agree again.',
           );
         }
+        if (isRetryableConflict(res.status, body)) {
+          // Someone grabbed this time on this resource between
+          // listing and submitting — try the same time on the next
+          // candidate before giving up.
+          if (i < candidates.length - 1) continue;
+          if (noPreference) {
+            // Every candidate just filled up. Refetch so the stale
+            // time drops out of the list, then ask for another pick
+            // (contact + waiver entries are kept).
+            setSelectedSlot(null);
+            setSlotsNonce((n) => n + 1);
+            throw new Error(SLOT_TAKEN_MESSAGE);
+          }
+        }
         throw new Error(body.error || `HTTP ${res.status}`);
       }
-      // Success-page context: the server appends booking_id to the
-      // Checkout success_url; the email needed for the lookup rides
-      // in sessionStorage so it never appears in a URL. Same tab
-      // through Stripe and back, so sessionStorage survives.
-      try {
-        sessionStorage.setItem(
-          'courtside_walkin_email',
-          contact.email.trim().toLowerCase(),
-        );
-        sessionStorage.setItem('courtside_walkin_booking_id', body.booking.id);
-      } catch {
-        // Storage unavailable (private mode) — the success page asks
-        // for the email instead.
-      }
-      // Off to Stripe Checkout; the webhook confirms the booking.
-      window.location.assign(body.checkout_url);
     } catch (err) {
       setSubmitError(err.message);
       setSubmitting(false);
@@ -324,10 +398,24 @@ export default function WalkInPage() {
           )}
         </Card>
 
-        {/* Resource picker — only if the offering has multiple resources */}
+        {/* Resource picker — only if the offering has multiple
+            resources (a single resource is auto-selected and the
+            step hidden). "No preference" is preselected; picking a
+            specific resource stays one tap away. */}
         {selectedOffering && selectedOffering.resources.length > 1 && (
-          <Card title={`Which ${selectedOffering.name}?`}>
+          <Card title="Any preference?">
             <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setSelectedResourceId(ANY_RESOURCE)}
+                className={cn(
+                  'rounded-lg border px-3 py-1.5 text-sm transition',
+                  selectedResourceId === ANY_RESOURCE
+                    ? 'border-brand-600 bg-brand-50 ring-1 ring-brand-600 font-medium text-slate-900'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300',
+                )}
+              >
+                No preference
+              </button>
               {selectedOffering.resources.map((r) => (
                 <button
                   key={r.id}
