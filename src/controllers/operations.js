@@ -17,6 +17,8 @@
 
 import { z } from 'zod';
 
+import { isUuid } from './catalog.js';
+
 // ============================================================
 // operating_hours
 // ============================================================
@@ -112,6 +114,96 @@ export async function createOperatingHours(req, res, next) {
   }
 }
 
+// PUT /api/admin/resources/:id/operating-hours — bulk-replace the
+// full weekly schedule for one resource. The admin hours editor
+// edits a whole week at a time; replacing atomically (DELETE +
+// re-INSERT inside req.db's transaction) avoids the transient
+// overlap 409s that row-by-row delete/create would hit when a
+// window is being narrowed/moved. An empty `hours` array clears the
+// schedule (resource becomes unbookable every day).
+const operatingHoursWindowSchema = z
+  .object({
+    day_of_week: z.number().int().min(0).max(6),
+    open_time: z.string().regex(TIME_REGEX, 'open_time must be HH:MM or HH:MM:SS'),
+    close_time: z.string().regex(TIME_REGEX, 'close_time must be HH:MM or HH:MM:SS'),
+  })
+  .refine((d) => d.close_time > d.open_time, {
+    message: 'close_time must be after open_time',
+  });
+
+const operatingHoursReplaceSchema = z.object({
+  hours: z.array(operatingHoursWindowSchema).max(200),
+});
+
+export async function replaceOperatingHours(req, res, next) {
+  try {
+    const resourceId = req.params.id;
+    if (!isUuid(resourceId)) {
+      return res.status(404).json({ error: 'resource not found' });
+    }
+    const parsed = operatingHoursReplaceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const { hours } = parsed.data;
+
+    // Confirm the resource exists in this tenant BEFORE deleting —
+    // also gives a clean 404 for the empty-hours case (no INSERT
+    // would otherwise touch the FK).
+    const resource = await req.db.query(
+      `SELECT id FROM resources WHERE tenant_id = $1 AND id = $2`,
+      [req.tenant.id, resourceId],
+    );
+    if (resource.rows.length === 0) {
+      return res.status(404).json({ error: 'resource not found' });
+    }
+
+    try {
+      await req.db.query(
+        `DELETE FROM operating_hours
+          WHERE tenant_id = $1 AND resource_id = $2`,
+        [req.tenant.id, resourceId],
+      );
+      const inserted = [];
+      for (const w of hours) {
+        const result = await req.db.query(
+          `INSERT INTO operating_hours
+             (tenant_id, resource_id, day_of_week, open_time, close_time)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, resource_id, day_of_week, open_time, close_time,
+                     created_at, updated_at`,
+          [req.tenant.id, resourceId, w.day_of_week, w.open_time, w.close_time],
+        );
+        inserted.push(result.rows[0]);
+      }
+      inserted.sort(
+        (a, b) =>
+          a.day_of_week - b.day_of_week ||
+          (a.open_time < b.open_time ? -1 : a.open_time > b.open_time ? 1 : 0),
+      );
+      // withTenantContext ROLLBACKs on status >= 400, so the DELETE
+      // above never lands unless every INSERT succeeded.
+      res.json({ operating_hours: inserted });
+    } catch (err) {
+      if (err.code === '23P01') {
+        return res.status(409).json({
+          error: 'overlapping hours in the submitted set for this resource',
+        });
+      }
+      if (err.code === '23514') {
+        return res
+          .status(400)
+          .json({ error: 'invalid hours: schema CHECK failed' });
+      }
+      throw err;
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function deleteOperatingHours(req, res, next) {
   try {
     const id = req.params.id;
@@ -146,6 +238,9 @@ const POLICY_DEFAULTS = {
   max_advance_booking_days: 30,
   allow_member_self_cancel: true,
   allow_customer_self_cancel: true,
+  waiver_required: false,
+  waiver_text: null,
+  waiver_version: 1,
 };
 
 const bookingPoliciesUpsertSchema = z
@@ -161,6 +256,11 @@ const bookingPoliciesUpsertSchema = z
     max_advance_booking_days: z.number().int().positive().optional(),
     allow_member_self_cancel: z.boolean().optional(),
     allow_customer_self_cancel: z.boolean().optional(),
+    // liability waiver config. waiver_version is NOT accepted from
+    // the client — it's bumped server-side whenever waiver_text
+    // changes (see upsertBookingPolicies).
+    waiver_required: z.boolean().optional(),
+    waiver_text: z.string().max(50000).nullable().optional(),
   });
 
 export async function getBookingPolicies(req, res, next) {
@@ -170,6 +270,7 @@ export async function getBookingPolicies(req, res, next) {
               partial_refund_percent, no_show_action, no_show_fee_cents,
               min_advance_booking_minutes, max_advance_booking_days,
               allow_member_self_cancel, allow_customer_self_cancel,
+              waiver_required, waiver_text, waiver_version,
               created_at, updated_at
          FROM booking_policies
         WHERE tenant_id = $1`,
@@ -196,15 +297,52 @@ export async function upsertBookingPolicies(req, res, next) {
     }
     const d = { ...POLICY_DEFAULTS, ...parsed.data };
 
+    // Waiver semantics differ from the other fields:
+    //   * omitted waiver fields KEEP their stored values (older
+    //     clients that PUT the pre-waiver payload must not silently
+    //     reset the tenant's waiver config), whereas other omitted
+    //     fields fall back to schema defaults (pre-existing
+    //     behavior).
+    //   * waiver_version is server-managed: changing waiver_text
+    //     bumps it, which invalidates every existing signature —
+    //     enforcement requires a CURRENT-version signature, so a
+    //     text change re-prompts everyone. Saving identical text is
+    //     not a bump.
+    // FOR UPDATE so two concurrent PUTs can't both read version N
+    // and write N+1 with different texts.
+    const existingRes = await req.db.query(
+      `SELECT waiver_required, waiver_text, waiver_version
+         FROM booking_policies
+        WHERE tenant_id = $1
+          FOR UPDATE`,
+      [req.tenant.id],
+    );
+    const existing = existingRes.rows[0] ?? null;
+
+    const waiverRequired =
+      parsed.data.waiver_required ??
+      existing?.waiver_required ??
+      POLICY_DEFAULTS.waiver_required;
+    let waiverText = existing?.waiver_text ?? null;
+    let waiverVersion = existing?.waiver_version ?? 1;
+    if (Object.hasOwn(parsed.data, 'waiver_text')) {
+      const nextText = parsed.data.waiver_text; // string | null
+      if (existing && nextText !== (existing.waiver_text ?? null)) {
+        waiverVersion = existing.waiver_version + 1;
+      }
+      waiverText = nextText;
+    }
+
     try {
       const result = await req.db.query(
         `INSERT INTO booking_policies (
            tenant_id, free_cancel_hours_before, partial_refund_hours_before,
            partial_refund_percent, no_show_action, no_show_fee_cents,
            min_advance_booking_minutes, max_advance_booking_days,
-           allow_member_self_cancel, allow_customer_self_cancel
+           allow_member_self_cancel, allow_customer_self_cancel,
+           waiver_required, waiver_text, waiver_version
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (tenant_id) DO UPDATE SET
            free_cancel_hours_before    = EXCLUDED.free_cancel_hours_before,
            partial_refund_hours_before = EXCLUDED.partial_refund_hours_before,
@@ -214,11 +352,15 @@ export async function upsertBookingPolicies(req, res, next) {
            min_advance_booking_minutes = EXCLUDED.min_advance_booking_minutes,
            max_advance_booking_days    = EXCLUDED.max_advance_booking_days,
            allow_member_self_cancel    = EXCLUDED.allow_member_self_cancel,
-           allow_customer_self_cancel  = EXCLUDED.allow_customer_self_cancel
+           allow_customer_self_cancel  = EXCLUDED.allow_customer_self_cancel,
+           waiver_required             = EXCLUDED.waiver_required,
+           waiver_text                 = EXCLUDED.waiver_text,
+           waiver_version              = EXCLUDED.waiver_version
          RETURNING free_cancel_hours_before, partial_refund_hours_before,
                    partial_refund_percent, no_show_action, no_show_fee_cents,
                    min_advance_booking_minutes, max_advance_booking_days,
                    allow_member_self_cancel, allow_customer_self_cancel,
+                   waiver_required, waiver_text, waiver_version,
                    created_at, updated_at`,
         [
           req.tenant.id,
@@ -231,6 +373,9 @@ export async function upsertBookingPolicies(req, res, next) {
           d.max_advance_booking_days,
           d.allow_member_self_cancel,
           d.allow_customer_self_cancel,
+          waiverRequired,
+          waiverText,
+          waiverVersion,
         ],
       );
       res.json({ booking_policies: { ...result.rows[0], exists: true } });

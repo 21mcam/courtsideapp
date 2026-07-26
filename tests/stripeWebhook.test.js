@@ -64,6 +64,15 @@ before(async () => {
     [tenant_id, u.rows[0].id],
   );
 
+  // This file signs events with FIXED ids (evt_test_*). The dedup
+  // table stripe_webhook_events is global (no tenant_id — see
+  // migration 016) so those rows survive the tenant teardown below,
+  // and a rerun against the same DB would treat every event as a
+  // duplicate and skip the handlers. Clear our fixed ids up front.
+  await privilegedPool.query(
+    `DELETE FROM stripe_webhook_events WHERE event_id LIKE 'evt_test_%'`,
+  );
+
   // Pre-seed a stripe_connections row. This is what the webhook
   // looks up to bootstrap tenant context.
   stripe_account_id = `acct_test_${randomUUID().slice(0, 8)}`;
@@ -317,4 +326,100 @@ test('subsequent account.updated does NOT overwrite fully_onboarded_at', { skip 
     new Date(stamp1).toISOString(),
     'fully_onboarded_at should be preserved across subsequent updates',
   );
+});
+
+// ============================================================
+// dedup release on handler failure (review fix)
+// ============================================================
+//
+// The dedup row is inserted (autocommit) BEFORE the handler runs. If
+// the handler then fails, the dispatcher must DELETE the dedup row so
+// Stripe's retry actually re-runs the handler — otherwise a transient
+// failure permanently loses the event (e.g. a paid pack purchase
+// whose credits are never granted).
+
+test('handler failure releases the dedup row so a retry re-processes the event', { skip }, async () => {
+  // Plan exists; member does NOT (yet) — the subscriptions INSERT
+  // hits the members FK and the handler throws (a stand-in for any
+  // transient failure).
+  const planRes = await privilegedPool.query(
+    `INSERT INTO plans (tenant_id, name, monthly_price_cents, credits_per_week)
+     VALUES ($1, 'Dedup Test Plan', 5000, 7) RETURNING id`,
+    [tenant_id],
+  );
+  const planId = planRes.rows[0].id;
+  const memberId = randomUUID();
+  const stripeSubId = `sub_test_dedup_${randomUUID().slice(0, 6)}`;
+
+  const event = {
+    id: `evt_test_dedup_release_${randomUUID().slice(0, 6)}`,
+    type: 'checkout.session.completed',
+    account: stripe_account_id,
+    data: {
+      object: {
+        id: 'cs_test_dedup_release',
+        mode: 'subscription',
+        subscription: stripeSubId,
+        customer: 'cus_test_dedup',
+        metadata: {
+          courtside_tenant_id: tenant_id,
+          courtside_member_id: memberId,
+          courtside_plan_id: planId,
+        },
+      },
+    },
+  };
+
+  const post = async () => {
+    const { body, signature } = signedRequest(event);
+    return fetch(`${baseUrl}/webhooks/stripe`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'stripe-signature': signature,
+      },
+      body,
+    });
+  };
+
+  // First delivery: handler throws (FK violation) → 500, and the
+  // dedup row must be gone so the retry isn't answered "deduped".
+  const res1 = await post();
+  assert.equal(res1.status, 500);
+  const dedup1 = await privilegedPool.query(
+    `SELECT 1 FROM stripe_webhook_events WHERE event_id = $1`,
+    [event.id],
+  );
+  assert.equal(
+    dedup1.rows.length,
+    0,
+    'dedup row must be released when the handler fails',
+  );
+
+  // "Transient" cause resolved: the member now exists.
+  await privilegedPool.query(
+    `INSERT INTO members (id, tenant_id, email, first_name, last_name)
+     VALUES ($1, $2, $3, 'Dedup', 'Member')`,
+    [memberId, tenant_id, `dedup-${randomUUID()}@example.com`],
+  );
+
+  // Stripe retry of the SAME event id: re-runs the handler and the
+  // subscription lands this time.
+  const res2 = await post();
+  assert.equal(res2.status, 200);
+  const body2 = await res2.json();
+  assert.ok(!body2.deduped, 'retry must not be answered as a duplicate');
+
+  const subRow = await privilegedPool.query(
+    `SELECT status FROM subscriptions
+      WHERE tenant_id = $1 AND stripe_subscription_id = $2`,
+    [tenant_id, stripeSubId],
+  );
+  assert.equal(subRow.rows.length, 1, 'retry must create the subscription');
+  assert.equal(subRow.rows[0].status, 'active');
+
+  // And now the dedup row is in place: a THIRD delivery is deduped.
+  const res3 = await post();
+  const body3 = await res3.json();
+  assert.equal(body3.deduped, true);
 });

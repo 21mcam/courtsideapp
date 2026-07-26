@@ -77,9 +77,26 @@ export default function LoginPage() {
             <Button type="submit" disabled={busy} className="w-full">
               {busy ? 'signing in…' : 'Sign in'}
             </Button>
+            <p className="text-center text-sm">
+              <Link
+                to="/forgot"
+                className="text-brand-600 hover:text-brand-700 font-medium"
+              >
+                Forgot your password?
+              </Link>
+            </p>
           </form>
         </Card>
         <p className="mt-6 text-center text-sm text-slate-500">
+          New here?{' '}
+          <Link
+            to="/register"
+            className="text-brand-600 hover:text-brand-700 font-medium"
+          >
+            Create an account
+          </Link>
+        </p>
+        <p className="mt-2 text-center text-sm text-slate-500">
           Just visiting?{' '}
           <Link
             to="/walk-in"

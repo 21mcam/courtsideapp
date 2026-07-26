@@ -46,6 +46,7 @@ const _fakePrices = new Map();          // `${acct}:${priceId}` → price
 const _fakeCustomers = new Map();       // `${acct}:${customerId}` → customer
 const _fakeCheckoutSessions = new Map();// `${acct}:${sessionId}` → session
 const _fakeSubscriptions = new Map();   // `${acct}:${subId}` → subscription
+const _fakeRefunds = new Map();         // `${acct}:${refundId}` → refund
 
 export function __resetStripeFake() {
   _fakeAccounts.clear();
@@ -54,6 +55,17 @@ export function __resetStripeFake() {
   _fakeCustomers.clear();
   _fakeCheckoutSessions.clear();
   _fakeSubscriptions.clear();
+  _fakeRefunds.clear();
+}
+
+export function __getRefundsForAccount(acct) {
+  return Array.from(_fakeRefunds.entries())
+    .filter(([k]) => k.startsWith(`${acct}:`))
+    .map(([, v]) => v);
+}
+
+export function __getCheckoutSession(acct, sessionId) {
+  return _fakeCheckoutSessions.get(`${acct}:${sessionId}`) ?? null;
 }
 
 export function __setAccountState(id, patch) {
@@ -75,6 +87,14 @@ export function __getPricesForAccount(acct) {
   return Array.from(_fakePrices.entries())
     .filter(([k]) => k.startsWith(`${acct}:`))
     .map(([, v]) => v);
+}
+
+export function __getPrice(acct, priceId) {
+  return _fakePrices.get(`${acct}:${priceId}`) ?? null;
+}
+
+export function __getProduct(acct, productId) {
+  return _fakeProducts.get(`${acct}:${productId}`) ?? null;
 }
 
 // Slice 4a additions: simulate a Checkout Session "completing".
@@ -209,11 +229,29 @@ function testFake() {
         const row = {
           id,
           name: params?.name,
+          description: params?.description ?? null,
           metadata: params?.metadata ?? {},
           active: params?.active ?? true,
           stripe_account: acct, // for test introspection only
         };
         _fakeProducts.set(`${acct}:${id}`, row);
+        return row;
+      },
+      async update(id, params, opts) {
+        const acct = acctFromOptions(opts);
+        const row = _fakeProducts.get(`${acct}:${id}`);
+        if (!row) {
+          const err = new Error(`No such product: ${id}`);
+          err.code = 'resource_missing';
+          err.statusCode = 404;
+          throw err;
+        }
+        if (params?.name !== undefined) row.name = params.name;
+        if (params?.description !== undefined) row.description = params.description;
+        if (params?.active !== undefined) row.active = params.active;
+        if (params?.metadata !== undefined) {
+          row.metadata = { ...row.metadata, ...params.metadata };
+        }
         return row;
       },
     },
@@ -294,12 +332,53 @@ function testFake() {
             success_url: params.success_url,
             cancel_url: params.cancel_url,
             metadata: params.metadata ?? {},
+            expires_at:
+              params.expires_at ??
+              Math.floor(Date.now() / 1000) + 24 * 60 * 60, // Stripe default: 24h
             url: `https://stripe.example/checkout/${id}`,
             stripe_account: acct,
           };
           _fakeCheckoutSessions.set(`${acct}:${id}`, row);
           return row;
         },
+      },
+    },
+    refunds: {
+      // Full refund by payment_intent (the only shape the app uses).
+      // Mirrors Stripe: refunding an already-fully-refunded payment
+      // throws code 'charge_already_refunded'.
+      async create(params, opts) {
+        const acct = acctFromOptions(opts);
+        if (!params?.payment_intent) {
+          const err = new Error(
+            'fake stripe: refunds.create requires payment_intent',
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+        const already = Array.from(_fakeRefunds.entries()).some(
+          ([k, v]) =>
+            k.startsWith(`${acct}:`) &&
+            v.payment_intent === params.payment_intent,
+        );
+        if (already) {
+          const err = new Error(
+            `Charge for payment intent ${params.payment_intent} has already been refunded.`,
+          );
+          err.code = 'charge_already_refunded';
+          err.statusCode = 400;
+          throw err;
+        }
+        const id = `re_test_${Math.random().toString(36).slice(2, 10)}`;
+        const row = {
+          id,
+          payment_intent: params.payment_intent,
+          amount: params.amount ?? null, // null = full refund
+          status: 'succeeded',
+          stripe_account: acct,
+        };
+        _fakeRefunds.set(`${acct}:${id}`, row);
+        return row;
       },
     },
     prices: {
@@ -325,9 +404,43 @@ function testFake() {
           currency: params.currency ?? 'usd',
           recurring: params.recurring ?? null,
           active: params.active ?? true,
+          metadata: params.metadata ?? {},
           stripe_account: acct,
         };
         _fakePrices.set(`${acct}:${id}`, row);
+        return row;
+      },
+      async retrieve(id, opts) {
+        const acct = acctFromOptions(opts);
+        const row = _fakePrices.get(`${acct}:${id}`);
+        if (!row) {
+          const err = new Error(`No such price: ${id}`);
+          err.code = 'resource_missing';
+          err.statusCode = 404;
+          throw err;
+        }
+        return row;
+      },
+      // Stripe Prices are immutable except for `active` (archiving)
+      // and metadata — mirror that.
+      async update(id, params, opts) {
+        const acct = acctFromOptions(opts);
+        const row = _fakePrices.get(`${acct}:${id}`);
+        if (!row) {
+          const err = new Error(`No such price: ${id}`);
+          err.code = 'resource_missing';
+          err.statusCode = 404;
+          throw err;
+        }
+        if (params?.unit_amount !== undefined) {
+          const err = new Error('fake stripe: prices are immutable (only active/metadata)');
+          err.statusCode = 400;
+          throw err;
+        }
+        if (params?.active !== undefined) row.active = params.active;
+        if (params?.metadata !== undefined) {
+          row.metadata = { ...row.metadata, ...params.metadata };
+        }
         return row;
       },
     },

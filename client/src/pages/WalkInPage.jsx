@@ -63,6 +63,16 @@ export default function WalkInPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
 
+  // Liability waiver (when the facility requires one, the form shows
+  // it inline and the signature rides along with the booking create).
+  const [waiver, setWaiver] = useState(null); // GET /api/waivers/current body
+  const [waiverForm, setWaiverForm] = useState({
+    signer_name: '',
+    is_minor: false,
+    guardian_name: '',
+    agreed: false,
+  });
+
   useEffect(() => {
     api('/api/customers/offerings')
       .then(async (res) => {
@@ -74,6 +84,14 @@ export default function WalkInPage() {
       })
       .then((data) => setOfferings(data.offerings ?? []))
       .catch((err) => setLoadError(err.message));
+    api('/api/waivers/current')
+      .then(async (res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) setWaiver(data);
+      })
+      .catch(() => {
+        // Non-fatal: the booking endpoint enforces the waiver anyway.
+      });
   }, []);
 
   const selectedOffering = useMemo(
@@ -131,6 +149,13 @@ export default function WalkInPage() {
     };
   }, [selectedOfferingId, selectedResourceId, date]);
 
+  const waiverRequired = waiver?.waiver_required === true;
+  const waiverComplete =
+    !waiverRequired ||
+    (waiverForm.agreed &&
+      waiverForm.signer_name.trim() &&
+      (!waiverForm.is_minor || waiverForm.guardian_name.trim()));
+
   const contactComplete =
     contact.first_name.trim() &&
     contact.last_name.trim() &&
@@ -138,7 +163,8 @@ export default function WalkInPage() {
 
   async function submit(e) {
     e.preventDefault();
-    if (submitting || !selectedSlot || !contactComplete) return;
+    if (submitting || !selectedSlot || !contactComplete || !waiverComplete)
+      return;
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -154,13 +180,56 @@ export default function WalkInPage() {
             email: contact.email.trim(),
             ...(contact.phone.trim() ? { phone: contact.phone.trim() } : {}),
           },
+          ...(waiverRequired
+            ? {
+                waiver: {
+                  signer_name: waiverForm.signer_name.trim(),
+                  // Echo the version whose text the form rendered —
+                  // the server 409s (waiver_version_mismatch) if the
+                  // waiver changed after the page loaded.
+                  waiver_version: waiver?.waiver_version,
+                  ...(waiverForm.is_minor
+                    ? {
+                        is_minor: true,
+                        guardian_name: waiverForm.guardian_name.trim(),
+                      }
+                    : {}),
+                },
+              }
+            : {}),
           success_url: `${window.location.origin}/walk-in/success`,
           cancel_url: `${window.location.origin}/walk-in?cancelled=1`,
         }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (body.code === 'waiver_version_mismatch') {
+          // Admin updated the waiver text after the page loaded —
+          // reload the new text, clear the agreement, re-prompt.
+          const fresh = await api('/api/waivers/current')
+            .then(async (r) => (r.ok ? r.json() : null))
+            .catch(() => null);
+          if (fresh) setWaiver(fresh);
+          setWaiverForm((f) => ({ ...f, agreed: false }));
+          throw new Error(
+            'The waiver was updated — please review the new version and agree again.',
+          );
+        }
         throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      // Success-page context: the server appends booking_id to the
+      // Checkout success_url; the email needed for the lookup rides
+      // in sessionStorage so it never appears in a URL. Same tab
+      // through Stripe and back, so sessionStorage survives.
+      try {
+        sessionStorage.setItem(
+          'courtside_walkin_email',
+          contact.email.trim().toLowerCase(),
+        );
+        sessionStorage.setItem('courtside_walkin_booking_id', body.booking.id);
+      } catch {
+        // Storage unavailable (private mode) — the success page asks
+        // for the email instead.
       }
       // Off to Stripe Checkout; the webhook confirms the booking.
       window.location.assign(body.checkout_url);
@@ -378,9 +447,79 @@ export default function WalkInPage() {
                   }
                 />
               </Field>
+
+              {waiverRequired && (
+                <div className="space-y-3 rounded-lg border border-slate-200 p-4">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Liability waiver
+                  </h3>
+                  <div className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                    {waiver.waiver_text ||
+                      'No waiver text has been provided.'}
+                  </div>
+                  <Field label="Full legal name (this is your signature)">
+                    <Input
+                      required
+                      value={waiverForm.signer_name}
+                      onChange={(e) =>
+                        setWaiverForm({
+                          ...waiverForm,
+                          signer_name: e.target.value,
+                        })
+                      }
+                    />
+                  </Field>
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={waiverForm.is_minor}
+                      onChange={(e) =>
+                        setWaiverForm({
+                          ...waiverForm,
+                          is_minor: e.target.checked,
+                        })
+                      }
+                      className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                    />
+                    I am signing on behalf of a minor
+                  </label>
+                  {waiverForm.is_minor && (
+                    <Field
+                      label="Parent / guardian full name"
+                      hint="The participant's name goes above; the signing adult's name goes here."
+                    >
+                      <Input
+                        required
+                        value={waiverForm.guardian_name}
+                        onChange={(e) =>
+                          setWaiverForm({
+                            ...waiverForm,
+                            guardian_name: e.target.value,
+                          })
+                        }
+                      />
+                    </Field>
+                  )}
+                  <label className="flex items-start gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={waiverForm.agreed}
+                      onChange={(e) =>
+                        setWaiverForm({
+                          ...waiverForm,
+                          agreed: e.target.checked,
+                        })
+                      }
+                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                    />
+                    I have read and agree to the waiver above.
+                  </label>
+                </div>
+              )}
+
               <Button
                 type="submit"
-                disabled={submitting || !contactComplete}
+                disabled={submitting || !contactComplete || !waiverComplete}
                 className="w-full"
               >
                 {submitting

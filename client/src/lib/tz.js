@@ -1,6 +1,11 @@
 // Tenant-timezone date math. Pure functions, no React — unit-tested
 // from tests/tz.test.js (same pattern as lib/calendarLayout.js).
 //
+// NOTE: zonedTimeToUtc / localDateString / addDays are DELIBERATELY
+// DUPLICATED in src/lib/tz.js for the backend (server code must not
+// import from client/src). If you change them here, change them there;
+// tests/tz.test.js asserts the two stay in agreement.
+//
 // THE RULE (CLAUDE.md gotcha #6): every wall-clock time in the product
 // belongs to the TENANT's timezone, never the viewer's browser zone.
 // `new Date('YYYY-MM-DDTHH:MM')`, `Date.prototype.setHours(0,...)`,

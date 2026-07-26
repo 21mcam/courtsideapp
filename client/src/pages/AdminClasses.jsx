@@ -23,8 +23,10 @@ import {
   Card,
   Button,
   Badge,
+  ConfirmDialog,
   Field,
   Input,
+  InputDialog,
   Select,
 } from '../components/ui/index.js';
 import {
@@ -463,13 +465,10 @@ function InstancesSection({ instances, classOfferings, activeResources, tz, onCh
 
 function InstanceRow({ instance, tz, expanded, onToggle, onChanged }) {
   const [busy, setBusy] = useState(false);
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
 
-  async function cancelInstance() {
-    const reason = window.prompt(
-      `Cancel "${instance.offering_name}" on ${formatSlotLocal(instance.start_time, tz)}?\nThis cancels the entire roster and refunds members 100%.\nOptional reason:`,
-      '',
-    );
-    if (reason === null) return;
+  // Runs after the admin submits the cancel InputDialog.
+  async function cancelInstance(reason) {
     setBusy(true);
     try {
       const res = await api(
@@ -511,13 +510,28 @@ function InstanceRow({ instance, tz, expanded, onToggle, onChanged }) {
               <Button
                 size="sm"
                 variant="danger"
-                onClick={cancelInstance}
+                onClick={() => setConfirmingCancel(true)}
                 disabled={busy}
               >
                 Cancel class
               </Button>
             )}
           </div>
+          {confirmingCancel && (
+            <InputDialog
+              title="Cancel class?"
+              message={`Cancel "${instance.offering_name}" on ${formatSlotLocal(instance.start_time, tz)}? This cancels the entire roster and refunds members 100%.`}
+              label="Reason (optional)"
+              confirmLabel="Cancel class"
+              cancelLabel="Keep class"
+              variant="danger"
+              onSubmit={(reason) => {
+                setConfirmingCancel(false);
+                cancelInstance(reason);
+              }}
+              onClose={() => setConfirmingCancel(false)}
+            />
+          )}
         </td>
       </tr>
       {expanded && (
@@ -534,6 +548,8 @@ function InstanceRow({ instance, tz, expanded, onToggle, onChanged }) {
 function RosterPanel({ instanceId, onChanged }) {
   const [roster, setRoster] = useState(null);
   const [error, setError] = useState(null);
+  const [cancelTarget, setCancelTarget] = useState(null); // booking pending cancel
+  const [noShowTarget, setNoShowTarget] = useState(null); // booking pending no-show
 
   function load() {
     setError(null);
@@ -545,12 +561,8 @@ function RosterPanel({ instanceId, onChanged }) {
 
   useEffect(load, [instanceId]);
 
-  async function cancel(b) {
-    const reason = window.prompt(
-      `Cancel this booking? Optional reason:`,
-      '',
-    );
-    if (reason === null) return;
+  // Runs after the admin submits the cancel InputDialog.
+  async function cancel(b, reason) {
     try {
       const res = await api(`/api/class-bookings/${b.id}/cancel`, {
         method: 'POST',
@@ -570,8 +582,8 @@ function RosterPanel({ instanceId, onChanged }) {
     }
   }
 
+  // Runs after the admin confirms in the no-show ConfirmDialog.
   async function markNoShow(b) {
-    if (!window.confirm(`Mark this booking as no-show?`)) return;
     try {
       const res = await api(`/api/class-bookings/${b.id}/mark-no-show`, {
         method: 'POST',
@@ -596,6 +608,7 @@ function RosterPanel({ instanceId, onChanged }) {
   }
 
   return (
+    <>
     <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
       {roster.map((b) => {
         const name = b.member_id
@@ -615,13 +628,21 @@ function RosterPanel({ instanceId, onChanged }) {
               <Badge tone={badge.tone}>{badge.label}</Badge>
               {b.status === 'confirmed' && (
                 <>
-                  <Button size="sm" variant="secondary" onClick={() => cancel(b)}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setCancelTarget(b)}
+                  >
                     Cancel
                   </Button>
                   {/* The server gates no-show on future-dated instances
                       (409). The button always shows for confirmed status;
                       premature clicks surface the error in onChanged. */}
-                  <Button size="sm" variant="secondary" onClick={() => markNoShow(b)}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setNoShowTarget(b)}
+                  >
                     No-show
                   </Button>
                 </>
@@ -630,7 +651,37 @@ function RosterPanel({ instanceId, onChanged }) {
           </li>
         );
       })}
-    </ul>
+      </ul>
+      {cancelTarget && (
+        <InputDialog
+          title="Cancel booking?"
+          message="Cancel this booking? Members are refunded per the cancellation policy."
+          label="Reason (optional)"
+          confirmLabel="Cancel booking"
+          cancelLabel="Keep booking"
+          variant="danger"
+          onSubmit={(reason) => {
+            const b = cancelTarget;
+            setCancelTarget(null);
+            cancel(b, reason);
+          }}
+          onClose={() => setCancelTarget(null)}
+        />
+      )}
+      {noShowTarget && (
+        <ConfirmDialog
+          title="Mark no-show?"
+          message="Mark this booking as no-show?"
+          confirmLabel="Mark no-show"
+          onConfirm={() => {
+            const b = noShowTarget;
+            setNoShowTarget(null);
+            markNoShow(b);
+          }}
+          onClose={() => setNoShowTarget(null)}
+        />
+      )}
+    </>
   );
 }
 

@@ -156,13 +156,55 @@ and TypeScript types use the canonical word.
   `incomplete`. Translation happens at the webhook boundary —
   Stripe's "canceled" becomes our "cancelled."
 - **`credit_balance`** — singleton current count for a member. PK is
-  `(tenant_id, member_id)`.
+  `(tenant_id, member_id)`. **Weekly reset semantics:** every Monday
+  00:00 in the TENANT's timezone, each member with an `active`
+  subscription has their balance SET (not added) to their plan's
+  `credits_per_week` — reason `weekly_reset`, written through
+  `apply_credit_change` so the ledger invariant holds. Non-rollover:
+  unused credits are lost, and balances above the allotment (admin
+  grants) are reset down too. There is no subscription-vs-purchased
+  credit distinction yet; purchased-credit protection arrives with
+  credit packs (future reason `pack_purchase`) — do not build it
+  speculatively. Mechanism: `run_weekly_credit_resets()` (migration
+  022) + `tenants.last_weekly_reset_at`, scheduled hourly by pg_cron
+  (once enabled in Supabase) and by the Node fallback in
+  `src/server.js` (`SCHEDULER_ENABLED`). `past_due` members are
+  skipped until payment recovers. Initial subscription activation
+  grants the first week (checkout webhook); monthly invoice renewals
+  do NOT grant credits — the weekly reset owns replenishment.
 - **`credit_ledger_entries`** — append-only ledger. Every balance
   mutation writes a row. Invariant: `credit_balances.current_credits`
   equals the most recent ledger row's `balance_after` for that
   member. Reasons: `weekly_reset`, `admin_adjustment`,
   `signup_bonus`, `booking_spend`, `booking_refund`, `plan_change`,
-  `manual`.
+  `manual`, `migration`, `pack_purchase`.
+- **`credit_pack`** — a one-time purchasable credit bundle ("10-pack,
+  $90"). Table `credit_packs` (name, credits, price_cents, active).
+  No subscription required; members buy via Stripe Checkout
+  (mode='payment') and the webhook grants credits with reason
+  `pack_purchase`.
+
+#### Purchased-credit draw-down order (credit packs)
+
+`credit_balances.purchased_credits` tracks how many of
+`current_credits` came from pack purchases and are still unspent —
+always a subset of the total, never a separate pool. Maintained
+exclusively by `apply_credit_change`:
+
+- `pack_purchase` grants increment both `current_credits` and
+  `purchased_credits`.
+- **Spends consume subscription-week credits FIRST, purchased
+  credits LAST**: after any negative change, `purchased_credits =
+  LEAST(purchased_credits, new_balance)`. Purchased credits only
+  start draining once the balance dips below the purchased amount.
+- The weekly reset SETS the balance to `credits_per_week +
+  purchased_credits` — the subscription bucket refills, unspent
+  purchased credits roll over indefinitely.
+- v1 simplification: positive non-pack changes (`booking_refund`,
+  `admin_adjustment`, ...) do NOT restore `purchased_credits`. A
+  refund landing after purchased credits were consumed comes back in
+  the subscription bucket and expires at the next reset. Precise
+  restoration needs per-entry bucket bookkeeping — deferred.
 
 ### Bookings
 

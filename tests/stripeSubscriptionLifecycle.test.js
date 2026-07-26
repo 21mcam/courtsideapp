@@ -3,9 +3,11 @@
 // Covers the three lifecycle event handlers:
 //   * customer.subscription.updated — status + period + cancel_at_period_end
 //   * customer.subscription.deleted — status='cancelled', plan_period closed
-//   * invoice.payment_succeeded — period bounds reconciled; subscription_cycle
-//     grants fresh credits, subscription_create does NOT (already done by
-//     checkout.session.completed in slice 4a)
+//   * invoice.payment_succeeded — period bounds reconciled; NO credit
+//     grant for ANY billing_reason: the initial week comes from
+//     checkout.session.completed, and all replenishment after that is
+//     owned by the weekly reset (run_weekly_credit_resets, migration
+//     022) — see tests/weeklyCreditReset.test.js.
 //
 // Plus the new dedup table behavior: duplicate event_id → handler skipped.
 
@@ -357,14 +359,14 @@ test('subscription.deleted is idempotent (running twice doesn\'t re-stamp ended_
 // invoice.payment_succeeded
 // ============================================================
 
-test('invoice.payment_succeeded subscription_cycle grants fresh credits + reconciles period', { skip }, async () => {
+test('invoice.payment_succeeded subscription_cycle does NOT grant credits (weekly reset owns replenishment) + reconciles period', { skip }, async () => {
   const stripeSubId = `sub_test_${randomUUID().slice(0, 8)}`;
   const seeded = await seedSubscription({
     stripe_subscription_id: stripeSubId,
     credits_per_week: 12,
   });
 
-  // Bootstrap a balance to validate the increment
+  // Bootstrap a balance to prove the renewal leaves it untouched
   const c = await privilegedPool.connect();
   try {
     await c.query('BEGIN');
@@ -397,21 +399,21 @@ test('invoice.payment_succeeded subscription_cycle grants fresh credits + reconc
   const res = await postWebhook(event);
   assert.equal(res.status, 200);
 
-  // Balance: 5 starting + 12 from renewal = 17
+  // Balance unchanged: the monthly renewal no longer grants credits.
+  // Replenishment is the weekly reset's job (Monday 00:00 tenant-local).
   const balRow = await privilegedPool.query(
     `SELECT current_credits FROM credit_balances WHERE member_id = $1`,
     [seeded.memberId],
   );
-  assert.equal(balRow.rows[0].current_credits, 17);
+  assert.equal(balRow.rows[0].current_credits, 5);
 
-  // Ledger has the weekly_reset entry for 12
+  // No weekly_reset ledger entry was written by the renewal
   const ledger = await privilegedPool.query(
-    `SELECT amount, reason FROM credit_ledger_entries
-      WHERE member_id = $1 AND reason = 'weekly_reset'
-      ORDER BY entry_number DESC LIMIT 1`,
+    `SELECT count(*)::int AS n FROM credit_ledger_entries
+      WHERE member_id = $1 AND reason = 'weekly_reset'`,
     [seeded.memberId],
   );
-  assert.equal(ledger.rows[0].amount, 12);
+  assert.equal(ledger.rows[0].n, 0);
 
   // Period bounds advanced
   const subRow = await privilegedPool.query(
@@ -532,17 +534,28 @@ test('duplicate event delivery is deduped at the controller boundary', { skip },
   const body1 = await r1.json();
   assert.ok(!body1.deduped);
 
+  // First delivery actually ran the handler: period bounds advanced.
+  const subRow = await privilegedPool.query(
+    `SELECT current_period_end FROM subscriptions WHERE id = $1`,
+    [seeded.subId],
+  );
+  assert.equal(
+    new Date(subRow.rows[0].current_period_end).getTime(),
+    new Date(event.data.object.period_end * 1000).getTime(),
+  );
+
   // Same event id → dedup'd
   const r2 = await postWebhook(event);
   assert.equal(r2.status, 200);
   const body2 = await r2.json();
   assert.equal(body2.deduped, true);
 
-  // Only ONE credit grant for the duplicated delivery
+  // Renewals never grant credits (deduped or not) — the weekly reset
+  // owns replenishment.
   const ledger = await privilegedPool.query(
     `SELECT count(*)::int AS n FROM credit_ledger_entries
       WHERE member_id = $1 AND reason = 'weekly_reset'`,
     [seeded.memberId],
   );
-  assert.equal(ledger.rows[0].n, 1);
+  assert.equal(ledger.rows[0].n, 0);
 });

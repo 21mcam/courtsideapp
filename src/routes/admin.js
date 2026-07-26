@@ -15,15 +15,20 @@ import {
   listAdmins,
   createManualMember,
   adjustMemberCredits,
+  getMemberDetail,
+  inviteAdmin,
   listAllBookings,
   createAdminBooking,
   updateTenantTheme,
+  updateTenantReplyTo,
 } from '../controllers/admin.js';
 import {
   listResources,
   createResource,
+  updateResource,
   listOfferings,
   createOffering,
+  updateOffering,
   listOfferingResources,
   linkResourceToOffering,
   listPlans,
@@ -32,6 +37,7 @@ import {
 import {
   listOperatingHours,
   createOperatingHours,
+  replaceOperatingHours,
   deleteOperatingHours,
   getBookingPolicies,
   upsertBookingPolicies,
@@ -54,8 +60,20 @@ import {
   startOnboarding,
   getConnection,
   syncPlanToStripe,
+  updatePlan,
 } from '../controllers/stripeConnect.js';
 import { runTenantCleanup } from '../controllers/cleanup.js';
+import { listWaiverSignatures } from '../controllers/waivers.js';
+import {
+  listPacksAdmin,
+  createPack,
+  updatePack,
+} from '../controllers/packs.js';
+import {
+  getReportsSummary,
+  exportMembersCsv,
+  exportBookingsCsv,
+} from '../controllers/reports.js';
 
 const router = express.Router();
 
@@ -65,33 +83,72 @@ router.use(requireAuth, requireAdmin, withTenantContext);
 //   - listMembers: Phase 1 slice 4 (now extended with current_credits
 //     in Phase 2 slice 4)
 //   - createManualMember + adjustMemberCredits: Phase 2 slice 4
+//   - getMemberDetail + inviteAdmin: people-flows slice (member
+//     detail view + staff invites)
 router.get('/members', listMembers);
 router.post('/members', createManualMember);
+router.get('/members/:id', getMemberDetail);
 router.post('/members/:id/credit-adjustments', adjustMemberCredits);
 router.get('/admins', listAdmins);
+router.post('/admins', inviteAdmin);
 
-// Catalog (Phase 2 slice 2)
+// Catalog (Phase 2 slice 2; update + deactivate in the Tier-A
+// sell-readiness slice). PATCH accepts partial bodies and an
+// `active` flag for soft activate/deactivate; offerings also
+// accept `resource_ids` to reconcile resource associations.
 router.get('/resources', listResources);
 router.post('/resources', createResource);
+router.patch('/resources/:id', updateResource);
 router.get('/offerings', listOfferings);
 router.post('/offerings', createOffering);
+router.patch('/offerings/:id', updateOffering);
 router.get('/offerings/:id/resources', listOfferingResources);
 router.post('/offerings/:id/resources', linkResourceToOffering);
 
-// Plans (Phase 2 slice 3 + Phase 5 slice 3 sync)
+// Plans (Phase 2 slice 3 + Phase 5 slice 3 sync). PATCH lives in
+// stripeConnect.js — re-pricing a synced plan rotates the Stripe
+// Price (new price for new signups; existing members keep their
+// current rate).
 router.get('/plans', listPlans);
 router.post('/plans', createPlan);
+router.patch('/plans/:id', updatePlan);
 router.post('/plans/:id/stripe-sync', syncPlanToStripe);
 
-// Operating hours + booking policies (Phase 3 prep)
+// Credit packs (credit-packs slice). One-time purchasable credit
+// bundles; PATCH covers partial update + soft activate/deactivate.
+// The member storefront + checkout live on /api/packs.
+router.get('/packs', listPacksAdmin);
+router.post('/packs', createPack);
+router.patch('/packs/:id', updatePack);
+
+// Operating hours + booking policies (Phase 3 prep; bulk-replace
+// added for the admin hours editor — PUT swaps a resource's whole
+// weekly schedule atomically).
 router.get('/operating-hours', listOperatingHours);
 router.post('/operating-hours', createOperatingHours);
 router.delete('/operating-hours/:id', deleteOperatingHours);
+router.put('/resources/:id/operating-hours', replaceOperatingHours);
 router.get('/booking-policies', getBookingPolicies);
 router.put('/booking-policies', upsertBookingPolicies);
 
 // Tenant appearance (UI accent color, admin Settings page)
 router.put('/theme', updateTenantTheme);
+
+// Transactional-email reply-to address (admin Settings page)
+router.put('/reply-to-email', updateTenantReplyTo);
+
+// Liability waiver signatures (waivers v1 slice). Config lives on
+// booking_policies (PUT above bumps waiver_version on text change);
+// this is the read-only roster of who signed which version.
+router.get('/waiver-signatures', listWaiverSignatures);
+
+// Reports + CSV exports (Tier-A sell-readiness slice). Summary
+// numbers for the Reports page; buffered CSV downloads with
+// formula-injection-safe escaping. bookings.csv accepts ?from=&to=
+// (tenant-local YYYY-MM-DD, default last 90 days).
+router.get('/reports/summary', getReportsSummary);
+router.get('/reports/members.csv', exportMembersCsv);
+router.get('/reports/bookings.csv', exportBookingsCsv);
 
 // Blackouts (Phase 3 prep)
 router.get('/blackouts', listBlackouts);

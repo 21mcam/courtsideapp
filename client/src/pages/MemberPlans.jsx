@@ -1,4 +1,5 @@
-// Member subscription chooser — Phase 5 slice 4a.
+// Member subscription chooser — Phase 5 slice 4a — plus one-time
+// credit packs (credit-packs slice).
 //
 // Lists plans available for subscription; click "Subscribe" → POST
 // /api/me/subscriptions/checkout, redirect to the Stripe-hosted
@@ -6,8 +7,15 @@
 // (the success_url). The webhook is what actually creates our
 // subscriptions row + grants credits, so on return the dashboard
 // will reflect the new subscription within a couple seconds.
+//
+// Credit packs work the same way in mode='payment': "Buy" → POST
+// /api/packs/:id/checkout → Stripe → back here with ?pack_success=1
+// (success banner below); the webhook grants the credits. Purchased
+// credits roll over week to week until spent — no subscription
+// required.
 
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import {
@@ -18,26 +26,65 @@ import { Page, PageHeader, Card, Button, Badge } from '../components/ui/index.js
 
 export default function MemberPlans() {
   const { me } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [plans, setPlans] = useState(null);
+  const [packs, setPacks] = useState(null);
   const [currentSub, setCurrentSub] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [busyPlanId, setBusyPlanId] = useState(null);
+  const [busyPackId, setBusyPackId] = useState(null);
   const [actionError, setActionError] = useState(null);
+  // Sticky success state on return from pack Checkout — survives the
+  // URL cleanup below.
+  const [packSuccess] = useState(searchParams.get('pack_success') === '1');
+
+  // Drop the ?pack_success=1 marker so a refresh doesn't re-announce.
+  useEffect(() => {
+    if (searchParams.get('pack_success') === '1') {
+      const next = new URLSearchParams(searchParams);
+      next.delete('pack_success');
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   function load() {
     setLoadError(null);
     Promise.all([
       api('/api/me/plans').then(handle),
       api('/api/me/subscriptions').then(handle),
+      api('/api/packs').then(handle),
     ])
-      .then(([p, s]) => {
+      .then(([p, s, k]) => {
         setPlans(p.plans ?? []);
         setCurrentSub(s.subscription ?? null);
+        setPacks(k.packs ?? []);
       })
       .catch((err) => setLoadError(err.message));
   }
 
   useEffect(load, []);
+
+  async function buyPack(pack) {
+    if (busyPackId) return;
+    setBusyPackId(pack.id);
+    setActionError(null);
+    try {
+      const here = window.location.origin;
+      const res = await api(`/api/packs/${pack.id}/checkout`, {
+        method: 'POST',
+        body: JSON.stringify({
+          success_url: `${here}/plans?pack_success=1`,
+          cancel_url: `${here}/plans`,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      window.location.assign(body.url);
+    } catch (err) {
+      setActionError(err.message);
+      setBusyPackId(null);
+    }
+  }
 
   async function subscribe(plan) {
     if (busyPlanId) return;
@@ -80,6 +127,14 @@ export default function MemberPlans() {
         title="Plans"
         description="Pay monthly. Cancel any time. Credits drop into your account once your first payment clears."
       />
+
+      {packSuccess && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          <strong>Payment received.</strong> Your credits will appear on
+          your account within a few seconds — check your email for the
+          receipt.
+        </div>
+      )}
 
       {currentSub && (
         <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
@@ -149,6 +204,53 @@ export default function MemberPlans() {
             );
           })}
         </ul>
+      )}
+
+      {/* One-time credit packs — no subscription required. Hidden
+          entirely when the facility hasn't created any. */}
+      {packs !== null && packs.length > 0 && (
+        <>
+          <div className="pt-2">
+            <h2 className="text-lg font-semibold text-slate-900">
+              Credit packs
+            </h2>
+            <p className="text-sm text-slate-500">
+              One-time purchase, no subscription. Purchased credits roll
+              over week to week until you use them.
+            </p>
+          </div>
+          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {packs.map((k) => (
+              <li key={k.id}>
+                <Card className="flex h-full flex-col">
+                  <div className="font-semibold text-slate-900">{k.name}</div>
+                  <div className="mt-2">
+                    <span className="text-2xl font-semibold text-slate-900">
+                      {formatCents(k.price_cents)}
+                    </span>
+                    <span className="ml-1 text-sm text-slate-500">
+                      one-time
+                    </span>
+                  </div>
+                  <div className="mt-2 text-sm text-slate-500">
+                    {k.credits} credit{k.credits === 1 ? '' : 's'} · never
+                    reset
+                  </div>
+                  <div className="mt-auto pt-4">
+                    <Button
+                      variant="secondary"
+                      className="w-full"
+                      onClick={() => buyPack(k)}
+                      disabled={busyPackId === k.id}
+                    >
+                      {busyPackId === k.id ? 'opening…' : 'Buy'}
+                    </Button>
+                  </div>
+                </Card>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </Page>
   );

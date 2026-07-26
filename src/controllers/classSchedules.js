@@ -26,6 +26,8 @@
 
 import { z } from 'zod';
 
+import { pool } from '../db/pool.js';
+
 // ---------- helpers ----------
 
 // Iterate dates in [from, to] inclusive (both YYYY-MM-DD strings),
@@ -416,6 +418,122 @@ export async function generateClassSchedule(req, res, next) {
   } catch (err) {
     next(err);
   }
+}
+
+// ---------- scheduled horizon extension ----------
+//
+// Without this, class instances stop materializing ~90 days after a
+// schedule was created (the generator only runs when an admin hits
+// POST /:id/generate). The daily sweep keeps every active schedule's
+// generated_through rolling ~90 days (defaultHorizon) ahead, so
+// classes never silently vanish from the calendar.
+//
+// TODO: outbox/pg_cron — replace the Node interval in src/server.js
+// with pg_cron once enabled in Supabase. The generator is idempotent
+// (unique index + ON CONFLICT DO NOTHING), so overlap is harmless.
+
+// Today as a UTC calendar date. The horizon is a coarse 90-day
+// window, so tenant-local vs UTC "today" (max ±1 day) is immaterial.
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Extend generation for every active schedule of one tenant whose
+// generated_through has fallen inside the refill window. `db` must be
+// a transaction-bound client with the tenant GUC set; `tenant` needs
+// { id, timezone }. Returns per-tenant counts. Idempotent.
+export async function extendTenantScheduleHorizons(db, tenant) {
+  const target = defaultHorizon(todayIso()); // today + 90 days
+
+  const schedRes = await db.query(
+    `SELECT cs.id, cs.offering_id, cs.resource_id, cs.day_of_week,
+            cs.start_time, cs.start_date, cs.end_date, cs.generated_through,
+            o.duration_minutes, o.capacity
+       FROM class_schedules cs
+       JOIN offerings o
+         ON o.tenant_id = cs.tenant_id AND o.id = cs.offering_id
+      WHERE cs.tenant_id = $1
+        AND cs.active
+        AND o.active
+        AND (cs.generated_through IS NULL OR cs.generated_through < $2::date)
+        AND (cs.end_date IS NULL
+             OR cs.generated_through IS NULL
+             OR cs.generated_through < cs.end_date)`,
+    [tenant.id, target],
+  );
+
+  let schedules_extended = 0;
+  let generated = 0;
+  let conflicted = 0;
+
+  for (const schedule of schedRes.rows) {
+    const fromIso = schedule.generated_through
+      ? dateAfter(toIsoDate(schedule.generated_through))
+      : toIsoDate(schedule.start_date);
+    let toIso = target;
+    if (schedule.end_date) toIso = dateMin(toIso, toIsoDate(schedule.end_date));
+    if (toIso < fromIso) continue; // already generated through end_date
+
+    const result = await runGenerator({
+      db,
+      tenant,
+      schedule,
+      fromIso,
+      toIso,
+      durationMin: schedule.duration_minutes,
+      capacity: schedule.capacity,
+    });
+    generated += result.generated;
+    conflicted += result.conflicted;
+
+    if (result.lastAttempted) {
+      await db.query(
+        `UPDATE class_schedules SET generated_through = $1
+          WHERE tenant_id = $2 AND id = $3`,
+        [result.lastAttempted, tenant.id, schedule.id],
+      );
+      schedules_extended += 1;
+    }
+  }
+
+  return { schedules_extended, generated, conflicted };
+}
+
+// Cross-tenant daily sweep for the scheduler (src/server.js). Same
+// shape as runCleanupSweep: per-tenant transaction with the RLS GUC
+// set, per-tenant error isolation. Pass { tenantId } to scope to one
+// tenant (tests use this so suites never touch each other's data).
+export async function runHorizonSweep({ tenantId } = {}) {
+  const tenantsRes = tenantId
+    ? await pool.query(
+        'SELECT id, timezone FROM tenant_lookup WHERE id = $1',
+        [tenantId],
+      )
+    : await pool.query('SELECT id, timezone FROM tenant_lookup');
+
+  const results = [];
+  for (const t of tenantsRes.rows) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        "SELECT set_config('app.current_tenant_id', $1, true)",
+        [t.id],
+      );
+      const counts = await extendTenantScheduleHorizons(client, t);
+      await client.query('COMMIT');
+      results.push({ tenant_id: t.id, ...counts });
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error(
+        `[scheduler] class-schedule horizon extension failed for tenant ${t.id}:`,
+        err,
+      );
+    } finally {
+      client.release();
+    }
+  }
+  return results;
 }
 
 // pg returns date columns as Date objects (UTC midnight). Coerce to

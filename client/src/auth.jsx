@@ -28,6 +28,10 @@ export function AuthProvider({ children }) {
           const t = await tRes.json();
           setTenant(t);
           applyAccent(t.theme_accent);
+          // Browser tab shows the facility's name on every surface
+          // (admin, member, public booking). Falls back to the
+          // platform name from index.html when the tenant has none.
+          document.title = t.name || 'Courtside';
         } else {
           const body = await tRes.json().catch(() => ({}));
           setTenantError({ status: tRes.status, body });
@@ -88,6 +92,7 @@ export function AuthProvider({ children }) {
     setTenant((prev) => {
       const next = { ...prev, ...patch };
       if (patch.theme_accent) applyAccent(patch.theme_accent);
+      if (patch.name) document.title = patch.name;
       return next;
     });
   }

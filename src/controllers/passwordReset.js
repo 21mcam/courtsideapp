@@ -1,9 +1,10 @@
 // Password reset controllers — Phase 1, slice 5.
 //
-// Plumbing-only: tokens stored, hashed, single-use, rate-limited via
-// the partial-unique-index in migration 013. Email delivery via
-// Resend lands in Phase 3 — for now the reset URL is logged to the
-// server console as a dev affordance.
+// Tokens stored, hashed, single-use, rate-limited via the
+// partial-unique-index in migration 013. The reset link goes out via
+// the email service (Resend; keyless dev/test no-ops) AFTER the
+// transaction commits; the console.log stays as the local-dev
+// affordance since keyless environments never send.
 //
 // Anti-enumeration: forgotPassword always returns 200. The response
 // shape doesn't differentiate "email exists" from "email doesn't
@@ -17,6 +18,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
+
+import { sendPasswordReset, tenantUrl } from '../services/email.js';
 
 const RESET_TOKEN_BYTES = 32;
 const RESET_TOKEN_EXPIRY_HOURS = 1;
@@ -35,14 +38,40 @@ function hashToken(raw) {
   return createHash('sha256').update(raw).digest('hex');
 }
 
-function buildResetUrl(req, rawToken) {
-  // Best-effort URL for the dev log. In prod (Phase 3+) Resend's
-  // template owns the URL; this is just the convenience handoff for
-  // local testing.
-  const apex = process.env.APP_HOSTNAME || 'localhost';
-  const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
-  const port = apex === 'localhost' ? ':5173' : '';
-  return `${protocol}://${req.tenant.subdomain}.${apex}${port}/reset?token=${rawToken}`;
+// Staff invites reuse this token infrastructure as a set-password
+// link; a week-long window suits "check your email when you get a
+// minute" better than the 1-hour reset window.
+export const INVITE_TOKEN_EXPIRY_HOURS = 24 * 7;
+
+// Invalidate any prior unused tokens for this user and mint a fresh
+// one. Returns the raw token (only its hash is stored). Must run
+// inside the caller's withTenantContext transaction — the
+// invalidate-then-insert sequence is what satisfies the partial
+// unique index (one active token per user, migration 013).
+export async function issuePasswordSetupToken(
+  db,
+  tenantId,
+  userId,
+  expiryHours = RESET_TOKEN_EXPIRY_HOURS,
+) {
+  await db.query(
+    `UPDATE password_reset_tokens
+        SET used_at = now()
+      WHERE tenant_id = $1 AND user_id = $2 AND used_at IS NULL`,
+    [tenantId, userId],
+  );
+
+  const rawToken = randomBytes(RESET_TOKEN_BYTES).toString('hex');
+  const expiresAt = new Date(Date.now() + expiryHours * 60 * 60 * 1000);
+
+  await db.query(
+    `INSERT INTO password_reset_tokens
+       (tenant_id, user_id, token_hash, expires_at)
+     VALUES ($1, $2, $3, $4)`,
+    [tenantId, userId, hashToken(rawToken), expiresAt],
+  );
+
+  return rawToken;
 }
 
 export async function forgotPassword(req, res, next) {
@@ -69,32 +98,33 @@ export async function forgotPassword(req, res, next) {
 
     const user_id = userResult.rows[0].id;
 
-    // Invalidate any prior unused tokens for this user. The partial
-    // unique index requires this — without it, the INSERT below
-    // collides with the existing active row.
-    await req.db.query(
-      `UPDATE password_reset_tokens
-          SET used_at = now()
-        WHERE tenant_id = $1 AND user_id = $2 AND used_at IS NULL`,
-      [req.tenant.id, user_id],
+    const rawToken = await issuePasswordSetupToken(
+      req.db,
+      req.tenant.id,
+      user_id,
     );
 
-    const rawToken = randomBytes(RESET_TOKEN_BYTES).toString('hex');
-    const tokenHash = hashToken(rawToken);
-    const expiresAt = new Date(
-      Date.now() + RESET_TOKEN_EXPIRY_HOURS * 60 * 60 * 1000,
-    );
+    const resetUrl = tenantUrl(req.tenant.subdomain, `/reset?token=${rawToken}`);
 
-    await req.db.query(
-      `INSERT INTO password_reset_tokens
-         (tenant_id, user_id, token_hash, expires_at)
-       VALUES ($1, $2, $3, $4)`,
-      [req.tenant.id, user_id, tokenHash, expiresAt],
-    );
+    // Dev affordance: keyless environments (local dev, tests) skip
+    // the send, so the console line is the local hand-off — but ONLY
+    // there. When RESEND_API_KEY is set (production), the raw token
+    // must never hit the logs: the URL is account-takeover-capable
+    // for anyone with log access (Railway dashboard, log drains).
+    if (!process.env.RESEND_API_KEY) {
+      console.log(`[password-reset] ${resetUrl}`);
+    }
 
-    // TODO (Phase 3): swap this for a Resend send + per-tenant
-    // reply-to address. Until then, console.log is the dev hand-off.
-    console.log(`[password-reset] ${buildResetUrl(req, rawToken)}`);
+    // Send AFTER the transaction commits — res 'finish' fires after
+    // withTenantContext's COMMIT flushes. Fire-and-forget.
+    // TODO: outbox (CLAUDE.md) once reliability-critical email
+    // delivery needs more than log-on-failure.
+    const tenant = req.tenant;
+    res.on('finish', () => {
+      sendPasswordReset({ tenant, to: email, resetUrl }).catch((err) =>
+        console.error('[email] password reset send failed:', err),
+      );
+    });
 
     res.json({ ok: true });
   } catch (err) {

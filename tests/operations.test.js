@@ -32,6 +32,7 @@ let privilegedPool;
 let adminToken;
 let otherAdminToken;
 let resource_id;
+let bulk_resource_id;
 let offering_id;
 
 before(async () => {
@@ -94,6 +95,16 @@ before(async () => {
     [tenant_id],
   );
   resource_id = r.rows[0].id;
+
+  // Separate resource for the bulk-replace tests so they can't
+  // interfere with the row-by-row tests above (bulk replace deletes
+  // every row for its resource).
+  const rb = await privilegedPool.query(
+    `INSERT INTO resources (tenant_id, name) VALUES ($1, 'Cage Bulk')
+     RETURNING id`,
+    [tenant_id],
+  );
+  bulk_resource_id = rb.rows[0].id;
 
   // Pre-create one offering — needed for blackouts (offering_id) FK
   // tests. Capacity 1 = rental shape, fine for these tests.
@@ -236,6 +247,173 @@ test('admin can delete operating_hours', { skip }, async () => {
   );
   const body = await listRes.json();
   assert.ok(!body.operating_hours.some((r) => r.id === row.id));
+});
+
+// ============================================================
+// operating_hours — bulk replace (admin hours editor)
+// ============================================================
+
+test('PUT bulk replace installs a weekly schedule incl. split shift', { skip }, async () => {
+  const res = await adminFetch(
+    `/api/admin/resources/${bulk_resource_id}/operating-hours`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        hours: [
+          { day_of_week: 1, open_time: '09:00', close_time: '12:00' },
+          { day_of_week: 1, open_time: '14:00', close_time: '21:00' }, // split shift
+          { day_of_week: 2, open_time: '09:00', close_time: '17:00' },
+        ],
+      }),
+    },
+  );
+  assert.equal(res.status, 200);
+  const { operating_hours } = await res.json();
+  assert.equal(operating_hours.length, 3);
+  // Sorted by day, then open_time.
+  assert.deepEqual(
+    operating_hours.map((r) => [r.day_of_week, r.open_time.slice(0, 5)]),
+    [[1, '09:00'], [1, '14:00'], [2, '09:00']],
+  );
+
+  const listRes = await adminFetch(
+    `/api/admin/operating-hours?resource_id=${bulk_resource_id}`,
+  );
+  const body = await listRes.json();
+  assert.equal(body.operating_hours.length, 3);
+});
+
+test('second PUT replaces the whole schedule (old rows gone)', { skip }, async () => {
+  const res = await adminFetch(
+    `/api/admin/resources/${bulk_resource_id}/operating-hours`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        hours: [{ day_of_week: 5, open_time: '10:00', close_time: '18:00' }],
+      }),
+    },
+  );
+  assert.equal(res.status, 200);
+  const { operating_hours } = await res.json();
+  assert.equal(operating_hours.length, 1);
+  assert.equal(operating_hours[0].day_of_week, 5);
+
+  const listRes = await adminFetch(
+    `/api/admin/operating-hours?resource_id=${bulk_resource_id}`,
+  );
+  const body = await listRes.json();
+  assert.equal(body.operating_hours.length, 1);
+  assert.equal(body.operating_hours[0].day_of_week, 5);
+});
+
+test('PUT with overlapping windows → 409, prior schedule untouched', { skip }, async () => {
+  const res = await adminFetch(
+    `/api/admin/resources/${bulk_resource_id}/operating-hours`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        hours: [
+          { day_of_week: 3, open_time: '09:00', close_time: '12:00' },
+          { day_of_week: 3, open_time: '11:00', close_time: '14:00' }, // overlaps
+        ],
+      }),
+    },
+  );
+  assert.equal(res.status, 409);
+
+  // The transaction rolled back: the Friday row from the previous
+  // test is still there, and no Wednesday rows landed.
+  const listRes = await adminFetch(
+    `/api/admin/operating-hours?resource_id=${bulk_resource_id}`,
+  );
+  const body = await listRes.json();
+  assert.equal(body.operating_hours.length, 1);
+  assert.equal(body.operating_hours[0].day_of_week, 5);
+});
+
+test('PUT with close <= open → 400', { skip }, async () => {
+  const res = await adminFetch(
+    `/api/admin/resources/${bulk_resource_id}/operating-hours`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        hours: [{ day_of_week: 1, open_time: '17:00', close_time: '09:00' }],
+      }),
+    },
+  );
+  assert.equal(res.status, 400);
+});
+
+test('PUT with empty hours array clears the schedule', { skip }, async () => {
+  const res = await adminFetch(
+    `/api/admin/resources/${bulk_resource_id}/operating-hours`,
+    { method: 'PUT', body: JSON.stringify({ hours: [] }) },
+  );
+  assert.equal(res.status, 200);
+  const { operating_hours } = await res.json();
+  assert.equal(operating_hours.length, 0);
+
+  const listRes = await adminFetch(
+    `/api/admin/operating-hours?resource_id=${bulk_resource_id}`,
+  );
+  const body = await listRes.json();
+  assert.equal(body.operating_hours.length, 0);
+});
+
+test('PUT on unknown / malformed resource id → 404', { skip }, async () => {
+  const unknown = await adminFetch(
+    `/api/admin/resources/${randomUUID()}/operating-hours`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        hours: [{ day_of_week: 1, open_time: '09:00', close_time: '17:00' }],
+      }),
+    },
+  );
+  assert.equal(unknown.status, 404);
+
+  const malformed = await adminFetch(
+    '/api/admin/resources/not-a-uuid/operating-hours',
+    { method: 'PUT', body: JSON.stringify({ hours: [] }) },
+  );
+  assert.equal(malformed.status, 404);
+});
+
+test('cross-tenant PUT on tenant A resource → 404, hours untouched', { skip }, async () => {
+  // Seed a known schedule in tenant A first.
+  const seed = await adminFetch(
+    `/api/admin/resources/${bulk_resource_id}/operating-hours`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        hours: [{ day_of_week: 0, open_time: '08:00', close_time: '20:00' }],
+      }),
+    },
+  );
+  assert.equal(seed.status, 200);
+
+  // Tenant B's admin tries to overwrite it — RLS hides the resource,
+  // so the endpoint 404s.
+  const crossRes = await fetch(
+    `${baseUrl}/api/admin/resources/${bulk_resource_id}/operating-hours?tenant=${OTHER_TENANT}`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${otherAdminToken}`,
+      },
+      body: JSON.stringify({ hours: [] }),
+    },
+  );
+  assert.equal(crossRes.status, 404);
+
+  // Tenant A's schedule survived.
+  const listRes = await adminFetch(
+    `/api/admin/operating-hours?resource_id=${bulk_resource_id}`,
+  );
+  const body = await listRes.json();
+  assert.equal(body.operating_hours.length, 1);
+  assert.equal(body.operating_hours[0].day_of_week, 0);
 });
 
 // ============================================================

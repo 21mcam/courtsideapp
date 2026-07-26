@@ -1,15 +1,48 @@
-// Admin catalog CRUD — Phase 2, slice 2.
+// Admin catalog CRUD — Phase 2, slice 2 (create + list) and the
+// Tier-A sell-readiness slice (update + deactivate/reactivate).
 //
 // Resources, offerings, and the offering↔resource link table. All
 // endpoints sit under /api/admin/* and require the admin role
 // (gated by requireAdmin in the routes file).
 //
-// This slice is create + list. Update and deactivate land in a
-// follow-up slice once the admin UI demands them. Schema-level
-// soft-delete (active = false) is the model — bookings reference
-// these rows so we never DELETE.
+// Schema-level soft-delete (active = false) is the model — bookings
+// reference these rows so we never DELETE. Deactivated rows are
+// hidden from member/public booking + new purchase paths (those
+// already filter on `active`); existing bookings/subscriptions are
+// untouched because bookings snapshot cost at creation and
+// subscriptions reference their own Stripe price.
+//
+// Plan updates live in stripeConnect.js (updatePlan) because
+// re-pricing a Stripe-synced plan rotates the Stripe Price.
 
 import { z } from 'zod';
+
+// UUID sanity check for :id route params. Without this a malformed
+// id reaches Postgres as an invalid uuid literal (22P02) and surfaces
+// as a 500 instead of a 404.
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isUuid(value) {
+  return typeof value === 'string' && UUID_REGEX.test(value);
+}
+
+// Shared helper for the PATCH endpoints: build a dynamic
+// `SET col = $n` list from only the fields the admin actually sent.
+// `fields` maps column name → value (undefined = not provided; null
+// is a real value, e.g. clearing plans.allowed_categories).
+export function buildSetClause(fields, startIndex = 1) {
+  const clauses = [];
+  const values = [];
+  let i = startIndex;
+  for (const [col, val] of Object.entries(fields)) {
+    if (val === undefined) continue;
+    clauses.push(`${col} = $${i}`);
+    values.push(val);
+    i += 1;
+  }
+  return { clauses, values, nextIndex: i };
+}
 
 // ============================================================
 // resources
@@ -60,6 +93,68 @@ export async function createResource(req, res, next) {
         return res
           .status(409)
           .json({ error: 'resource name already exists in this tenant' });
+      }
+      throw err;
+    }
+  } catch (err) {
+    next(err);
+  }
+}
+
+const resourceUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(200).optional(),
+  display_order: z.number().int().nonnegative().optional(),
+  active: z.boolean().optional(),
+});
+
+// PATCH /api/admin/resources/:id — partial update + soft
+// activate/deactivate. Deactivated resources are hidden from
+// availability and rejected at booking time (existing checks on
+// resources.active); historical bookings keep referencing the row.
+export async function updateResource(req, res, next) {
+  try {
+    const id = req.params.id;
+    if (!isUuid(id)) {
+      return res.status(404).json({ error: 'resource not found' });
+    }
+    const parsed = resourceUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const d = parsed.data;
+    const { clauses, values, nextIndex } = buildSetClause({
+      name: d.name,
+      display_order: d.display_order,
+      active: d.active,
+    });
+    if (clauses.length === 0) {
+      return res.status(400).json({ error: 'no editable fields provided' });
+    }
+
+    try {
+      const result = await req.db.query(
+        `UPDATE resources
+            SET ${clauses.join(', ')}
+          WHERE tenant_id = $${nextIndex} AND id = $${nextIndex + 1}
+          RETURNING id, name, display_order, active, created_at, updated_at`,
+        [...values, req.tenant.id, id],
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'resource not found' });
+      }
+      res.json({ resource: result.rows[0] });
+    } catch (err) {
+      if (err.code === '23505') {
+        return res
+          .status(409)
+          .json({ error: 'resource name already exists in this tenant' });
+      }
+      if (err.code === '23514') {
+        return res
+          .status(400)
+          .json({ error: 'invalid resource: schema CHECK failed' });
       }
       throw err;
     }
@@ -161,6 +256,154 @@ export async function createOffering(req, res, next) {
       }
       throw err;
     }
+  } catch (err) {
+    next(err);
+  }
+}
+
+const offeringUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(200).optional(),
+  category: z
+    .string()
+    .regex(CATEGORY_REGEX, 'category must be lowercase, hyphenated, alphanumeric')
+    .optional(),
+  duration_minutes: z.number().int().positive().optional(),
+  credit_cost: z.number().int().nonnegative().optional(),
+  dollar_price: z.number().int().nonnegative().optional(),
+  capacity: z.number().int().min(1).optional(),
+  allow_member_booking: z.boolean().optional(),
+  allow_public_booking: z.boolean().optional(),
+  display_order: z.number().int().nonnegative().optional(),
+  active: z.boolean().optional(),
+  // Full reconcile of offering↔resource links: resources listed here
+  // end up linked+active, everything else is soft-unlinked
+  // (active = false — the row survives for historical bookings).
+  resource_ids: z.array(z.string().uuid()).optional(),
+});
+
+// PATCH /api/admin/offerings/:id — partial update + soft
+// activate/deactivate + resource-association reconcile.
+//
+// Price/credit-cost changes affect only NEW bookings: bookings
+// snapshot amount_due_cents + credit_cost_charged at creation
+// (migration 007), so history is untouched.
+export async function updateOffering(req, res, next) {
+  try {
+    const id = req.params.id;
+    if (!isUuid(id)) {
+      return res.status(404).json({ error: 'offering not found' });
+    }
+    const parsed = offeringUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const d = parsed.data;
+    if (Object.keys(d).length === 0) {
+      return res.status(400).json({ error: 'no editable fields provided' });
+    }
+
+    // Lock the current row: we need it to validate the merged
+    // audience state app-side (cleaner error than the DB's 23514)
+    // and as the response body when only links change.
+    const curRes = await req.db.query(
+      `SELECT id, name, category, duration_minutes, credit_cost, dollar_price,
+              capacity, allow_member_booking, allow_public_booking, active,
+              display_order, created_at, updated_at
+         FROM offerings
+        WHERE tenant_id = $1 AND id = $2
+        FOR UPDATE`,
+      [req.tenant.id, id],
+    );
+    if (curRes.rows.length === 0) {
+      return res.status(404).json({ error: 'offering not found' });
+    }
+    const current = curRes.rows[0];
+
+    // Merged post-update state must satisfy the "active offerings
+    // need at least one audience" rule.
+    const mergedActive = d.active ?? current.active;
+    const mergedMember = d.allow_member_booking ?? current.allow_member_booking;
+    const mergedPublic = d.allow_public_booking ?? current.allow_public_booking;
+    if (mergedActive && !mergedMember && !mergedPublic) {
+      return res.status(400).json({
+        error: 'an active offering must allow at least one of member or public booking',
+      });
+    }
+
+    // Reconcile resource links first (same transaction — atomic with
+    // the field update).
+    if (d.resource_ids !== undefined) {
+      if (d.resource_ids.length > 0) {
+        const found = await req.db.query(
+          `SELECT count(*)::int AS n FROM resources
+            WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+          [req.tenant.id, d.resource_ids],
+        );
+        if (found.rows[0].n !== new Set(d.resource_ids).size) {
+          return res
+            .status(400)
+            .json({ error: 'one or more resources not found in this tenant' });
+        }
+        await req.db.query(
+          `INSERT INTO offering_resources (tenant_id, offering_id, resource_id)
+           SELECT $1, $2, unnest($3::uuid[])
+           ON CONFLICT (tenant_id, offering_id, resource_id)
+           DO UPDATE SET active = true`,
+          [req.tenant.id, id, d.resource_ids],
+        );
+      }
+      // Soft-unlink everything not in the list. ANY over an empty
+      // array matches nothing, so resource_ids: [] unlinks all.
+      await req.db.query(
+        `UPDATE offering_resources
+            SET active = false
+          WHERE tenant_id = $1 AND offering_id = $2
+            AND active
+            AND NOT (resource_id = ANY($3::uuid[]))`,
+        [req.tenant.id, id, d.resource_ids],
+      );
+    }
+
+    const { clauses, values, nextIndex } = buildSetClause({
+      name: d.name,
+      category: d.category,
+      duration_minutes: d.duration_minutes,
+      credit_cost: d.credit_cost,
+      dollar_price: d.dollar_price,
+      capacity: d.capacity,
+      allow_member_booking: d.allow_member_booking,
+      allow_public_booking: d.allow_public_booking,
+      display_order: d.display_order,
+      active: d.active,
+    });
+
+    let offering = current;
+    if (clauses.length > 0) {
+      try {
+        const result = await req.db.query(
+          `UPDATE offerings
+              SET ${clauses.join(', ')}
+            WHERE tenant_id = $${nextIndex} AND id = $${nextIndex + 1}
+            RETURNING id, name, category, duration_minutes, credit_cost,
+                      dollar_price, capacity, allow_member_booking,
+                      allow_public_booking, active, display_order,
+                      created_at, updated_at`,
+          [...values, req.tenant.id, id],
+        );
+        offering = result.rows[0];
+      } catch (err) {
+        if (err.code === '23514') {
+          return res
+            .status(400)
+            .json({ error: 'invalid offering: schema CHECK failed' });
+        }
+        throw err;
+      }
+    }
+
+    res.json({ offering });
   } catch (err) {
     next(err);
   }

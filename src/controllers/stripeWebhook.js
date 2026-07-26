@@ -20,6 +20,11 @@
 
 import { getStripe } from '../services/stripe.js';
 import { pool } from '../db/pool.js';
+import {
+  sendBookingConfirmation,
+  sendMemberWelcome,
+  sendPackReceipt,
+} from '../services/email.js';
 
 export async function handleStripeWebhook(req, res, next) {
   try {
@@ -68,6 +73,15 @@ export async function handleStripeWebhook(req, res, next) {
     // idempotent (account.updated just sets current state) and
     // would survive a duplicate without harm — but applying the
     // dedup uniformly means handlers don't have to think about it.
+    //
+    // The row commits BEFORE the handler runs (autocommit), so a
+    // handler failure must NOT leave it behind: Stripe's retry would
+    // be answered "deduped" without the work ever having happened —
+    // for money paths (pack purchase → credit grant, walk-in payment
+    // → confirmation) that's a permanently lost, paid-for effect. The
+    // catch below deletes the dedup row on handler error so the retry
+    // re-drives the handler; handlers stay individually idempotent
+    // (unique indexes / status guards) for the partial-commit cases.
     const dedupRes = await pool.query(
       `INSERT INTO stripe_webhook_events (event_id, event_type, account_id)
        VALUES ($1, $2, $3)
@@ -81,28 +95,45 @@ export async function handleStripeWebhook(req, res, next) {
         .json({ received: true, type: event.type, deduped: true });
     }
 
-    switch (event.type) {
-      case 'account.updated':
-        await handleAccountUpdated(event, accountId);
-        break;
-      case 'checkout.session.completed':
-        await handleCheckoutSessionCompleted(event, accountId);
-        break;
-      case 'invoice.payment_succeeded':
-        await handleInvoicePaymentSucceeded(event, accountId);
-        break;
-      case 'customer.subscription.updated':
-        await handleSubscriptionUpdated(event, accountId);
-        break;
-      case 'customer.subscription.deleted':
-        await handleSubscriptionDeleted(event, accountId);
-        break;
-      default:
-        // Quietly ignore. This is a well-trodden Stripe webhook
-        // pattern — the same endpoint handles every subscription,
-        // invoice, payment, account event Stripe might send. We
-        // only react to types we've explicitly wired up.
-        break;
+    try {
+      switch (event.type) {
+        case 'account.updated':
+          await handleAccountUpdated(event, accountId);
+          break;
+        case 'checkout.session.completed':
+          await handleCheckoutSessionCompleted(event, accountId);
+          break;
+        case 'invoice.payment_succeeded':
+          await handleInvoicePaymentSucceeded(event, accountId);
+          break;
+        case 'customer.subscription.updated':
+          await handleSubscriptionUpdated(event, accountId);
+          break;
+        case 'customer.subscription.deleted':
+          await handleSubscriptionDeleted(event, accountId);
+          break;
+        default:
+          // Quietly ignore. This is a well-trodden Stripe webhook
+          // pattern — the same endpoint handles every subscription,
+          // invoice, payment, account event Stripe might send. We
+          // only react to types we've explicitly wired up.
+          break;
+      }
+    } catch (handlerErr) {
+      // Release the dedup slot so Stripe's retry re-runs the handler
+      // (we're about to 500). If this DELETE itself fails the event
+      // is stuck deduped — log loudly for manual reconciliation.
+      await pool
+        .query(`DELETE FROM stripe_webhook_events WHERE event_id = $1`, [
+          event.id,
+        ])
+        .catch((delErr) =>
+          console.error(
+            `stripe webhook ${event.id}: handler failed AND dedup row could not be released — event will not be retried:`,
+            delErr,
+          ),
+        );
+      throw handlerErr;
     }
 
     res.status(200).json({ received: true, type: event.type });
@@ -164,6 +195,19 @@ async function withTenantContextById(tenantId, fn) {
   }
 }
 
+// Load the tenant fields the email service needs (name, subdomain,
+// timezone, theme_accent, reply_to_email). Webhooks have no
+// req.tenant — Stripe POSTs from api.stripe.com — so we read the
+// unprivileged tenant_lookup view directly via the pool, same as
+// resolveTenant does for subdomains. Returns null if the tenant is
+// gone (nothing to email about).
+async function loadTenantEmailContext(tenantId) {
+  const r = await pool.query(`SELECT * FROM tenant_lookup WHERE id = $1`, [
+    tenantId,
+  ]);
+  return r.rows[0] ?? null;
+}
+
 // Resolve tenant from event.account; returns null + logs if there's
 // no row (Stripe sent us an event for an account we don't know).
 async function resolveTenantFromAccount(accountId, eventType) {
@@ -201,6 +245,12 @@ async function handleCheckoutSessionCompleted(event, accountId) {
     return;
   }
   if (session.mode === 'payment') {
+    // mode='payment' covers two flows — branch on the metadata type
+    // stamped at session creation.
+    if ((session.metadata ?? {}).courtside_type === 'pack_purchase') {
+      // Member bought a one-time credit pack (credit-packs slice).
+      return handlePackPurchasePaid(session, accountId);
+    }
     // Walk-in / one-off booking payment (slice 7).
     return handleCustomerBookingPaid(session, accountId);
   }
@@ -249,6 +299,9 @@ async function handleCheckoutSessionCompleted(event, accountId) {
 
   // All work below runs inside one transaction with the tenant GUC
   // set, so RLS applies + apply_credit_change's GUC check passes.
+  // `welcome` is populated inside the tx when this is the member's
+  // FIRST subscription; the email itself goes out after COMMIT.
+  let welcome = null;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -272,6 +325,26 @@ async function handleCheckoutSessionCompleted(event, accountId) {
       return;
     }
     const plan = planRes.rows[0];
+
+    // Welcome email gate: first subscription ever for this member
+    // (history rows count — an upgrade/resubscribe isn't a welcome).
+    // Checked BEFORE our INSERT adds a row. DB reads only; the send
+    // happens post-commit.
+    const priorSubRes = await client.query(
+      `SELECT 1 FROM subscriptions
+        WHERE tenant_id = $1 AND member_id = $2 LIMIT 1`,
+      [tenantId, memberId],
+    );
+    if (priorSubRes.rows.length === 0) {
+      const contactRes = await client.query(
+        `SELECT email, first_name FROM members
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, memberId],
+      );
+      if (contactRes.rows[0]?.email) {
+        welcome = contactRes.rows[0];
+      }
+    }
 
     // Insert the subscription. The partial unique index
     // subscriptions_stripe_unique catches duplicate webhook delivery
@@ -327,9 +400,11 @@ async function handleCheckoutSessionCompleted(event, accountId) {
       [tenantId, subscriptionId, plan.id],
     );
 
-    // Grant initial week of credits if the plan has any. Reason
-    // 'weekly_reset' bumps last_reset_at so the (future) weekly
-    // resetter knows when this member's clock starts. Grant uses
+    // Grant the initial week of credits if the plan has any. Reason
+    // 'weekly_reset' bumps last_reset_at so this reads as the
+    // member's first weekly allotment; every subsequent replenishment
+    // comes from run_weekly_credit_resets() (Monday 00:00
+    // tenant-local), NOT from invoice renewals. Grant uses
     // member.user_id as granted_by — but webhooks don't have a
     // user_id, so use NULL. apply_credit_change accepts NULL there.
     if (plan.credits_per_week > 0) {
@@ -348,6 +423,148 @@ async function handleCheckoutSessionCompleted(event, accountId) {
   } finally {
     client.release();
   }
+
+  // Post-commit: welcome the member on their first subscription.
+  // Fire-and-forget — a lost welcome email must never fail the
+  // webhook (failing here would release the dedup row and make
+  // Stripe redeliver an event whose DB work already committed).
+  // TODO: outbox for reliability-critical delivery.
+  if (welcome) {
+    const tenantCtx = await loadTenantEmailContext(tenantId);
+    if (tenantCtx) {
+      sendMemberWelcome({
+        tenant: tenantCtx,
+        to: welcome.email,
+        firstName: welcome.first_name,
+      }).catch((err) =>
+        console.error('[email] member welcome send failed:', err),
+      );
+    }
+  }
+}
+
+// checkout.session.completed (mode='payment',
+// metadata.courtside_type='pack_purchase') — credit-packs slice.
+//
+// Member paid for a one-time credit pack on Stripe-hosted Checkout.
+// Grant the credits via apply_credit_change (reason 'pack_purchase'),
+// which also increments credit_balances.purchased_credits so the
+// weekly reset preserves them (draw-down order documented in
+// CLAUDE.md).
+//
+// Credits granted = the snapshot taken at checkout time
+// (metadata.courtside_credits) — an admin editing the pack while the
+// member sits on the Stripe page can't change what they paid for.
+// The pack row is only consulted for its name (ledger note + receipt
+// copy) and may even be deactivated by now; the paid-for grant still
+// lands.
+//
+// Idempotency: the stripe_webhook_events dedup at the dispatcher
+// boundary — a SUCCESSFULLY handled event id never reaches this
+// handler again, so credits can't be granted twice. If the grant
+// transaction fails, the dispatcher releases the dedup row and
+// Stripe's retry re-drives the grant (at-least-once, with the grant
+// itself atomic in one transaction).
+async function handlePackPurchasePaid(session, accountId) {
+  const md = session.metadata ?? {};
+  const tenantIdFromMd = md.courtside_tenant_id;
+  const packId = md.courtside_pack_id;
+  const memberId = md.courtside_member_id;
+  const credits = Number.parseInt(md.courtside_credits, 10);
+  if (
+    !tenantIdFromMd ||
+    !packId ||
+    !memberId ||
+    !Number.isInteger(credits) ||
+    credits <= 0
+  ) {
+    console.warn(
+      'checkout.session.completed (pack_purchase): missing/invalid courtside metadata; skipping',
+      {
+        has_tenant: !!tenantIdFromMd,
+        has_pack: !!packId,
+        has_member: !!memberId,
+        credits: md.courtside_credits,
+      },
+    );
+    return;
+  }
+
+  const tenantId = await resolveTenantFromAccount(
+    accountId,
+    'checkout.session.completed (pack_purchase)',
+  );
+  if (!tenantId) return;
+  if (tenantId !== tenantIdFromMd) {
+    console.error(
+      `checkout.session.completed (pack_purchase): tenant mismatch ` +
+        `(account=${tenantId}, metadata=${tenantIdFromMd})`,
+    );
+    return;
+  }
+
+  // Grant inside a tenant-scoped transaction (RLS +
+  // apply_credit_change's GUC check). Receipt details come back out
+  // for the post-commit email.
+  const receipt = await withTenantContextById(tenantId, async (client) => {
+    const memberRes = await client.query(
+      `SELECT email, first_name FROM members
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, memberId],
+    );
+    if (memberRes.rows.length === 0) {
+      // Member deleted between checkout and webhook. The money moved
+      // on Stripe; ops must reconcile manually — log loudly.
+      console.error(
+        `checkout.session.completed (pack_purchase): member ${memberId} not found; payment held without credit grant`,
+      );
+      return null;
+    }
+    const member = memberRes.rows[0];
+
+    const packRes = await client.query(
+      `SELECT name FROM credit_packs WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, packId],
+    );
+    const packName = packRes.rows[0]?.name ?? 'Credit pack';
+
+    const grantRes = await client.query(
+      `SELECT balance_after FROM apply_credit_change(
+         $1, $2, $3, 'pack_purchase', $4, NULL, NULL, NULL
+       )`,
+      [tenantId, memberId, credits, `pack purchase: ${packName}`],
+    );
+
+    return {
+      email: member.email,
+      first_name: member.first_name,
+      pack_name: packName,
+      credits,
+      amount_paid_cents: session.amount_total ?? 0,
+      balance_after: grantRes.rows[0].balance_after,
+    };
+  });
+
+  // Post-commit: purchase receipt. Fire-and-forget — a lost receipt
+  // must never fail the webhook (failing here would release the
+  // dedup row and a retry would re-grant already-granted credits).
+  // TODO: outbox for reliability-critical delivery.
+  if (receipt?.email) {
+    const tenantCtx = await loadTenantEmailContext(tenantId);
+    if (tenantCtx) {
+      sendPackReceipt({
+        tenant: tenantCtx,
+        to: receipt.email,
+        firstName: receipt.first_name,
+        packName: receipt.pack_name,
+        credits: receipt.credits,
+        amountPaidCents: receipt.amount_paid_cents,
+        balanceAfter: receipt.balance_after,
+      }).catch((err) =>
+        console.error('[email] pack receipt send failed:', err),
+      );
+    }
+  }
 }
 
 // checkout.session.completed (mode='payment') — Phase 5 slice 7.
@@ -358,8 +575,12 @@ async function handleCheckoutSessionCompleted(event, accountId) {
 //
 // Status guard: WHERE status = 'pending_payment' means a booking
 // that was cancelled in the meantime (admin override, hold expiry
-// janitor) won't get re-confirmed. If we paid an expired booking,
-// we'll need to refund — slice 6 / future hardening.
+// janitor) won't get re-confirmed. When that happens the customer's
+// money moved on Stripe for a booking we can't honor (the slot may
+// already be re-booked) — refund the payment_intent immediately and
+// stamp the refund on the booking row. A refund failure throws so
+// the dispatcher releases the dedup row and Stripe's retry re-drives
+// the refund.
 async function handleCustomerBookingPaid(session, accountId) {
   const md = session.metadata ?? {};
   const tenantIdFromMd = md.courtside_tenant_id;
@@ -384,34 +605,131 @@ async function handleCustomerBookingPaid(session, accountId) {
     return;
   }
 
-  await withTenantContextById(tenantIdFromAcct, async (client) => {
-    const r = await client.query(
-      `UPDATE bookings
-          SET status = 'confirmed',
-              payment_status = 'paid',
-              amount_paid_cents = $1,
-              stripe_payment_intent_id = $2
-        WHERE tenant_id = $3
-          AND id = $4
-          AND status = 'pending_payment'
-        RETURNING id`,
-      [
-        session.amount_total ?? 0,
-        session.payment_intent ?? null,
-        tenantIdFromAcct,
-        bookingId,
-      ],
-    );
-    if (r.rows.length === 0) {
-      // Booking moved out of pending_payment between our INSERT and
-      // the payment landing. Most likely: admin cancelled, or hold
-      // expired and a janitor closed it. Slice 6 / hardening will
-      // add a refund flow for this edge.
-      console.warn(
-        `checkout.session.completed (payment): booking ${bookingId} not in pending_payment state; payment held without confirmation`,
+  const confirmed = await withTenantContextById(
+    tenantIdFromAcct,
+    async (client) => {
+      const r = await client.query(
+        `UPDATE bookings
+            SET status = 'confirmed',
+                payment_status = 'paid',
+                amount_paid_cents = $1,
+                stripe_payment_intent_id = $2
+          WHERE tenant_id = $3
+            AND id = $4
+            AND status = 'pending_payment'
+          RETURNING id, offering_id, resource_id, start_time,
+                    customer_first_name, customer_email,
+                    amount_paid_cents`,
+        [
+          session.amount_total ?? 0,
+          session.payment_intent ?? null,
+          tenantIdFromAcct,
+          bookingId,
+        ],
+      );
+      if (r.rows.length === 0) {
+        // Booking moved out of pending_payment between our INSERT and
+        // the payment landing. Most likely: admin cancelled, or hold
+        // expired and the janitor sweep closed it. Refunded below,
+        // after this transaction ends (no external calls inside an
+        // open tx — CLAUDE.md gotcha #9).
+        return null;
+      }
+      const booking = r.rows[0];
+
+      // Names for the confirmation email — still DB work, still
+      // inside the tx.
+      const namesRes = await client.query(
+        `SELECT o.name AS offering_name, r.name AS resource_name
+           FROM offerings o
+           JOIN resources r
+             ON r.tenant_id = o.tenant_id AND r.id = $3
+          WHERE o.tenant_id = $1 AND o.id = $2`,
+        [tenantIdFromAcct, booking.offering_id, booking.resource_id],
+      );
+      return { ...booking, ...(namesRes.rows[0] ?? {}) };
+    },
+  );
+
+  if (!confirmed) {
+    await refundUnconfirmablePayment(session, tenantIdFromAcct, bookingId, accountId);
+    return;
+  }
+
+  // Post-commit: confirm to the walk-in customer. Fire-and-forget —
+  // email failure must never fail the webhook.
+  // TODO: outbox for reliability-critical delivery.
+  if (confirmed?.customer_email) {
+    const tenantCtx = await loadTenantEmailContext(tenantIdFromAcct);
+    if (tenantCtx) {
+      sendBookingConfirmation({
+        tenant: tenantCtx,
+        to: confirmed.customer_email,
+        recipientName: confirmed.customer_first_name,
+        offeringName: confirmed.offering_name,
+        resourceName: confirmed.resource_name,
+        startTime: confirmed.start_time,
+        amountPaidCents: confirmed.amount_paid_cents,
+      }).catch((err) =>
+        console.error('[email] walk-in booking confirmation send failed:', err),
       );
     }
-  });
+  }
+}
+
+// A walk-in paid for a booking that is no longer in pending_payment
+// (janitor-cancelled expired hold, or admin cancel while they sat on
+// the Stripe-hosted page). Refund the payment on the connected
+// account and stamp the refund on the booking row so the money trail
+// is admin-visible. Called OUTSIDE any open transaction.
+//
+// Failure semantics: a refund error is rethrown → the webhook 500s →
+// the dispatcher releases the dedup row → Stripe redelivers and the
+// refund is retried. An already-refunded charge (retry after a
+// partial failure) is treated as success.
+async function refundUnconfirmablePayment(session, tenantId, bookingId, accountId) {
+  console.warn(
+    `checkout.session.completed (payment): booking ${bookingId} not in pending_payment state; refunding payment ${session.payment_intent ?? '(none)'}`,
+  );
+  if (!session.payment_intent) {
+    // Nothing refundable on the session — should not happen for a
+    // completed mode='payment' session. Manual reconciliation.
+    console.error(
+      `checkout.session.completed (payment): booking ${bookingId} paid but session has no payment_intent; manual reconciliation required`,
+    );
+    return;
+  }
+
+  try {
+    await getStripe().refunds.create(
+      { payment_intent: session.payment_intent },
+      { stripeAccount: accountId },
+    );
+  } catch (err) {
+    if (err?.code !== 'charge_already_refunded') throw err;
+  }
+
+  // Record the refund on the booking (fresh tenant transaction — the
+  // Stripe call above ran outside any open tx). payment_status
+  // 'refunded' requires paid == refunded > 0 per the schema CHECK;
+  // the guard on 'pending' keeps this idempotent across retries.
+  const amount = session.amount_total ?? 0;
+  if (amount > 0) {
+    await withTenantContextById(tenantId, async (client) => {
+      await client.query(
+        `UPDATE bookings
+            SET amount_paid_cents = $1,
+                amount_refunded_cents = $1,
+                payment_status = 'refunded',
+                stripe_payment_intent_id = $2
+          WHERE tenant_id = $3
+            AND id = $4
+            AND status <> 'pending_payment'
+            AND payment_status = 'pending'`,
+        [amount, session.payment_intent, tenantId, bookingId],
+      );
+    });
+  }
 }
 
 // customer.subscription.updated — Phase 5 slice 4b.
@@ -513,16 +831,16 @@ async function handleSubscriptionDeleted(event, accountId) {
 
 // invoice.payment_succeeded — Phase 5 slice 4b.
 //
-// Stripe fires this for every successful invoice. Two flavors that
-// matter for us:
-//   * billing_reason='subscription_create' — first invoice, fires
-//     alongside checkout.session.completed. We DON'T grant credits
-//     here because slice 4a's checkout handler already did. We DO
-//     reconcile period bounds in case they drifted.
-//   * billing_reason='subscription_cycle' — recurring renewal each
-//     month. Grant a fresh week of credits via apply_credit_change.
-//
-// Skipped reasons: subscription_update, manual, etc. — log + ignore.
+// Stripe fires this for every successful invoice. We reconcile
+// period bounds from it and flip past_due subscriptions back to
+// active. We do NOT grant credits here — not for
+// billing_reason='subscription_create' (the checkout.session.
+// completed handler grants the first week) and not for
+// 'subscription_cycle' either: credit replenishment is owned by the
+// weekly reset (run_weekly_credit_resets(), migration 022), which
+// SETs each active subscriber's balance to their plan's
+// credits_per_week every Monday 00:00 tenant-local. Monthly renewal
+// grants would double-pay and drift off the weekly cadence.
 async function handleInvoicePaymentSucceeded(event, accountId) {
   const invoice = event.data?.object;
   if (!invoice) return;
@@ -534,22 +852,11 @@ async function handleInvoicePaymentSucceeded(event, accountId) {
   if (!tenantId) return;
 
   await withTenantContextById(tenantId, async (client) => {
-    // Resolve our subscription + member + active plan in one pass.
-    // The active plan_period (ended_at IS NULL) gives us the plan
-    // for the current cycle.
     const subRes = await client.query(
-      `SELECT s.id AS subscription_id, s.member_id,
-              p.id AS plan_id, p.credits_per_week
-         FROM subscriptions s
-         LEFT JOIN subscription_plan_periods spp
-           ON spp.tenant_id = s.tenant_id
-          AND spp.subscription_id = s.id
-          AND spp.ended_at IS NULL
-         LEFT JOIN plans p
-           ON p.tenant_id = spp.tenant_id
-          AND p.id = spp.plan_id
-        WHERE s.tenant_id = $1
-          AND s.stripe_subscription_id = $2`,
+      `SELECT id AS subscription_id
+         FROM subscriptions
+        WHERE tenant_id = $1
+          AND stripe_subscription_id = $2`,
       [tenantId, subscriptionId],
     );
     if (subRes.rows.length === 0) {
@@ -574,23 +881,6 @@ async function handleInvoicePaymentSucceeded(event, accountId) {
                 status = CASE WHEN status = 'past_due' THEN 'active' ELSE status END
           WHERE tenant_id = $3 AND id = $4`,
         [periodStart, periodEnd, tenantId, row.subscription_id],
-      );
-    }
-
-    // Credit grant: only on subscription_cycle (recurring renewal).
-    // The first-invoice case (subscription_create) is handled by
-    // checkout.session.completed in slice 4a — granting again here
-    // would double the initial credits.
-    if (
-      invoice.billing_reason === 'subscription_cycle' &&
-      row.credits_per_week > 0 &&
-      row.member_id
-    ) {
-      await client.query(
-        `SELECT entry_id FROM apply_credit_change(
-           $1, $2, $3, 'weekly_reset', NULL, NULL, NULL, NULL
-         )`,
-        [tenantId, row.member_id, row.credits_per_week],
       );
     }
   });

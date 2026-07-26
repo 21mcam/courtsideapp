@@ -174,6 +174,118 @@ applied successfully.
   ```
   If it errors, the view grant is broken.
 
+### 012–019
+
+Added incrementally during Phases 1–5; each file's header comment
+documents its contents, dependencies, and verification block. In
+brief: 012 tenant-signup function, 013 password reset tokens, 014
+`apply_credit_change` + ledger write revocations, 015
+`lookup_tenant_by_stripe_account`, 016 Stripe webhook dedup log, 017
+ledger `reason` migration transform, 018 webhook-events RLS, 019
+tenant theme accent (`theme_accent` column + `tenant_lookup` append +
+`set_tenant_theme`).
+
+### 020_tenant_reply_to.sql
+
+Transactional-email support (Phase 3 email slice).
+
+- `tenants.reply_to_email` nullable column (named CHECK
+  `tenants_reply_to_email_check`; same normalize-on-write rules as
+  `users.email`)
+- `tenant_lookup` view append (`reply_to_email` after
+  `theme_accent` — CREATE OR REPLACE VIEW can only append)
+- `set_tenant_reply_to(uuid, text)` SECURITY DEFINER setter, GUC
+  guarded, EXECUTE granted to `app_runtime` (same pattern as
+  `set_tenant_theme` in 019)
+
+### 021_users_password_nullable.sql
+
+Staff invites (people-flows slice).
+
+- `users.password_hash` becomes nullable — NULL means "invited, no
+  password set yet, cannot log in". The invite flow reuses the
+  password-reset-token infrastructure (013) for the set-password link.
+- Named CHECK `users_password_hash_not_empty` (NULL or non-blank).
+
+### 022_weekly_credit_reset.sql
+
+Weekly credit reset (credit-correctness slice).
+
+- `tenants.last_weekly_reset_at` — `NOT NULL DEFAULT now()`, so
+  existing tenants start their cycle at apply time (first reset the
+  following Monday 00:00 tenant-local; no mid-week clawback).
+- `run_weekly_credit_resets()` SECURITY DEFINER function: loops
+  tenants whose local clock crossed Monday 00:00 since their last
+  reset, sets the tenant GUC per iteration, SETs each active
+  subscriber's balance to their plan's `credits_per_week` through
+  `apply_credit_change` (reason `weekly_reset`), stamps
+  `last_weekly_reset_at`. Idempotent; `FOR UPDATE SKIP LOCKED`
+  guards against concurrent runners. EXECUTE granted to
+  `app_runtime`.
+- pg_cron hourly schedule, GUARDED: the `cron.schedule` call only
+  runs when the pg_cron extension is installed. **CI's postgres:15
+  and the local test DB don't have pg_cron — that's expected (a
+  NOTICE is raised). On Supabase: enable pg_cron under Database →
+  Extensions, then re-run**
+  `SELECT cron.schedule('weekly-credit-resets', '7 * * * *',
+  'SELECT run_weekly_credit_resets()');`
+  Until then, the Node fallback scheduler in `src/server.js`
+  (hourly `setInterval`, disabled with `SCHEDULER_ENABLED=false`)
+  covers every environment.
+- Ships alongside an application change: monthly Stripe invoice
+  renewals (`invoice.payment_succeeded`, `subscription_cycle`) no
+  longer grant credits — the weekly reset owns replenishment.
+  Initial activation (`checkout.session.completed`) still grants
+  the first week.
+
+### 023_waivers.sql
+
+Liability waivers v1 (Tier-A sell-readiness slice).
+
+- Waiver config on `booking_policies`: `waiver_required` (default
+  false), `waiver_text`, `waiver_version` (default 1, named CHECK
+  `booking_policies_waiver_version_positive`). The app bumps
+  `waiver_version` whenever the admin changes `waiver_text`
+  (policies update controller) — enforcement requires a signature at
+  the CURRENT version, so a text change re-prompts everyone.
+- `waiver_signatures` table — append-only record of who signed which
+  version. `member_id` (composite FK to members, ON DELETE RESTRICT)
+  or `customer_email` for walk-ins; at least one required by CHECK.
+  Guardian fields (`guardian_name`, `is_minor`) for signing on
+  behalf of a minor (minor requires guardian by CHECK). RLS
+  enabled + forced + tenant_isolation policy. No `updated_at` —
+  immutable rows, same convention as `credit_ledger_entries`.
+- Privileges: `REVOKE UPDATE, DELETE ON waiver_signatures FROM
+  app_runtime` — the runtime role can INSERT and SELECT signatures
+  but never rewrite or remove them (011's default privileges would
+  otherwise grant full CRUD).
+
+### 024_credit_packs.sql
+
+One-time credit packs ("buy a 10-pack, no subscription" — Tier-A
+sell-readiness slice) + purchased-credit protection for the weekly
+reset.
+
+- `credit_packs` table — tenant-defined pack catalog (`name`,
+  `credits > 0`, `price_cents > 0`, `active`). Standard tenant
+  conventions: CASCADE FK, `UNIQUE (tenant_id, id)`,
+  `set_updated_at` trigger, RLS enabled + forced +
+  tenant_isolation policy. Grants: 011's default privileges give
+  app_runtime full CRUD (correct — admin CRUD writes rows directly).
+- `credit_balances.purchased_credits` — how many of
+  `current_credits` came from packs and are still unspent. CHECKs:
+  `>= 0` and `<= current_credits` (both named).
+- `'pack_purchase'` added to
+  `credit_ledger_entries_reason_check` (drop/recreate, same pattern
+  as 017).
+- `apply_credit_change` replaced: maintains `purchased_credits`
+  (increment on `pack_purchase`, clamp to the new balance on any
+  negative change — i.e. subscription credits spend first, purchased
+  last) and rejects non-positive `pack_purchase` amounts.
+- `run_weekly_credit_resets` replaced: reset target is
+  `credits_per_week + purchased_credits`, so purchased credits roll
+  over until spent.
+
 ## Application of migrations
 
 For each migration file:

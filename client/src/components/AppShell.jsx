@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
+  BarChart3,
   BookOpenCheck,
   CalendarDays,
   CreditCard,
@@ -16,9 +17,12 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  Package,
   Settings,
   Ticket,
+  UserCog,
   Users,
+  UsersRound,
   Wand2,
   X,
 } from 'lucide-react';
@@ -29,6 +33,10 @@ const ADMIN_NAV = [
   { to: '/admin/calendar', label: 'Calendar', icon: CalendarDays },
   { to: '/admin/bookings', label: 'Bookings', icon: BookOpenCheck },
   { to: '/admin/classes', label: 'Classes', icon: Users },
+  { to: '/admin/members', label: 'Members', icon: UsersRound },
+  { to: '/admin/staff', label: 'Staff', icon: UserCog },
+  { to: '/admin/packs', label: 'Credit packs', icon: Package },
+  { to: '/admin/reports', label: 'Reports', icon: BarChart3 },
   { to: '/admin/stripe', label: 'Payments', icon: CreditCard },
   { to: '/admin/settings', label: 'Settings', icon: Settings },
   { to: '/wizard', label: 'Setup wizard', icon: Wand2 },

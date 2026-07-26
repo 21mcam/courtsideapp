@@ -17,6 +17,8 @@ router.get('/', (req, res) => {
     timezone: req.tenant.timezone,
     // Falls back to indigo until migration 019 is applied.
     theme_accent: req.tenant.theme_accent || 'indigo',
+    // Falls back to null until migration 020 is applied.
+    reply_to_email: req.tenant.reply_to_email ?? null,
   });
 });
 

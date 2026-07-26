@@ -14,6 +14,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { formatTimeLocal } from '../format.js';
+import WaiverModal from '../components/WaiverModal.jsx';
 import {
   Page,
   PageHeader,
@@ -31,6 +32,9 @@ export default function ClassesPage() {
   const [loadError, setLoadError] = useState(null);
   const [submitting, setSubmitting] = useState(null); // class_instance_id while booking
   const [submitError, setSubmitError] = useState(null);
+  // Instance held aside while the waiver modal is open — the booking
+  // is retried automatically after signing.
+  const [waiverInstance, setWaiverInstance] = useState(null);
 
   function load() {
     setLoadError(null);
@@ -77,7 +81,16 @@ export default function ClassesPage() {
         body: JSON.stringify({ class_instance_id: ci.id }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        // Waiver gate: open the signing modal instead of erroring;
+        // the booking retries automatically once signed.
+        if (res.status === 409 && body.code === 'waiver_signature_required') {
+          setWaiverInstance(ci);
+          setSubmitting(null);
+          return;
+        }
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
       await refresh(); // pull fresh credit balance
       navigate('/');
     } catch (err) {
@@ -185,6 +198,17 @@ export default function ClassesPage() {
             </section>
           ))}
         </div>
+      )}
+
+      {waiverInstance && (
+        <WaiverModal
+          onClose={() => setWaiverInstance(null)}
+          onSigned={() => {
+            const ci = waiverInstance;
+            setWaiverInstance(null);
+            bookInstance(ci);
+          }}
+        />
       )}
     </Page>
   );

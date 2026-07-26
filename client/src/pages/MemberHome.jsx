@@ -18,7 +18,14 @@ import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { bookingStatusBadge, formatSlotLocal } from '../format.js';
-import { Page, PageHeader, Card, Button, Badge } from '../components/ui/index.js';
+import {
+  Page,
+  PageHeader,
+  Card,
+  Button,
+  Badge,
+  ConfirmDialog,
+} from '../components/ui/index.js';
 
 const SUB_STATUS_TONES = {
   active: 'success',
@@ -35,6 +42,7 @@ export default function MemberHome() {
   const [loadError, setLoadError] = useState(null);
   const [cancelMessage, setCancelMessage] = useState(null);
   const [portalBusy, setPortalBusy] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState(null); // item pending confirm
 
   async function openPortal() {
     if (portalBusy) return;
@@ -91,15 +99,9 @@ export default function MemberHome() {
     load();
   }, []);
 
+  // Runs after the member confirms in the ConfirmDialog.
   async function cancel(item) {
     setCancelMessage(null);
-    if (
-      !window.confirm(
-        `Cancel ${item.offering_name} on ${formatSlotLocal(item.start_time, me.tenant.timezone)}?`,
-      )
-    ) {
-      return;
-    }
     const path =
       item.kind === 'class'
         ? `/api/class-bookings/${item.id}/cancel`
@@ -232,9 +234,24 @@ export default function MemberHome() {
         error={loadError}
         empty="Nothing booked yet — pick a slot or class above."
         tz={me.tenant.timezone}
-        onCancel={cancel}
+        onCancel={setCancelTarget}
         showCancel
       />
+
+      {cancelTarget && (
+        <ConfirmDialog
+          title="Cancel booking?"
+          message={`Cancel ${cancelTarget.offering_name} on ${formatSlotLocal(cancelTarget.start_time, me.tenant.timezone)}?`}
+          confirmLabel="Cancel booking"
+          cancelLabel="Keep booking"
+          onConfirm={() => {
+            const item = cancelTarget;
+            setCancelTarget(null);
+            cancel(item);
+          }}
+          onClose={() => setCancelTarget(null)}
+        />
+      )}
 
       <BookingList
         title="Past & cancelled"

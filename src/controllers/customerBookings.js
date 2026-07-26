@@ -17,18 +17,35 @@
 //      booking to status='confirmed', payment_status='paid', stamps
 //      stripe_payment_intent_id and amount_paid_cents.
 //   4. If user abandons, the hold expires at start_time bound (or our
-//      app-level 15min cap). A future janitor cleans stale rows;
-//      until then, manual cleanup or the partial GiST exclusion will
-//      reject conflicting bookings until cancellation runs through.
+//      app-level 30min cap) and the janitor sweep (cleanup.js)
+//      cancels the row.
 //
-// The 15min hold is a CHECK that hold_expires_at <= start_time, so
-// for slots starting in <15min the hold is shorter (clamped). Same
+// The 30min hold is a CHECK that hold_expires_at <= start_time, so
+// for slots starting in <30min the hold is shorter (clamped). Same
 // behavior the schema explicitly designs.
+//
+// Hold duration is 30 minutes because that's Stripe Checkout's
+// MINIMUM session expires_at. We set expires_at on the session to
+// the same instant the hold expires (clamped up to Stripe's 30min
+// floor), so the janitor cancelling an expired hold and the customer
+// still being able to pay can barely overlap. The residual race
+// (slot starting in <30min: hold clamps to start_time, session lives
+// the full 30min) is closed by the webhook auto-refunding payments
+// that land on a booking no longer in pending_payment.
 
 import { z } from 'zod';
 import { getStripe } from '../services/stripe.js';
+import {
+  getWaiverConfig,
+  findMissingWaiverSignature,
+  waiverSignatureSchema,
+  WAIVER_REQUIRED_CODE,
+  WAIVER_VERSION_MISMATCH_CODE,
+} from './waivers.js';
 
-const HOLD_DURATION_MS = 15 * 60 * 1000;
+// Stripe's minimum Checkout session lifetime is 30 minutes; the DB
+// hold matches so the two expire together (see header).
+const HOLD_DURATION_MS = 30 * 60 * 1000;
 
 const createSchema = z.object({
   offering_id: z.string().uuid(),
@@ -42,6 +59,11 @@ const createSchema = z.object({
     email: z.string().email().transform((s) => s.toLowerCase().trim()),
     phone: z.string().trim().optional(),
   }),
+  // Inline liability waiver — required (409 below) when the tenant's
+  // booking_policies.waiver_required is on and this email hasn't
+  // signed the current version yet. Recorded in the SAME transaction
+  // as the booking row.
+  waiver: waiverSignatureSchema.optional(),
   success_url: z.string().url(),
   cancel_url: z.string().url(),
 });
@@ -59,10 +81,52 @@ export async function createCustomerBooking(req, res, next) {
       resource_id,
       start_time,
       customer,
+      waiver,
       success_url,
       cancel_url,
     } = parsed.data;
     const { tenant, db } = req;
+
+    // 0. Liability waiver gate. When the tenant requires a waiver,
+    //    EVERY walk-in booking request must carry the inline waiver
+    //    fields (the walk-in form always renders them; this 409 is
+    //    the backstop for clients that skip it). Deliberately keyed
+    //    on config alone, NOT on whether this email already signed —
+    //    branching on prior-signature existence would let an
+    //    unauthenticated caller probe arbitrary emails for "has this
+    //    person visited since the last waiver edit" (the lookup
+    //    endpoint was carefully made non-enumerating; this one must
+    //    not leak either). Duplicate signatures are simply not
+    //    re-inserted (step 8b). The signature row is inserted AFTER
+    //    the booking INSERT succeeds — same transaction, so it
+    //    commits iff the booking commits.
+    const waiverConfig = await getWaiverConfig(db, tenant.id);
+    if (waiverConfig.waiver_required) {
+      if (!waiver) {
+        return res.status(409).json({
+          error: 'a signed liability waiver is required before booking',
+          code: WAIVER_REQUIRED_CODE,
+          waiver_version: waiverConfig.waiver_version,
+        });
+      }
+      // The client must echo the version it rendered: if the admin
+      // edited the waiver text after the form loaded, the signature
+      // would cover text the signer never saw. 409 → re-render.
+      if (waiver.waiver_version !== waiverConfig.waiver_version) {
+        return res.status(409).json({
+          error:
+            'the waiver was updated after it was displayed; reload it and sign again',
+          code: WAIVER_VERSION_MISMATCH_CODE,
+          waiver_version: waiverConfig.waiver_version,
+        });
+      }
+    }
+    // Insert-dedupe check (NOT observable in any response): only
+    // record a signature when this email has none at the current
+    // version.
+    const missingWaiver = await findMissingWaiverSignature(db, tenant.id, {
+      customerEmail: customer.email,
+    });
 
     // 1. Offering must allow public booking + capacity 1.
     const offerRes = await db.query(
@@ -212,9 +276,9 @@ export async function createCustomerBooking(req, res, next) {
     }
     const conn = connRes.rows[0];
 
-    // 7. Compute hold_expires_at: min(now+15min, start_time). Schema
+    // 7. Compute hold_expires_at: min(now+30min, start_time). Schema
     //    CHECK enforces hold_expires_at <= start_time as the upper
-    //    bound; we tighten with the app-level 15min cap.
+    //    bound; we tighten with the app-level 30min cap.
     const hold = new Date(
       Math.min(Date.now() + HOLD_DURATION_MS, start.getTime()),
     );
@@ -223,7 +287,7 @@ export async function createCustomerBooking(req, res, next) {
     //    Stripe so the slot is locked under our exclusion constraint.
     //    If the Stripe call fails afterwards the booking row stays
     //    in pending_payment until the hold expires (at which point
-    //    a future janitor cancels it). Worst case: a 15-minute slot
+    //    the janitor cancels it). Worst case: a 30-minute slot
     //    hold for a customer who walked away. Acceptable.
     let booking;
     try {
@@ -265,9 +329,42 @@ export async function createCustomerBooking(req, res, next) {
       throw err;
     }
 
+    // 8b. Record the inline waiver signature — same transaction as
+    //     the booking INSERT above, before the Stripe call. If the
+    //     Stripe call fails the response is >= 400 and
+    //     withTenantContext rolls the whole transaction back, so a
+    //     signature never lands without its booking. Skipped when
+    //     this email already holds a current-version signature
+    //     (repeat walk-in) — enforcement only needs one.
+    if (missingWaiver && waiver) {
+      await db.query(
+        `INSERT INTO waiver_signatures
+           (tenant_id, customer_email, signer_name, guardian_name,
+            is_minor, waiver_version)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          tenant.id,
+          customer.email,
+          waiver.signer_name,
+          waiver.guardian_name ?? null,
+          waiver.is_minor ?? false,
+          missingWaiver.waiver_version,
+        ],
+      );
+    }
+
     // 9. Create Checkout Session in mode='payment' on the connected
     //    account. price_data is inline so we don't have to mint a
     //    Stripe Product per offering.
+    //
+    //    The booking id is appended to the success_url so the success
+    //    page can show a reference code + slot details (via the
+    //    email-gated POST /api/customers/bookings/lookup). A booking
+    //    UUID is unguessable and not personal data, so it's safe in a
+    //    URL; the email needed to read details never rides in the URL.
+    const successUrl = new URL(success_url);
+    successUrl.searchParams.set('booking_id', booking.id);
+
     let session;
     try {
       session = await getStripe().checkout.sessions.create(
@@ -286,7 +383,7 @@ export async function createCustomerBooking(req, res, next) {
               quantity: 1,
             },
           ],
-          success_url,
+          success_url: successUrl.toString(),
           cancel_url,
           // Critical: the webhook reads these to find which booking
           // to flip. courtside_tenant_id is duplicated for the
@@ -296,11 +393,19 @@ export async function createCustomerBooking(req, res, next) {
             courtside_tenant_id: tenant.id,
             courtside_booking_id: booking.id,
           },
-          // Stripe's `expires_at` requires >= 30min ahead, but our
-          // DB-side hold is often shorter. Don't set it; rely on
-          // Stripe's 24h default + the webhook checking the booking
-          // status when it flips it ('pending_payment' guard means
-          // a cancelled-meanwhile booking won't get re-confirmed).
+          // Expire the Stripe session in step with our DB hold so
+          // the janitor can't cancel a booking whose payment page is
+          // still live. Stripe's floor is 30min ahead — for slots
+          // starting sooner, the hold clamps to start_time while the
+          // session keeps the 30min minimum; that residual window is
+          // covered by the webhook's auto-refund of payments landing
+          // on a non-pending booking. The +31min floor (not exactly
+          // 30) keeps clock skew / request latency from tripping
+          // Stripe's ">= 30 minutes in the future" validation.
+          expires_at: Math.max(
+            Math.floor(hold.getTime() / 1000),
+            Math.floor(Date.now() / 1000) + 31 * 60,
+          ),
         },
         { stripeAccount: conn.stripe_account_id },
       );
@@ -367,6 +472,86 @@ export async function listPublicOfferings(req, res, next) {
       [req.tenant.id],
     );
     res.json({ offerings: result.rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ---------- POST /api/customers/bookings/lookup ----------
+//
+// Public, unauthenticated booking lookup for the walk-in success
+// page. A walk-in has no credential, so the gate is knowledge of BOTH
+// the booking id (an unguessable UUID, carried on the Checkout
+// success_url) AND the email the booking was made with. A wrong email
+// returns the same 404 as an unknown id, so the endpoint can't be
+// used to enumerate bookings or confirm emails. POST (not GET) keeps
+// the email out of URLs and access logs.
+
+const lookupSchema = z.object({
+  booking_id: z.string().uuid(),
+  email: z
+    .string()
+    .email()
+    .transform((s) => s.toLowerCase().trim()),
+});
+
+// Human-friendly short reference derived from the booking UUID. Shown
+// on the success page + read out at the front desk. First 8 hex chars
+// uppercased — collision odds within one facility's active bookings
+// are negligible, and the full UUID remains the real key.
+export function bookingReference(bookingId) {
+  return bookingId.slice(0, 8).toUpperCase();
+}
+
+export async function lookupCustomerBooking(req, res, next) {
+  try {
+    const parsed = lookupSchema.safeParse(req.body);
+    if (!parsed.success) {
+      // Malformed UUIDs get the same 404 as unknown ones (no
+      // enumeration hints); genuinely malformed bodies get a 400.
+      const bookingIdIssue = parsed.error.issues.some(
+        (i) => i.path[0] === 'booking_id',
+      );
+      if (bookingIdIssue && typeof req.body?.booking_id === 'string') {
+        return res.status(404).json({ error: 'booking not found' });
+      }
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const { booking_id, email } = parsed.data;
+    const { tenant, db } = req;
+
+    const result = await db.query(
+      `SELECT b.id, b.status, b.start_time, b.end_time,
+              b.amount_due_cents, b.amount_paid_cents, b.payment_status,
+              o.name AS offering_name,
+              r.name AS resource_name
+         FROM bookings b
+         JOIN offerings o ON o.tenant_id = b.tenant_id AND o.id = b.offering_id
+         JOIN resources r ON r.tenant_id = b.tenant_id AND r.id = b.resource_id
+        WHERE b.tenant_id = $1 AND b.id = $2 AND b.customer_email = $3`,
+      [tenant.id, booking_id, email],
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'booking not found' });
+    }
+    const b = result.rows[0];
+
+    res.json({
+      booking: {
+        id: b.id,
+        reference: bookingReference(b.id),
+        status: b.status,
+        start_time: b.start_time,
+        end_time: b.end_time,
+        offering_name: b.offering_name,
+        resource_name: b.resource_name,
+        amount_due_cents: b.amount_due_cents,
+        amount_paid_cents: b.amount_paid_cents,
+        payment_status: b.payment_status,
+      },
+    });
   } catch (err) {
     next(err);
   }

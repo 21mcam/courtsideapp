@@ -88,6 +88,22 @@ CREATE TABLE tenants (
   theme_accent                    text NOT NULL DEFAULT 'indigo'
                                   CHECK (theme_accent IN
                                          ('indigo', 'sky', 'emerald', 'violet', 'rose', 'slate')),
+  -- Reply-to for tenant transactional emails (Resend). NULL = none.
+  -- Same normalize-on-write convention as users.email. (Migration 020.)
+  reply_to_email                  text
+                                  CONSTRAINT tenants_reply_to_email_check CHECK (
+                                    reply_to_email IS NULL
+                                    OR (
+                                      reply_to_email = lower(btrim(reply_to_email))
+                                      AND btrim(reply_to_email) <> ''
+                                      AND reply_to_email !~ '\s'
+                                    )
+                                  ),
+  -- Weekly credit reset bookkeeping: when run_weekly_credit_resets()
+  -- last completed for this tenant. Default now() starts the cycle
+  -- at tenant creation, so the first reset fires the following
+  -- Monday 00:00 tenant-local. (Migration 022.)
+  last_weekly_reset_at            timestamptz NOT NULL DEFAULT now(),
   -- platform-side billing (what the tenant pays us). Privileged-only
   -- — never exposed via tenant_lookup view.
   platform_stripe_customer_id     text,
@@ -154,12 +170,36 @@ SELECT
       AND (trial_ends_at IS NULL OR trial_ends_at > now())
     )
   ) AS is_billing_ok,
-  theme_accent
+  theme_accent,
+  reply_to_email
 FROM tenants;
 
 COMMENT ON VIEW tenant_lookup IS
   'Safe subdomain-resolution view. Exposes routing-safe columns only; '
   'never billing fields. Runtime role gets SELECT here, not on tenants.';
+
+-- ----------------------------------------------------------
+-- Tenant reply-to setter (migration 020). app_runtime has no UPDATE
+-- on tenants, so the admin settings endpoint writes through this
+-- SECURITY DEFINER function — same pattern as set_tenant_theme (019),
+-- guarded by the tenant GUC.
+CREATE OR REPLACE FUNCTION set_tenant_reply_to(p_tenant_id uuid, p_email text)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF p_tenant_id IS DISTINCT FROM current_setting('app.current_tenant_id', true)::uuid THEN
+    RAISE EXCEPTION 'tenant mismatch';
+  END IF;
+
+  UPDATE tenants SET reply_to_email = p_email WHERE id = p_tenant_id;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION set_tenant_reply_to(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION set_tenant_reply_to(uuid, text) TO app_runtime;
 
 -- ----------------------------------------------------------
 CREATE TABLE users (
@@ -171,7 +211,12 @@ CREATE TABLE users (
                     AND btrim(email) <> ''
                     AND email !~ '\s'
                   ),
-  password_hash   text NOT NULL,
+  -- NULL = invited (staff invite flow), no password set yet — cannot
+  -- log in until the set-password link is consumed. Named CHECK so a
+  -- future migration can drop/replace it deterministically.
+  password_hash   text
+                  CONSTRAINT users_password_hash_not_empty
+                  CHECK (password_hash IS NULL OR btrim(password_hash) <> ''),
   first_name      text NOT NULL
                   CHECK (btrim(first_name) <> '' AND first_name = btrim(first_name)),
   last_name       text NOT NULL
@@ -565,20 +610,34 @@ CREATE POLICY subscription_plan_periods_tenant_isolation ON subscription_plan_pe
 
 -- ----------------------------------------------------------
 -- Singleton-per-member current balance.
--- Mutations go through apply_credit_change() (TODO Phase 2) which
+-- Mutations go through apply_credit_change() (defined below; shipped
+-- in migration 014, purchased-credit-aware since migration 024) which
 -- writes both this row AND a credit_ledger_entries row in one
 -- transaction. Direct UPDATE on this table is forbidden — privileges
--- will be revoked from the runtime DB role; only SECURITY DEFINER
+-- are revoked from the runtime DB role; only the SECURITY DEFINER
 -- function can write.
 CREATE TABLE credit_balances (
   tenant_id        uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   member_id        uuid NOT NULL,
   current_credits  integer NOT NULL DEFAULT 0 CHECK (current_credits >= 0),
+  -- How many of current_credits came from pack purchases and are
+  -- still unspent (migration 024). Maintained exclusively by
+  -- apply_credit_change: incremented on pack_purchase, clamped to the
+  -- new balance on negative changes (subscription credits spend
+  -- first, purchased last). The weekly reset preserves this amount on
+  -- top of the plan allotment.
+  purchased_credits integer NOT NULL DEFAULT 0
+    CONSTRAINT credit_balances_purchased_nonnegative
+    CHECK (purchased_credits >= 0),
   last_reset_at    timestamptz,
   created_at       timestamptz NOT NULL DEFAULT now(),
   updated_at       timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, member_id),
-  FOREIGN KEY (tenant_id, member_id) REFERENCES members(tenant_id, id) ON DELETE CASCADE
+  FOREIGN KEY (tenant_id, member_id) REFERENCES members(tenant_id, id) ON DELETE CASCADE,
+  -- Purchased credits are a subset of the total balance, never a
+  -- separate pool.
+  CONSTRAINT credit_balances_purchased_within_balance
+    CHECK (purchased_credits <= current_credits)
 );
 
 CREATE TRIGGER credit_balances_set_updated_at
@@ -617,7 +676,7 @@ CREATE TABLE credit_ledger_entries (
   reason          text NOT NULL
                   CHECK (reason IN ('weekly_reset', 'admin_adjustment', 'signup_bonus',
                                     'booking_spend', 'booking_refund', 'plan_change',
-                                    'manual', 'migration')),
+                                    'manual', 'migration', 'pack_purchase')),
   note            text,
   granted_by      uuid,         -- user_id of admin (if any). No FK so historical entries
                                 -- survive admin user deletion.
@@ -654,6 +713,293 @@ ALTER TABLE credit_ledger_entries FORCE ROW LEVEL SECURITY;
 CREATE POLICY credit_ledger_entries_tenant_isolation ON credit_ledger_entries
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+-- ----------------------------------------------------------
+-- apply_credit_change — THE credit mutation primitive (migration 014,
+-- rewritten in migration 024 for purchased-credit awareness). Every
+-- balance change in the system goes through here: it locks the
+-- balance row, computes and rejects-below-zero, maintains
+-- purchased_credits (the draw-down rule lives in step 5), updates the
+-- balance, and appends the ledger row — one transaction, enforcing
+-- the invariant that credit_balances.current_credits always equals
+-- the latest ledger balance_after.
+--
+-- SECURITY DEFINER with pinned search_path; verifies the caller's
+-- tenant GUC matches p_tenant_id so even a privileged caller can't
+-- cross tenants. The runtime role has EXECUTE here but NO direct
+-- INSERT/UPDATE on credit_balances / credit_ledger_entries.
+CREATE OR REPLACE FUNCTION apply_credit_change(
+  p_tenant_id        uuid,
+  p_member_id        uuid,
+  p_amount           integer,
+  p_reason           text,
+  p_note             text DEFAULT NULL,
+  p_granted_by       uuid DEFAULT NULL,
+  p_booking_id       uuid DEFAULT NULL,
+  p_class_booking_id uuid DEFAULT NULL
+)
+RETURNS TABLE (entry_id uuid, balance_after integer)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_guc_tenant    uuid;
+  v_current       integer;
+  v_purchased     integer;
+  v_new           integer;
+  v_new_purchased integer;
+  v_existed       boolean;
+  v_entry_id      uuid;
+BEGIN
+  -- 1. Cross-tenant defense: even SECURITY DEFINER callers must operate
+  --    within the GUC tenant.
+  v_guc_tenant := current_setting('app.current_tenant_id', true)::uuid;
+  IF v_guc_tenant IS NULL OR v_guc_tenant <> p_tenant_id THEN
+    RAISE EXCEPTION
+      'tenant context mismatch: GUC=%, p_tenant_id=%',
+      v_guc_tenant, p_tenant_id
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  -- 2. Amount sanity.
+  IF p_amount = 0 THEN
+    RAISE EXCEPTION 'amount must be non-zero'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF p_reason = 'pack_purchase' AND p_amount <= 0 THEN
+    RAISE EXCEPTION 'pack_purchase amount must be positive'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  -- 3. Lock the balance row (if any). Serialization point per member.
+  SELECT current_credits, purchased_credits
+    INTO v_current, v_purchased
+  FROM credit_balances
+  WHERE tenant_id = p_tenant_id AND member_id = p_member_id
+  FOR UPDATE;
+  v_existed := FOUND;
+
+  IF NOT v_existed THEN
+    v_current := 0;
+    v_purchased := 0;
+  END IF;
+
+  v_new := v_current + p_amount;
+
+  -- 4. Reject if would go negative.
+  IF v_new < 0 THEN
+    RAISE EXCEPTION 'insufficient credits: have %, change %',
+      v_current, p_amount
+      USING ERRCODE = 'check_violation';
+  END IF;
+
+  -- 5. Purchased-credit bookkeeping (draw-down order lives here):
+  --    pack_purchase grants add to the purchased bucket; every other
+  --    reason clamps purchased to the new balance — a no-op for
+  --    positive changes, and for spends it means subscription-week
+  --    credits drain FIRST, purchased credits LAST.
+  IF p_reason = 'pack_purchase' THEN
+    v_new_purchased := v_purchased + p_amount;
+  ELSE
+    v_new_purchased := LEAST(v_purchased, v_new);
+  END IF;
+
+  -- 6. Apply the balance change. last_reset_at only moves on
+  --    weekly_reset reasons.
+  IF v_existed THEN
+    UPDATE credit_balances
+       SET current_credits = v_new,
+           purchased_credits = v_new_purchased,
+           last_reset_at = CASE
+             WHEN p_reason = 'weekly_reset' THEN now()
+             ELSE last_reset_at
+           END
+     WHERE tenant_id = p_tenant_id AND member_id = p_member_id;
+  ELSE
+    INSERT INTO credit_balances (
+      tenant_id, member_id, current_credits, purchased_credits, last_reset_at
+    ) VALUES (
+      p_tenant_id, p_member_id, v_new, v_new_purchased,
+      CASE WHEN p_reason = 'weekly_reset' THEN now() ELSE NULL END
+    );
+  END IF;
+
+  -- 7. Append the ledger row (table CHECKs validate the rest).
+  INSERT INTO credit_ledger_entries (
+    tenant_id, member_id, amount, balance_after, reason,
+    note, granted_by, booking_id, class_booking_id
+  ) VALUES (
+    p_tenant_id, p_member_id, p_amount, v_new, p_reason,
+    p_note, p_granted_by, p_booking_id, p_class_booking_id
+  ) RETURNING id INTO v_entry_id;
+
+  entry_id := v_entry_id;
+  balance_after := v_new;
+  RETURN NEXT;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION apply_credit_change(
+  uuid, uuid, integer, text, text, uuid, uuid, uuid
+) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION apply_credit_change(
+  uuid, uuid, integer, text, text, uuid, uuid, uuid
+) TO app_runtime;
+
+-- ----------------------------------------------------------
+-- One-time credit packs (migration 024). "Buy a 10-pack, no
+-- subscription." Members purchase via Stripe Checkout
+-- (mode='payment' on the tenant's connected account); the webhook
+-- grants credits through apply_credit_change (reason
+-- 'pack_purchase'), which also increments
+-- credit_balances.purchased_credits so the weekly reset preserves
+-- them. Soft-delete via active=false — never DELETEd by the app.
+CREATE TABLE credit_packs (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id    uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name         text NOT NULL CHECK (btrim(name) <> ''),
+  credits      integer NOT NULL CHECK (credits > 0),
+  price_cents  integer NOT NULL CHECK (price_cents > 0),
+  active       boolean NOT NULL DEFAULT true,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, id)
+);
+
+-- Member storefront query: active packs, cheapest first.
+CREATE INDEX credit_packs_tenant_active_idx
+  ON credit_packs (tenant_id, active, price_cents);
+
+CREATE TRIGGER credit_packs_set_updated_at
+  BEFORE UPDATE ON credit_packs
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE credit_packs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE credit_packs FORCE ROW LEVEL SECURITY;
+CREATE POLICY credit_packs_tenant_isolation ON credit_packs
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+-- ----------------------------------------------------------
+-- Weekly credit reset (migration 022; purchased-credit protection in
+-- migration 024). Every Monday 00:00 in the TENANT's timezone, each
+-- member with an active subscription has their balance SET to their
+-- plan's credits_per_week + still-unspent purchased credits
+-- (non-rollover for the subscription bucket: unused weekly credits
+-- are lost and admin grants above the allotment are reset down too;
+-- purchased credits roll over until spent).
+-- All writes go through apply_credit_change (reason 'weekly_reset')
+-- so the ledger invariant holds.
+--
+-- Scheduled hourly via pg_cron when available (guarded in migration
+-- 022 — enable pg_cron in Supabase, then re-run the schedule
+-- statement) with a Node setInterval fallback in src/server.js.
+-- Idempotent per tenant-week via tenants.last_weekly_reset_at;
+-- FOR UPDATE SKIP LOCKED prevents concurrent double-application.
+CREATE OR REPLACE FUNCTION run_weekly_credit_resets()
+RETURNS TABLE (reset_tenant_id uuid, members_reset integer)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  t            record;
+  m            record;
+  v_week_start timestamptz;
+  v_current    integer;
+  v_purchased  integer;
+  v_delta      integer;
+  v_count      integer;
+BEGIN
+  FOR t IN
+    SELECT id, timezone, last_weekly_reset_at
+      FROM tenants
+     ORDER BY id
+       FOR UPDATE SKIP LOCKED
+  LOOP
+    -- Per-tenant subtransaction: one tenant's failure (e.g. a bad
+    -- timezone string) must not block resets for everyone else.
+    BEGIN
+      -- Most recent Monday 00:00 on the tenant's local clock, as an
+      -- absolute instant.
+      v_week_start :=
+        date_trunc('week', now() AT TIME ZONE t.timezone)
+          AT TIME ZONE t.timezone;
+
+      IF t.last_weekly_reset_at >= v_week_start THEN
+        CONTINUE; -- this tenant-week is already done — idempotency
+      END IF;
+
+      -- Tenant context: RLS + apply_credit_change's cross-tenant
+      -- guard both key off the GUC (webhook escape-hatch pattern).
+      PERFORM set_config('app.current_tenant_id', t.id::text, true);
+
+      v_count := 0;
+      -- Active subscriptions only; past_due members recover first,
+      -- reset next Monday.
+      FOR m IN
+        SELECT s.member_id, p.credits_per_week
+          FROM subscriptions s
+          JOIN subscription_plan_periods spp
+            ON spp.tenant_id = s.tenant_id
+           AND spp.subscription_id = s.id
+           AND spp.ended_at IS NULL
+          JOIN plans p
+            ON p.tenant_id = spp.tenant_id
+           AND p.id = spp.plan_id
+         WHERE s.tenant_id = t.id
+           AND s.status = 'active'
+      LOOP
+        -- Lock the balance row BEFORE computing the delta so a
+        -- concurrent booking spend can't slip in between.
+        SELECT cb.current_credits, cb.purchased_credits
+          INTO v_current, v_purchased
+          FROM credit_balances cb
+         WHERE cb.tenant_id = t.id AND cb.member_id = m.member_id
+           FOR UPDATE;
+        IF NOT FOUND THEN
+          v_current := 0;
+          v_purchased := 0;
+        END IF;
+
+        -- SET semantics on the SUBSCRIPTION bucket only: purchased
+        -- credits roll over until spent.
+        v_delta := (m.credits_per_week + v_purchased) - v_current;
+        IF v_delta <> 0 THEN
+          PERFORM apply_credit_change(
+            t.id, m.member_id, v_delta, 'weekly_reset',
+            NULL, NULL, NULL, NULL
+          );
+        END IF;
+        v_count := v_count + 1;
+      END LOOP;
+
+      UPDATE tenants
+         SET last_weekly_reset_at = now()
+       WHERE id = t.id;
+
+      reset_tenant_id := t.id;
+      members_reset := v_count;
+      RETURN NEXT;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'run_weekly_credit_resets: tenant % failed: %',
+        t.id, SQLERRM;
+    END;
+  END LOOP;
+END;
+$$;
+
+COMMENT ON FUNCTION run_weekly_credit_resets() IS
+  'Weekly credit reset: for each tenant whose local clock crossed '
+  'Monday 00:00 since last_weekly_reset_at, SET every active '
+  'subscriber''s balance to credits_per_week + unspent purchased '
+  'credits (reason weekly_reset, via apply_credit_change). Idempotent; '
+  'safe to run hourly from pg_cron and/or the Node fallback scheduler.';
+
+REVOKE ALL ON FUNCTION run_weekly_credit_resets() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION run_weekly_credit_resets() TO app_runtime;
 
 -- ============================================================
 -- LAYER 4: OPERATIONAL
@@ -794,6 +1140,15 @@ CREATE TABLE booking_policies (
   -- self-service modification
   allow_member_self_cancel        boolean NOT NULL DEFAULT true,
   allow_customer_self_cancel      boolean NOT NULL DEFAULT true,
+  -- liability waiver (migration 023). waiver_version is bumped by
+  -- the app whenever waiver_text changes; enforcement requires a
+  -- waiver_signatures row at the CURRENT version, so a text change
+  -- re-prompts every member and walk-in.
+  waiver_required                 boolean NOT NULL DEFAULT false,
+  waiver_text                     text,
+  waiver_version                  integer NOT NULL DEFAULT 1
+                                  CONSTRAINT booking_policies_waiver_version_positive
+                                  CHECK (waiver_version > 0),
   created_at                      timestamptz NOT NULL DEFAULT now(),
   updated_at                      timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id),
@@ -821,6 +1176,56 @@ CREATE TRIGGER booking_policies_set_updated_at
 ALTER TABLE booking_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE booking_policies FORCE ROW LEVEL SECURITY;
 CREATE POLICY booking_policies_tenant_isolation ON booking_policies
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+-- ----------------------------------------------------------
+-- Liability waiver signatures (migration 023). Append-only record of
+-- who signed which waiver_version. Either a member (member_id) or a
+-- walk-in (customer_email), never neither. Guardian fields support
+-- signing on behalf of a minor. Rows are immutable legal records: the
+-- runtime role has INSERT + SELECT but NOT UPDATE/DELETE (revoked in
+-- migration 023), and there is no updated_at (same convention as
+-- credit_ledger_entries).
+--
+-- member_id FK is ON DELETE RESTRICT (matches bookings): a signature
+-- must not silently vanish with a member row. Tenant deletion still
+-- cascades via the tenant_id FK.
+CREATE TABLE waiver_signatures (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id       uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  member_id       uuid,
+  customer_email  text CHECK (customer_email IS NULL
+                              OR (btrim(customer_email) <> ''
+                                  AND customer_email = lower(customer_email))),
+  signer_name     text NOT NULL CHECK (btrim(signer_name) <> ''),
+  guardian_name   text CHECK (guardian_name IS NULL OR btrim(guardian_name) <> ''),
+  is_minor        boolean NOT NULL DEFAULT false,
+  waiver_version  integer NOT NULL CHECK (waiver_version > 0),
+  signed_at       timestamptz NOT NULL DEFAULT now(),
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, id),
+  FOREIGN KEY (tenant_id, member_id)
+    REFERENCES members(tenant_id, id) ON DELETE RESTRICT,
+  CHECK (member_id IS NOT NULL OR customer_email IS NOT NULL),
+  -- a minor's waiver must carry the guardian who signed it
+  CHECK ((NOT is_minor) OR guardian_name IS NOT NULL)
+);
+
+CREATE INDEX waiver_signatures_member_idx
+  ON waiver_signatures (tenant_id, member_id, waiver_version)
+  WHERE member_id IS NOT NULL;
+
+CREATE INDEX waiver_signatures_customer_idx
+  ON waiver_signatures (tenant_id, customer_email, waiver_version)
+  WHERE customer_email IS NOT NULL;
+
+CREATE INDEX waiver_signatures_signed_at_idx
+  ON waiver_signatures (tenant_id, signed_at DESC);
+
+ALTER TABLE waiver_signatures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE waiver_signatures FORCE ROW LEVEL SECURITY;
+CREATE POLICY waiver_signatures_tenant_isolation ON waiver_signatures
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 

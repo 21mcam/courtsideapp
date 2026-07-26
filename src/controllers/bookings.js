@@ -35,11 +35,62 @@
 // (status <> 'cancelled', overlapping time_range on same resource)
 // will reject the second INSERT.
 //
-// Plan-allowed-categories check is intentionally NOT enforced here
-// — Phase 5 ships subscriptions and that's where it lands. For
-// Phase 3 a member with admin-granted credits can book anything.
+// Plan-allowed-categories IS enforced here (and in the class-booking
+// flow): a member whose current plan whitelists categories gets a 403
+// when the offering's category isn't in the whitelist. Members with
+// no current subscription (admin-granted credits) are unrestricted.
+// Walk-in/cash flows are unaffected.
 
 import { z } from 'zod';
+
+import {
+  sendBookingConfirmation,
+  sendBookingCancellation,
+} from '../services/email.js';
+import {
+  findMissingWaiverSignature,
+  WAIVER_REQUIRED_CODE,
+} from './waivers.js';
+
+// Enforce plans.allowed_categories for a member booking. Returns null
+// when the booking may proceed, or { plan_name, category } when the
+// member's current plan whitelists categories and `category` isn't in
+// the whitelist (callers turn that into a 403). The member's current
+// plan is the active plan period of their (at most one, by partial
+// unique index) non-terminal subscription; NULL allowed_categories
+// means "all categories allowed". Members with no current
+// subscription — admin-granted or leftover credits — are
+// unrestricted. Shared by the rental flow here and the class flow in
+// classBookings.js.
+export async function findPlanCategoryRestriction(
+  db,
+  tenantId,
+  memberId,
+  category,
+) {
+  const r = await db.query(
+    `SELECT p.name AS plan_name,
+            p.allowed_categories::text[] AS allowed_categories
+       FROM subscriptions s
+       JOIN subscription_plan_periods spp
+         ON spp.tenant_id = s.tenant_id
+        AND spp.subscription_id = s.id
+        AND spp.ended_at IS NULL
+       JOIN plans p
+         ON p.tenant_id = spp.tenant_id
+        AND p.id = spp.plan_id
+      WHERE s.tenant_id = $1
+        AND s.member_id = $2
+        AND s.status IN ('pending', 'active', 'past_due', 'incomplete')
+      ORDER BY s.created_at DESC
+      LIMIT 1`,
+    [tenantId, memberId],
+  );
+  const plan = r.rows[0];
+  if (!plan?.allowed_categories) return null;
+  if (plan.allowed_categories.includes(category)) return null;
+  return { plan_name: plan.plan_name, category };
+}
 
 const createBookingSchema = z.object({
   offering_id: z.string().uuid(),
@@ -69,7 +120,7 @@ export async function createMemberBooking(req, res, next) {
 
     // 1. Offering
     const offerRes = await db.query(
-      `SELECT id, category, duration_minutes, credit_cost,
+      `SELECT id, name, category, duration_minutes, credit_cost,
               capacity, active, allow_member_booking
          FROM offerings
         WHERE tenant_id = $1 AND id = $2`,
@@ -89,6 +140,36 @@ export async function createMemberBooking(req, res, next) {
     }
     if (!offering.allow_member_booking) {
       return res.status(403).json({ error: 'offering does not allow member bookings' });
+    }
+
+    // 1a. Plan category whitelist. A member on a restricted plan
+    //     (e.g. Class Pack: allowed_categories = ['classes']) can't
+    //     spend credits outside the whitelist.
+    const restriction = await findPlanCategoryRestriction(
+      db,
+      tenant.id,
+      member_id,
+      offering.category,
+    );
+    if (restriction) {
+      return res.status(403).json({
+        error: `your plan "${restriction.plan_name}" does not include the "${restriction.category}" category`,
+      });
+    }
+
+    // 1b. Liability waiver. When the tenant requires one, the member
+    //     must have signed the CURRENT waiver_version. The distinct
+    //     `code` lets the booking UI open the waiver modal, sign via
+    //     POST /api/waivers/sign, and retry automatically.
+    const missingWaiver = await findMissingWaiverSignature(db, tenant.id, {
+      memberId: member_id,
+    });
+    if (missingWaiver) {
+      return res.status(409).json({
+        error: 'a signed liability waiver is required before booking',
+        code: WAIVER_REQUIRED_CODE,
+        waiver_version: missingWaiver.waiver_version,
+      });
     }
 
     // 2. Offering↔resource link
@@ -144,7 +225,7 @@ export async function createMemberBooking(req, res, next) {
     //    no rows and we 404. RLS shouldn't hide it because we're in
     //    the tenant context, but defense in depth.
     const lockRes = await db.query(
-      `SELECT active FROM resources
+      `SELECT active, name FROM resources
         WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [tenant.id, resource_id],
     );
@@ -154,6 +235,7 @@ export async function createMemberBooking(req, res, next) {
     if (!lockRes.rows[0].active) {
       return res.status(409).json({ error: 'resource is inactive' });
     }
+    const resource_name = lockRes.rows[0].name;
 
     // 5a. Operating hours: at least one row must contain [start, end].
     //     Convert the row's local open/close times to UTC for the
@@ -287,6 +369,34 @@ export async function createMemberBooking(req, res, next) {
         ],
       );
       const { entry_id, balance_after } = creditRes.rows[0];
+
+      // Confirmation email — sent AFTER the transaction commits (res
+      // 'finish' fires after withTenantContext's COMMIT flushes),
+      // fire-and-forget. Contact lookup runs inside the tx (DB work
+      // only); the send itself never does (CLAUDE.md).
+      // TODO: outbox for reliability-critical delivery.
+      const contactRes = await db.query(
+        `SELECT email, first_name FROM members
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, member_id],
+      );
+      const contact = contactRes.rows[0];
+      if (contact?.email) {
+        res.on('finish', () => {
+          sendBookingConfirmation({
+            tenant,
+            to: contact.email,
+            recipientName: contact.first_name,
+            offeringName: offering.name,
+            resourceName: resource_name,
+            startTime: booking.start_time,
+            creditCost: offering.credit_cost,
+          }).catch((err) =>
+            console.error('[email] booking confirmation send failed:', err),
+          );
+        });
+      }
+
       res.status(201).json({ booking, ledger_entry_id: entry_id, balance_after });
     } catch (err) {
       if (err.code === '23514') {
@@ -328,14 +438,20 @@ export async function cancelMemberBooking(req, res, next) {
     const id = req.params.id;
 
     // Look up the booking. RLS scopes by tenant; an id from another
-    // tenant simply returns no rows.
+    // tenant simply returns no rows. Offering/resource names and the
+    // customer contact ride along for the cancellation email.
     const bookingRes = await db.query(
-      `SELECT id, member_id, offering_id, resource_id,
-              start_time, end_time, status,
-              credit_cost_charged, payment_status,
-              cancelled_at
-         FROM bookings
-        WHERE tenant_id = $1 AND id = $2`,
+      `SELECT b.id, b.member_id, b.offering_id, b.resource_id,
+              b.start_time, b.end_time, b.status,
+              b.credit_cost_charged, b.payment_status,
+              b.cancelled_at,
+              b.customer_first_name, b.customer_email,
+              o.name AS offering_name,
+              r.name AS resource_name
+         FROM bookings b
+         JOIN offerings o ON o.tenant_id = b.tenant_id AND o.id = b.offering_id
+         JOIN resources r ON r.tenant_id = b.tenant_id AND r.id = b.resource_id
+        WHERE b.tenant_id = $1 AND b.id = $2`,
       [tenant.id, id],
     );
     if (bookingRes.rows.length === 0) {
@@ -442,6 +558,40 @@ export async function cancelMemberBooking(req, res, next) {
       );
       refund_entry_id = refundRes.rows[0].entry_id;
       balance_after = refundRes.rows[0].balance_after;
+    }
+
+    // Cancellation email to whoever booked: the member (looked up
+    // inside the tx) or the walk-in customer stored on the row. Sent
+    // AFTER the transaction commits (res 'finish' fires after
+    // withTenantContext's COMMIT flushes), fire-and-forget.
+    // TODO: outbox for reliability-critical delivery.
+    let emailTo = booking.customer_email;
+    let emailName = booking.customer_first_name;
+    if (booking.member_id) {
+      const contactRes = await db.query(
+        `SELECT email, first_name FROM members
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, booking.member_id],
+      );
+      emailTo = contactRes.rows[0]?.email ?? null;
+      emailName = contactRes.rows[0]?.first_name ?? null;
+    }
+    if (emailTo) {
+      const to = emailTo;
+      const recipientName = emailName;
+      res.on('finish', () => {
+        sendBookingCancellation({
+          tenant,
+          to,
+          recipientName,
+          offeringName: booking.offering_name,
+          resourceName: booking.resource_name,
+          startTime: booking.start_time,
+          refundCredits,
+        }).catch((err) =>
+          console.error('[email] booking cancellation send failed:', err),
+        );
+      });
     }
 
     res.json({
@@ -551,9 +701,10 @@ export async function markBookingNoShow(req, res, next) {
 // booking, plus the list of active resources each is offered on.
 // The booking UI uses this to populate the offering picker.
 //
-// Plan-allowed-categories filtering is intentionally NOT applied —
-// see createMemberBooking comment. When subscriptions ship in
-// Phase 5 we'll filter here too.
+// Plan-allowed-categories filtering is NOT applied to this listing —
+// enforcement happens at booking time (createMemberBooking 403s).
+// Filtering the catalog view down to the member's whitelist is a
+// future UI polish, not a correctness gate.
 export async function listBookableOfferings(req, res, next) {
   try {
     const result = await req.db.query(
