@@ -98,13 +98,37 @@ test('surfaces a no-slots reason only when the union is empty', () => {
   assert.equal(partial.reason, null);
 });
 
+test('suppresses a reason not shared by every resource', () => {
+  // r1's offering↔resource link went stale after the catalog loaded;
+  // r2 is merely fully booked (empty list, no reason). Surfacing r1's
+  // link-level reason would wrongly tell the member the session type
+  // "isn't offered here" — show the plain no-slots state instead.
+  const mixed = mergeAvailability(
+    ['r1', 'r2'],
+    [{ slots: [], reason: 'offering not offered on this resource' }, { slots: [] }],
+  );
+  assert.deepEqual(mixed.slots, []);
+  assert.equal(mixed.reason, null);
+});
+
 // ============================================================
 // isRetryableConflict — which failures may try the next resource
 // ============================================================
 
-test('uncoded 409s are retryable, coded and non-409 are not', () => {
-  assert.equal(isRetryableConflict(409, { error: 'slot already booked' }), true);
-  assert.equal(isRetryableConflict(409, {}), true);
+test('only 409s coded slot_conflict are retryable', () => {
+  assert.equal(
+    isRetryableConflict(409, {
+      error: 'slot already booked',
+      code: 'slot_conflict',
+    }),
+    true,
+  );
+  // Uncoded 409s are resource-INDEPENDENT failures (inactive
+  // offering, advance-window policy, own-booking overlap, payments
+  // not configured) — retrying another resource would loop forever
+  // behind a false "that time was just taken".
+  assert.equal(isRetryableConflict(409, { error: 'offering is inactive' }), false);
+  assert.equal(isRetryableConflict(409, {}), false);
   assert.equal(
     isRetryableConflict(409, { code: 'waiver_signature_required' }),
     false,
@@ -114,7 +138,7 @@ test('uncoded 409s are retryable, coded and non-409 are not', () => {
     false,
   );
   assert.equal(isRetryableConflict(400, { error: 'invalid input' }), false);
-  assert.equal(isRetryableConflict(500, {}), false);
+  assert.equal(isRetryableConflict(500, { code: 'slot_conflict' }), false);
 });
 
 // ============================================================

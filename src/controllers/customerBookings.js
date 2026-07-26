@@ -141,7 +141,9 @@ export async function createCustomerBooking(req, res, next) {
     }
     const offering = offerRes.rows[0];
     if (!offering.active) {
-      return res.status(409).json({ error: 'offering is inactive' });
+      return res
+        .status(409)
+        .json({ error: 'this session type is no longer offered' });
     }
     if (offering.capacity !== 1) {
       return res.status(409).json({
@@ -155,29 +157,35 @@ export async function createCustomerBooking(req, res, next) {
     }
     if (offering.dollar_price <= 0) {
       return res.status(409).json({
-        error: 'offering has no dollar price; cannot collect payment',
+        error: "this session type can't be booked online — please book at the front desk",
       });
     }
 
-    // 2. Offering↔resource link active.
+    // 2. Offering↔resource link active. Resource-DEPENDENT failures
+    //    carry code 'slot_conflict': the walk-in UI's "No preference"
+    //    flow retries the same time on the next resource only for
+    //    these (lib/availability.js). Failures that would hit every
+    //    resource identically stay uncoded so the client surfaces the
+    //    real error instead of looping on "that time was just taken".
     const linkRes = await db.query(
       `SELECT active FROM offering_resources
         WHERE tenant_id = $1 AND offering_id = $2 AND resource_id = $3`,
       [tenant.id, offering_id, resource_id],
     );
     if (linkRes.rows.length === 0 || !linkRes.rows[0].active) {
-      return res
-        .status(409)
-        .json({ error: 'offering not offered on this resource' });
+      return res.status(409).json({
+        error: 'offering not offered on this resource',
+        code: 'slot_conflict',
+      });
     }
 
     // 3. Compute window.
     const start = new Date(start_time);
     const end = new Date(start.getTime() + offering.duration_minutes * 60 * 1000);
     if (start.getTime() <= Date.now()) {
-      return res
-        .status(409)
-        .json({ error: 'start_time must be in the future' });
+      return res.status(409).json({
+        error: 'that time has already passed — please pick an upcoming time',
+      });
     }
 
     // 4. Lock resource row to serialize concurrent walk-in attempts.
@@ -190,7 +198,9 @@ export async function createCustomerBooking(req, res, next) {
       return res.status(404).json({ error: 'resource not found' });
     }
     if (!lockRes.rows[0].active) {
-      return res.status(409).json({ error: 'resource is inactive' });
+      return res
+        .status(409)
+        .json({ error: 'resource is inactive', code: 'slot_conflict' });
     }
 
     // 5a. Operating hours.
@@ -210,9 +220,10 @@ export async function createCustomerBooking(req, res, next) {
       [tenant.id, resource_id, dow, local_date, tenant.timezone, start, end],
     );
     if (opCheck.rows.length === 0) {
-      return res
-        .status(409)
-        .json({ error: 'requested slot is outside operating hours' });
+      return res.status(409).json({
+        error: 'requested slot is outside operating hours',
+        code: 'slot_conflict',
+      });
     }
 
     // 5b. Blackouts.
@@ -229,7 +240,9 @@ export async function createCustomerBooking(req, res, next) {
       [tenant.id, start, end, resource_id, offering_id],
     );
     if (blackoutCheck.rows.length > 0) {
-      return res.status(409).json({ error: 'requested slot is blacked out' });
+      return res
+        .status(409)
+        .json({ error: 'requested slot is blacked out', code: 'slot_conflict' });
     }
 
     // 5c. Existing non-cancelled bookings on this resource. The
@@ -245,7 +258,9 @@ export async function createCustomerBooking(req, res, next) {
       [tenant.id, resource_id, start, end],
     );
     if (overlapBookings.rows.length > 0) {
-      return res.status(409).json({ error: 'slot already booked' });
+      return res
+        .status(409)
+        .json({ error: 'slot already booked', code: 'slot_conflict' });
     }
 
     // 5d. Class instances on this resource.
@@ -258,9 +273,10 @@ export async function createCustomerBooking(req, res, next) {
       [tenant.id, resource_id, start, end],
     );
     if (overlapClasses.rows.length > 0) {
-      return res
-        .status(409)
-        .json({ error: 'slot conflicts with an existing class instance' });
+      return res.status(409).json({
+        error: 'slot conflicts with an existing class instance',
+        code: 'slot_conflict',
+      });
     }
 
     // 6. Stripe connection must be charges-enabled.
@@ -270,9 +286,10 @@ export async function createCustomerBooking(req, res, next) {
       [tenant.id],
     );
     if (connRes.rows.length === 0 || !connRes.rows[0].charges_enabled) {
-      return res
-        .status(409)
-        .json({ error: 'tenant cannot accept card payments yet' });
+      return res.status(409).json({
+        error:
+          'this facility cannot accept card payments online yet — please book at the front desk',
+      });
     }
     const conn = connRes.rows[0];
 
@@ -322,9 +339,10 @@ export async function createCustomerBooking(req, res, next) {
       booking = r.rows[0];
     } catch (err) {
       if (err.code === '23P01') {
-        return res
-          .status(409)
-          .json({ error: 'slot already booked (concurrent)' });
+        return res.status(409).json({
+          error: 'slot already booked (concurrent)',
+          code: 'slot_conflict',
+        });
       }
       throw err;
     }

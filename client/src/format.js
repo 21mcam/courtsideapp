@@ -65,6 +65,9 @@ export function formatCategoryLabel(key) {
 // 'short' ("EDT") and finally to the raw IANA name.
 export function formatTimezoneLabel(tz) {
   if (!tz) return '';
+  // Intl renders UTC as "GMT+0", which reads like a glitch in member
+  // copy ("Times shown in GMT+0") — say "UTC" outright.
+  if (tz === 'UTC' || tz === 'Etc/UTC') return 'UTC';
   for (const timeZoneName of ['shortGeneric', 'short']) {
     try {
       const part = new Intl.DateTimeFormat('en-US', {

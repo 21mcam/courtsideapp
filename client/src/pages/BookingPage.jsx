@@ -229,9 +229,12 @@ export default function BookingPage() {
         });
         const body = await res.json().catch(() => ({}));
         if (res.ok) {
-          // Refresh /api/me so the credit balance on the home page
-          // is correct, then navigate back.
-          await refresh();
+          // Best-effort refresh of /api/me so the credit balance on
+          // the home page is correct. The booking already succeeded —
+          // a refresh failure must NOT fall into the booking-failure
+          // catch (the member would see "Booking failed", retry, and
+          // could double-book on another resource).
+          await refresh().catch(() => {});
           navigate('/');
           return;
         }
@@ -247,13 +250,12 @@ export default function BookingPage() {
           // listing and confirming — try the same time on the next
           // candidate before giving up.
           if (i < candidates.length - 1) continue;
-          if (noPreference) {
-            // Every candidate just filled up. Refetch so the stale
-            // time drops out of the list, then ask for another pick.
-            setSelectedSlotStart(null);
-            setSlotsNonce((n) => n + 1);
-            throw new Error(SLOT_TAKEN_MESSAGE);
-          }
+          // Every candidate (or the explicitly picked resource) just
+          // became unavailable. Refetch so the stale time drops out
+          // of the list, then ask for another pick.
+          setSelectedSlotStart(null);
+          setSlotsNonce((n) => n + 1);
+          throw new Error(SLOT_TAKEN_MESSAGE);
         }
         throw new Error(body.error || `HTTP ${res.status}`);
       }

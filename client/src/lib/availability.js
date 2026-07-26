@@ -22,13 +22,15 @@ export const SLOT_TAKEN_MESSAGE =
   'That time was just taken — please pick another time.';
 
 // True when a booking-create failure is worth retrying at the SAME
-// time on a DIFFERENT resource: 409s without a `code` are slot-level
-// conflicts (someone else grabbed it, a blackout landed, hours
-// changed since the list loaded). Coded 409s (the waiver signature /
-// version flows) are handled specially by the callers and must never
-// be silently retried.
+// time on a DIFFERENT resource. The server tags resource-DEPENDENT
+// 409s with code 'slot_conflict' (someone else grabbed it, a blackout
+// landed, hours changed since the list loaded). Everything else —
+// waiver codes, and uncoded 409s like "offering is inactive" or
+// advance-window violations that would fail identically on every
+// resource — must surface the real error, never loop as "that time
+// was just taken".
 export function isRetryableConflict(status, body) {
-  return status === 409 && !body?.code;
+  return status === 409 && body?.code === 'slot_conflict';
 }
 
 // Merge per-resource /api/availability responses into one slot list.
@@ -39,8 +41,12 @@ export function isRetryableConflict(status, body) {
 // Returns:
 //   slots             — union of start times, deduped, sorted
 //   reason            — a "no slots" reason, only when the union is
-//                       empty (first non-null wins; formatNoSlotsReason
-//                       drops anything unmapped, so this never leaks)
+//                       empty AND every queried resource reported one
+//                       (a reason from just one resource — e.g. a
+//                       stale offering↔resource link — misdescribes a
+//                       sibling that's merely fully booked, so it's
+//                       suppressed; formatNoSlotsReason drops anything
+//                       unmapped, so this never leaks)
 //   resourceIdsBySlot — start ISO → the resource ids that had that
 //                       slot, ordered most-open-slots-first. Booking
 //                       the emptiest resource first spreads load
@@ -76,8 +82,10 @@ export function mergeAvailability(resourceIds, results) {
     );
   }
   const reason =
-    slots.length === 0
-      ? (results.map((r) => r?.reason).find((r) => r != null) ?? null)
+    slots.length === 0 &&
+    results.length > 0 &&
+    results.every((r) => r?.reason != null)
+      ? results[0].reason
       : null;
   return { slots, reason, resourceIdsBySlot };
 }

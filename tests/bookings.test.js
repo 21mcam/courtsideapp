@@ -389,6 +389,8 @@ test('slot conflict: second member booking the same slot → 409', { skip }, asy
   assert.equal(r2.status, 409);
   const body = await r2.json();
   assert.match(body.error, /already booked/i);
+  // Tagged so the no-preference UI may retry another resource.
+  assert.equal(body.code, 'slot_conflict');
 
   // m2's balance unchanged (5).
   const bal = await privilegedPool.query(
@@ -396,6 +398,38 @@ test('slot conflict: second member booking the same slot → 409', { skip }, asy
     [m2.member_id],
   );
   assert.equal(bal.rows[0].current_credits, 5);
+});
+
+test('own-booking overlap: same member re-books the slot → 409 WITHOUT slot_conflict code', { skip }, async () => {
+  const m = await newMember();
+  await grantCredits(m.member_id, 5);
+
+  const slotStart = '2027-03-15T19:00:00.000Z';
+  const r1 = await memberFetch(m.token, '/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({ offering_id, resource_id, start_time: slotStart }),
+  });
+  assert.equal(r1.status, 201);
+
+  // Same member, same slot (double-submit / retry after a lost
+  // response). Must NOT be tagged slot_conflict — the client's
+  // no-preference retry loop would otherwise fail over to a second
+  // resource and double-charge.
+  const r2 = await memberFetch(m.token, '/api/bookings', {
+    method: 'POST',
+    body: JSON.stringify({ offering_id, resource_id, start_time: slotStart }),
+  });
+  assert.equal(r2.status, 409);
+  const body = await r2.json();
+  assert.match(body.error, /already have this time booked/i);
+  assert.equal(body.code, undefined);
+
+  // Only the first booking's credits were spent (5 - 3 = 2).
+  const bal = await privilegedPool.query(
+    `SELECT current_credits FROM credit_balances WHERE member_id = $1`,
+    [m.member_id],
+  );
+  assert.equal(bal.rows[0].current_credits, 5 - OFFERING_CREDITS);
 });
 
 test('slot outside operating hours → 409', { skip }, async () => {

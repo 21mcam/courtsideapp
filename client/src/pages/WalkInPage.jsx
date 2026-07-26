@@ -302,14 +302,13 @@ export default function WalkInPage() {
           // listing and submitting — try the same time on the next
           // candidate before giving up.
           if (i < candidates.length - 1) continue;
-          if (noPreference) {
-            // Every candidate just filled up. Refetch so the stale
-            // time drops out of the list, then ask for another pick
-            // (contact + waiver entries are kept).
-            setSelectedSlot(null);
-            setSlotsNonce((n) => n + 1);
-            throw new Error(SLOT_TAKEN_MESSAGE);
-          }
+          // Every candidate (or the explicitly picked resource) just
+          // became unavailable. Refetch so the stale time drops out
+          // of the list, then ask for another pick (contact + waiver
+          // entries are kept).
+          setSelectedSlot(null);
+          setSlotsNonce((n) => n + 1);
+          throw new Error(SLOT_TAKEN_MESSAGE);
         }
         throw new Error(body.error || `HTTP ${res.status}`);
       }
@@ -436,7 +435,8 @@ export default function WalkInPage() {
 
         {selectedOffering && selectedOffering.resources.length === 0 && (
           <p className="text-sm text-slate-500">
-            This offering isn't currently available to book online.
+            This session type isn't available to book online right now
+            — check back soon or ask at the front desk.
           </p>
         )}
 

@@ -131,7 +131,9 @@ export async function createMemberBooking(req, res, next) {
     }
     const offering = offerRes.rows[0];
     if (!offering.active) {
-      return res.status(409).json({ error: 'offering is inactive' });
+      return res
+        .status(409)
+        .json({ error: 'this session type is no longer offered' });
     }
     if (offering.capacity !== 1) {
       return res.status(409).json({
@@ -178,10 +180,17 @@ export async function createMemberBooking(req, res, next) {
         WHERE tenant_id = $1 AND offering_id = $2 AND resource_id = $3`,
       [tenant.id, offering_id, resource_id],
     );
+    // Resource-DEPENDENT failures carry code 'slot_conflict': the
+    // booking UI's "No preference" flow retries the same time on the
+    // next resource only for these (lib/availability.js). Failures
+    // that would hit every resource identically (inactive offering,
+    // advance-window policy) stay uncoded so the client surfaces the
+    // real error instead of looping on "that time was just taken".
     if (linkRes.rows.length === 0 || !linkRes.rows[0].active) {
-      return res
-        .status(409)
-        .json({ error: 'offering not offered on this resource' });
+      return res.status(409).json({
+        error: 'offering not offered on this resource',
+        code: 'slot_conflict',
+      });
     }
 
     // 3. Compute window
@@ -233,7 +242,9 @@ export async function createMemberBooking(req, res, next) {
       return res.status(404).json({ error: 'resource not found' });
     }
     if (!lockRes.rows[0].active) {
-      return res.status(409).json({ error: 'resource is inactive' });
+      return res
+        .status(409)
+        .json({ error: 'resource is inactive', code: 'slot_conflict' });
     }
     const resource_name = lockRes.rows[0].name;
 
@@ -266,9 +277,10 @@ export async function createMemberBooking(req, res, next) {
       [tenant.id, resource_id, dow, local_date, tenant.timezone, start, end],
     );
     if (opCheck.rows.length === 0) {
-      return res
-        .status(409)
-        .json({ error: 'requested slot is outside operating hours' });
+      return res.status(409).json({
+        error: 'requested slot is outside operating hours',
+        code: 'slot_conflict',
+      });
     }
 
     // 5b. Blackouts
@@ -287,12 +299,17 @@ export async function createMemberBooking(req, res, next) {
     if (blackoutCheck.rows.length > 0) {
       return res
         .status(409)
-        .json({ error: 'requested slot is blacked out' });
+        .json({ error: 'requested slot is blacked out', code: 'slot_conflict' });
     }
 
-    // 5c. Existing bookings on this resource
+    // 5c. Existing bookings on this resource. When the overlapping
+    //     booking is this member's OWN (double-submit, retry after a
+    //     lost response), say so and deliberately DON'T tag it as a
+    //     slot_conflict — the client's no-preference retry loop must
+    //     never "fail over" to a second resource and double-charge a
+    //     member who already holds the time.
     const overlapBookings = await db.query(
-      `SELECT 1 FROM bookings
+      `SELECT member_id FROM bookings
         WHERE tenant_id = $1 AND resource_id = $2
           AND status <> 'cancelled'
           AND time_range && tstzrange($3, $4, '[)')
@@ -300,7 +317,14 @@ export async function createMemberBooking(req, res, next) {
       [tenant.id, resource_id, start, end],
     );
     if (overlapBookings.rows.length > 0) {
-      return res.status(409).json({ error: 'slot already booked' });
+      if (overlapBookings.rows[0].member_id === member_id) {
+        return res.status(409).json({
+          error: 'you already have this time booked — check your bookings',
+        });
+      }
+      return res
+        .status(409)
+        .json({ error: 'slot already booked', code: 'slot_conflict' });
     }
 
     // 5d. Class instances on this resource
@@ -313,9 +337,10 @@ export async function createMemberBooking(req, res, next) {
       [tenant.id, resource_id, start, end],
     );
     if (overlapClasses.rows.length > 0) {
-      return res
-        .status(409)
-        .json({ error: 'slot conflicts with an existing class instance' });
+      return res.status(409).json({
+        error: 'slot conflicts with an existing class instance',
+        code: 'slot_conflict',
+      });
     }
 
     // 6. Insert the booking row.
@@ -347,7 +372,10 @@ export async function createMemberBooking(req, res, next) {
       // Belt-and-suspenders: GiST exclusion catches concurrent races
       // that slipped past the SELECT FOR UPDATE somehow.
       if (err.code === '23P01') {
-        return res.status(409).json({ error: 'slot already booked (concurrent)' });
+        return res.status(409).json({
+          error: 'slot already booked (concurrent)',
+          code: 'slot_conflict',
+        });
       }
       throw err;
     }
