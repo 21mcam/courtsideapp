@@ -13,6 +13,8 @@ import { CalendarDays, UserPlus, Package } from 'lucide-react';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { Page, PageHeader, Card, Button, Badge } from '../components/ui/index.js';
+import { ShareLinkField } from '../components/CopyLink.jsx';
+import { bookingPageUrl } from '../lib/bookingLinks.js';
 import {
   bookingStatusBadge,
   formatCents,
@@ -153,6 +155,21 @@ export default function AdminHome() {
             ))}
           </ul>
         )}
+      </Card>
+
+      <Card title="Your booking page">
+        <p className="mb-4 text-sm text-slate-500">
+          Send customers here to book and pay. Put it in your Instagram
+          bio, your Google Business profile, and your text replies.{' '}
+          <Link
+            to="/admin/catalog"
+            className="font-medium text-brand-600 hover:text-brand-500"
+          >
+            Catalog
+          </Link>{' '}
+          has a direct link for each individual service.
+        </p>
+        <ShareLinkField url={bookingPageUrl(tenant)} />
       </Card>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">

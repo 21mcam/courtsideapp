@@ -347,6 +347,21 @@ walk-in v2 slice; don't regress these):
   (shared helper `src/lib/advanceWindow.js`), and `/api/availability`
   trims slots inside the min-advance floor (including already-started
   slots today).
+- **Absolute tenant URLs have one constructor**, `src/lib/publicUrl.js`
+  (`tenantUrl` / `buildBookingUrl` / `buildManageUrl`) — the shape has
+  to survive the round trip back through `resolveTenant`'s Host
+  parsing. `services/email.js` re-exports them for its existing
+  callers. `GET /api/tenant` ships `booking_url` because
+  `APP_HOSTNAME` is server-only and the client can't derive it on
+  bare-localhost dev. Admin-side share links (dashboard, Settings →
+  Facility, per-offering in Catalog, wizard finish, plus the sidebar's
+  trailing "Booking page" item — the one nav entry that leaves the
+  SPA, so it's an anchor, not a NavLink) build the
+  per-service query string with the client's `buildWalkInParams`, so
+  the link and `parseWalkInParams` can't drift on the param name.
+  Per-service links only render for offerings that are `active` AND
+  `allow_public_booking` — anything else deep-links to a service the
+  public page won't list.
 
 ### Tenant resolution
 

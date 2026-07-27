@@ -24,6 +24,8 @@ import {
   Input,
   cn,
 } from '../components/ui/index.js';
+import { ShareLinkField } from '../components/CopyLink.jsx';
+import { bookingPageUrl } from '../lib/bookingLinks.js';
 
 const STORAGE_KEY = 'courtside_wizard_state';
 const TOTAL_STEPS = 5;
@@ -506,6 +508,7 @@ function StepPlan({ state, update, onNext, onBack }) {
 // ============================================================
 
 function StepDone({ state, onReset }) {
+  const { tenant } = useAuth();
   return (
     <div>
       <h2 className="text-lg font-semibold text-slate-900">All set 🎯</h2>
@@ -520,6 +523,16 @@ function StepDone({ state, onReset }) {
           { label: 'Plan', value: state.planName ?? '—' },
         ]}
       />
+      <div className="mt-6">
+        <div className="text-sm font-medium text-slate-900">
+          Your booking page
+        </div>
+        <p className="mb-3 mt-1 text-sm text-slate-500">
+          This is the link you give customers. It works as soon as your
+          resource has operating hours.
+        </p>
+        <ShareLinkField url={bookingPageUrl(tenant)} openLabel="Preview" />
+      </div>
       <p className="mt-6 text-sm text-slate-500">
         Next up: give your new resource operating hours and review the
         cancellation policy — then it's bookable.

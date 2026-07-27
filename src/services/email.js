@@ -29,6 +29,7 @@
 // reliability-critical sends (CLAUDE.md, Phase 3+).
 
 import { Resend } from 'resend';
+import { tenantUrl, buildBookingUrl, buildManageUrl } from '../lib/publicUrl.js';
 
 let _resend = null;
 
@@ -88,26 +89,12 @@ export function formatMoney(cents) {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-// Tenant subdomain URL, matching how resolveTenant expects hostnames
-// ({subdomain}.{APP_HOSTNAME}; Vite dev server port in local dev).
-// Same construction the password-reset dev log has used since
-// Phase 1 slice 5.
-export function tenantUrl(subdomain, path = '/') {
-  const apex = process.env.APP_HOSTNAME || 'localhost';
-  const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
-  const port = apex === 'localhost' ? ':5173' : '';
-  return `${protocol}://${subdomain}.${apex}${port}${path}`;
-}
-
-// The no-login manage/reschedule capability URL embedded in walk-in
-// confirmation + reschedule emails. One constructor so the client
-// route and the email link can't drift.
-export function buildManageUrl(subdomain, token) {
-  return tenantUrl(
-    subdomain,
-    `/walk-in/manage?token=${encodeURIComponent(token)}`,
-  );
-}
+// Tenant subdomain URLs moved to lib/publicUrl.js once the admin UI
+// needed them too (a route shouldn't import the email service to build
+// a link). Re-exported here so the existing callers — and the email
+// tests that have covered tenantUrl since Phase 1 slice 5 — keep
+// importing from the same place.
+export { tenantUrl, buildBookingUrl, buildManageUrl };
 
 // Redact a recipient for log lines: keep the first character and the
 // domain. 'member@example.com' → 'm***@example.com'.

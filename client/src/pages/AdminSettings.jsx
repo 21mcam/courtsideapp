@@ -8,7 +8,9 @@ import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { ACCENTS, DEFAULT_ACCENT } from '../theme.js';
 import { US_STATES } from '../lib/usStates.js';
+import { bookingPageUrl } from '../lib/bookingLinks.js';
 import SettingsNav from '../components/SettingsNav.jsx';
+import { ShareLinkField } from '../components/CopyLink.jsx';
 import {
   Badge,
   Button,
@@ -200,6 +202,10 @@ export default function AdminSettings() {
           <dt className="text-slate-500">Subdomain</dt>
           <dd>
             <Badge tone="brand">{tenant.subdomain}</Badge>
+          </dd>
+          <dt className="text-slate-500">Booking page</dt>
+          <dd>
+            <ShareLinkField url={bookingPageUrl(tenant)} />
           </dd>
           <dt className="text-slate-500">Timezone</dt>
           <dd className="font-mono text-xs">{tenant.timezone}</dd>

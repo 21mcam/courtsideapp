@@ -13,12 +13,14 @@ import {
   BookOpenCheck,
   CalendarDays,
   CreditCard,
+  ExternalLink,
   Home,
   LayoutDashboard,
   LogOut,
   Menu,
   Package,
   Settings,
+  Store,
   Ticket,
   UserCog,
   Users,
@@ -26,6 +28,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../auth.jsx';
+import { bookingPageUrl } from '../lib/bookingLinks.js';
 
 // Nav is a list of sections: a heading (null = no label) plus items.
 // Grouping keeps the 11-item admin sidebar scannable. The setup
@@ -78,14 +81,31 @@ const MEMBER_NAV = [
 ];
 
 export default function AppShell() {
-  const { me } = useAuth();
+  const { me, tenant } = useAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const { pathname } = useLocation();
 
   // Close the mobile drawer whenever the route changes.
   useEffect(() => setDrawerOpen(false), [pathname]);
 
-  const nav = me.memberships.admin ? ADMIN_NAV : MEMBER_NAV;
+  // The storefront hangs off the end as its own section: it's the one
+  // nav item that LEAVES the app (public page, new tab), and the URL
+  // is runtime data, so it can't live in the static ADMIN_NAV.
+  const nav = me.memberships.admin
+    ? [
+        ...ADMIN_NAV,
+        {
+          heading: null,
+          items: [
+            {
+              href: bookingPageUrl(tenant),
+              label: 'Booking page',
+              icon: Store,
+            },
+          ],
+        },
+      ]
+    : MEMBER_NAV;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -126,6 +146,11 @@ export default function AppShell() {
   );
 }
 
+// Shared by the NavLink and external-anchor branches below so the two
+// can't drift apart visually.
+const navItemClass =
+  'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors';
+
 function SidebarContent({ nav, onClose }) {
   const { me, logout } = useAuth();
   const first = me.user.first_name || '?';
@@ -160,23 +185,42 @@ function SidebarContent({ nav, onClose }) {
               </div>
             )}
             <div className="space-y-1">
-              {items.map(({ to, label, icon: Icon, end }) => (
-                <NavLink
-                  key={to}
-                  to={to}
-                  end={end}
-                  className={({ isActive }) =>
-                    `flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                      isActive
-                        ? 'bg-brand-50 text-brand-700'
-                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                    }`
-                  }
-                >
-                  <Icon size={18} className="shrink-0" />
-                  {label}
-                </NavLink>
-              ))}
+              {items.map(({ to, href, label, icon: Icon, end }) =>
+                href ? (
+                  // External (the public booking page): a real anchor,
+                  // new tab, and it closes the mobile drawer by hand —
+                  // opening a tab fires no route change, so the
+                  // pathname effect above wouldn't.
+                  <a
+                    key={href}
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={onClose}
+                    className={`${navItemClass} text-slate-600 hover:bg-slate-100 hover:text-slate-900`}
+                  >
+                    <Icon size={18} className="shrink-0" />
+                    {label}
+                    <ExternalLink size={12} className="ml-auto shrink-0 text-slate-400" />
+                  </a>
+                ) : (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    end={end}
+                    className={({ isActive }) =>
+                      `${navItemClass} ${
+                        isActive
+                          ? 'bg-brand-50 text-brand-700'
+                          : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                      }`
+                    }
+                  >
+                    <Icon size={18} className="shrink-0" />
+                    {label}
+                  </NavLink>
+                ),
+              )}
             </div>
           </div>
         ))}
