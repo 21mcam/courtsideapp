@@ -344,3 +344,110 @@ test('linking a non-existent resource returns 400 (FK violation translated)', { 
   );
   assert.equal(linkRes.status, 400, 'composite FK violation should return 400');
 });
+
+// ============================================================
+// offering description (migration 027)
+// ============================================================
+
+test('offering description: create, null-out via blank, roundtrip', { skip }, async () => {
+  const createRes = await adminFetch('/api/admin/offerings', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: `Described cage ${randomUUID().slice(0, 8)}`,
+      category: 'cage-time',
+      description: '  Pitching machine included. Bring your own bat.  ',
+      duration_minutes: 30,
+      credit_cost: 3,
+      dollar_price: 3000,
+      allow_member_booking: true,
+      allow_public_booking: true,
+    }),
+  });
+  assert.equal(createRes.status, 201);
+  const { offering } = await createRes.json();
+  assert.equal(
+    offering.description,
+    'Pitching machine included. Bring your own bat.',
+  );
+
+  // Whitespace-only description → stored NULL (DB CHECK forbids blank).
+  const patchRes = await adminFetch(`/api/admin/offerings/${offering.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ description: '   ' }),
+  });
+  assert.equal(patchRes.status, 200);
+  const { offering: patched } = await patchRes.json();
+  assert.equal(patched.description, null);
+
+  // Appears in the admin list.
+  const listRes = await adminFetch('/api/admin/offerings');
+  const { offerings } = await listRes.json();
+  const row = offerings.find((o) => o.id === offering.id);
+  assert.ok('description' in row);
+});
+
+// ============================================================
+// category_display (migration 028)
+// ============================================================
+
+test('category-display: upsert, list with in-use keys, delete reverts', { skip }, async () => {
+  // Upsert a label for a key in use.
+  const putRes = await adminFetch('/api/admin/category-display/cage-time', {
+    method: 'PUT',
+    body: JSON.stringify({
+      label: 'Cage + Pitching Machine',
+      display_order: 1,
+    }),
+  });
+  assert.equal(putRes.status, 200);
+  const { category_display } = await putRes.json();
+  assert.equal(category_display.label, 'Cage + Pitching Machine');
+  assert.equal(category_display.display_order, 1);
+
+  // Second PUT updates in place (composite-PK upsert).
+  const putRes2 = await adminFetch('/api/admin/category-display/cage-time', {
+    method: 'PUT',
+    body: JSON.stringify({ label: 'Cage Time (Machine)', display_order: 0 }),
+  });
+  assert.equal(putRes2.status, 200);
+
+  // List: overlay rows + every key offerings use.
+  const listRes = await adminFetch('/api/admin/category-display');
+  assert.equal(listRes.status, 200);
+  const body = await listRes.json();
+  const row = body.categories.find((c) => c.category === 'cage-time');
+  assert.equal(row.label, 'Cage Time (Machine)');
+  assert.ok(body.categories_in_use.includes('cage-time'));
+
+  // Public offerings response carries the overlay.
+  const pubRes = await fetch(`${baseUrl}/api/customers/offerings?tenant=${TENANT}`);
+  const pubBody = await pubRes.json();
+  assert.ok(
+    pubBody.categories.some(
+      (c) => c.category === 'cage-time' && c.label === 'Cage Time (Machine)',
+    ),
+  );
+  // ...and the policy block the checkout copy derives from.
+  assert.equal(pubBody.policy.hold_minutes, 30);
+  assert.equal(typeof pubBody.policy.customer_reschedule_hours_before, 'number');
+
+  // Delete reverts to derived (row gone).
+  const delRes = await adminFetch('/api/admin/category-display/cage-time', {
+    method: 'DELETE',
+  });
+  assert.equal(delRes.status, 200);
+  const listRes2 = await adminFetch('/api/admin/category-display');
+  const body2 = await listRes2.json();
+  assert.ok(!body2.categories.some((c) => c.category === 'cage-time'));
+
+  // Deleting again → 404; bad key shape → 400 on PUT.
+  const delRes2 = await adminFetch('/api/admin/category-display/cage-time', {
+    method: 'DELETE',
+  });
+  assert.equal(delRes2.status, 404);
+  const badRes = await adminFetch('/api/admin/category-display/Not%20A%20Key', {
+    method: 'PUT',
+    body: JSON.stringify({ label: 'X' }),
+  });
+  assert.equal(badRes.status, 400);
+});

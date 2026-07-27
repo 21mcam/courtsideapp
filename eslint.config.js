@@ -22,7 +22,21 @@ export default [
     },
   },
   {
+    // Playwright config + specs run under node, but page.evaluate
+    // callbacks execute in the browser — allow both global sets.
+    files: ['client/playwright.config.js', 'client/e2e/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: {
+        ...globals.node,
+        ...globals.browser,
+      },
+    },
+  },
+  {
     files: ['client/**/*.{js,jsx}'],
+    ignores: ['client/playwright.config.js', 'client/e2e/**'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',

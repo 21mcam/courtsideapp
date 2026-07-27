@@ -677,3 +677,67 @@ test('first subscription checkout sends welcome; resubscribe does not', { skip }
   const none = await waitForEmail((e) => e.to === memberEmail, { timeout: 300 });
   assert.equal(none, null);
 });
+
+// ============================================================
+// unit: walk-in v2 templates (manage link, note, reschedule)
+// ============================================================
+
+test('confirmation with manageUrl renders the reschedule button + note row', async () => {
+  const { renderBookingConfirmationEmail: render } = await import(
+    '../src/services/email.js'
+  );
+  const manageUrl =
+    'https://momentum.example/walk-in/manage?token=tok_abc-123';
+  const { html, text } = render({
+    ...T,
+    recipientName: 'Casey',
+    offeringName: '60-min Cage',
+    resourceName: 'Cage 2',
+    startTime: START,
+    amountPaidCents: 6000,
+    manageUrl,
+    customerNote: 'Kid is 9 & lefty',
+  });
+  assert.ok(html.includes(manageUrl));
+  assert.ok(html.includes('Reschedule or view your booking'));
+  assert.ok(text.includes(manageUrl));
+  // Note rendered, escaped in html.
+  assert.ok(html.includes('Kid is 9 &amp; lefty'));
+  assert.ok(text.includes('Kid is 9 & lefty'));
+  // No manageUrl → the old reply-to footer (member confirmations).
+  const plain = render({
+    ...T,
+    recipientName: 'Casey',
+    offeringName: '60-min Cage',
+    resourceName: 'Cage 2',
+    startTime: START,
+    creditCost: 3,
+  });
+  assert.ok(plain.html.includes('Reply to this email'));
+  assert.ok(!plain.html.includes('Reschedule or view'));
+});
+
+test('reschedule email renders old + new times and the manage link', async () => {
+  const { renderBookingRescheduleEmail: render } = await import(
+    '../src/services/email.js'
+  );
+  const manageUrl = 'https://momentum.example/walk-in/manage?token=tok_xyz';
+  // 2027-03-08T20:00:00Z = 3:00 PM EST Mon Mar 8.
+  const { subject, html, text } = render({
+    ...T,
+    recipientName: 'Casey',
+    offeringName: '60-min <Cage>',
+    resourceName: 'Cage 2',
+    previousStartTime: START,
+    startTime: '2027-03-08T20:00:00.000Z',
+    manageUrl,
+  });
+  assert.equal(subject, 'Booking moved: 60-min <Cage>');
+  for (const part of ['Mar 1, 2027', '10:00 AM', 'Mar 8, 2027', '3:00 PM']) {
+    assert.ok(html.includes(part), `html missing "${part}"`);
+    assert.ok(text.includes(part), `text missing "${part}"`);
+  }
+  assert.ok(html.includes('&lt;Cage&gt;'), 'offering name escaped');
+  assert.ok(html.includes(manageUrl));
+  assert.ok(text.includes(manageUrl));
+});

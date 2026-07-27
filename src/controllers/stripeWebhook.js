@@ -18,13 +18,17 @@
 // types — we 200 silently rather than 4xx, otherwise Stripe's
 // retry policy hammers us forever.
 
+import crypto from 'node:crypto';
+
 import { getStripe } from '../services/stripe.js';
 import { pool } from '../db/pool.js';
 import {
   sendBookingConfirmation,
   sendMemberWelcome,
   sendPackReceipt,
+  buildManageUrl,
 } from '../services/email.js';
+import { hashManageToken } from './customerBookings.js';
 
 export async function handleStripeWebhook(req, res, next) {
   try {
@@ -607,6 +611,15 @@ async function handleCustomerBookingPaid(session, accountId) {
     return;
   }
 
+  // Mint the no-login manage capability here — the only place it can
+  // be born. Only confirmed+paid walk-ins ever get one (abandoned
+  // pending_payment holds never do), and the raw token exists solely
+  // in this webhook's memory until it's embedded in the confirmation
+  // email; the DB stores only the sha256. The status='pending_payment'
+  // guard on the UPDATE means a Stripe redelivery can't overwrite an
+  // existing hash (zero rows → refund path, no token).
+  const manageToken = crypto.randomBytes(32).toString('base64url');
+
   const confirmed = await withTenantContextById(
     tenantIdFromAcct,
     async (client) => {
@@ -615,16 +628,18 @@ async function handleCustomerBookingPaid(session, accountId) {
             SET status = 'confirmed',
                 payment_status = 'paid',
                 amount_paid_cents = $1,
-                stripe_payment_intent_id = $2
-          WHERE tenant_id = $3
-            AND id = $4
+                stripe_payment_intent_id = $2,
+                manage_token_hash = $3
+          WHERE tenant_id = $4
+            AND id = $5
             AND status = 'pending_payment'
           RETURNING id, offering_id, resource_id, start_time,
-                    customer_first_name, customer_email,
+                    customer_first_name, customer_email, customer_note,
                     amount_paid_cents`,
         [
           session.amount_total ?? 0,
           session.payment_intent ?? null,
+          hashManageToken(manageToken),
           tenantIdFromAcct,
           bookingId,
         ],
@@ -672,6 +687,8 @@ async function handleCustomerBookingPaid(session, accountId) {
         resourceName: confirmed.resource_name,
         startTime: confirmed.start_time,
         amountPaidCents: confirmed.amount_paid_cents,
+        manageUrl: buildManageUrl(tenantCtx.subdomain, manageToken),
+        customerNote: confirmed.customer_note,
       }).catch((err) =>
         console.error('[email] walk-in booking confirmation send failed:', err),
       );

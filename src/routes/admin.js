@@ -21,6 +21,7 @@ import {
   createAdminBooking,
   updateTenantTheme,
   updateTenantReplyTo,
+  updateTenantBusinessInfo,
 } from '../controllers/admin.js';
 import {
   listResources,
@@ -33,6 +34,9 @@ import {
   linkResourceToOffering,
   listPlans,
   createPlan,
+  listCategoryDisplay,
+  upsertCategoryDisplay,
+  deleteCategoryDisplay,
 } from '../controllers/catalog.js';
 import {
   listOperatingHours,
@@ -110,6 +114,13 @@ router.patch('/offerings/:id', updateOffering);
 router.get('/offerings/:id/resources', listOfferingResources);
 router.post('/offerings/:id/resources', linkResourceToOffering);
 
+// Section labels + ordering for the public booking page (category
+// display overlay, migration 028). DELETE reverts a key to its
+// client-derived label.
+router.get('/category-display', listCategoryDisplay);
+router.put('/category-display/:category', upsertCategoryDisplay);
+router.delete('/category-display/:category', deleteCategoryDisplay);
+
 // Plans (Phase 2 slice 3 + Phase 5 slice 3 sync). PATCH lives in
 // stripeConnect.js — re-pricing a synced plan rotates the Stripe
 // Price (new price for new signups; existing members keep their
@@ -141,6 +152,10 @@ router.put('/theme', updateTenantTheme);
 
 // Transactional-email reply-to address (admin Settings page)
 router.put('/reply-to-email', updateTenantReplyTo);
+
+// Business info for the public booking page (admin Settings page):
+// structured address, phone, Google rating/reviews, GA4 id.
+router.put('/business-info', updateTenantBusinessInfo);
 
 // Platform billing — what this tenant pays Courtside. These three
 // routes (plus /api/auth/* and /api/tenant) stay reachable when

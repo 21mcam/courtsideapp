@@ -304,8 +304,7 @@ function walkInBody(start_time, { email, waiver } = {}) {
     resource_id,
     start_time,
     customer: {
-      first_name: 'Walk',
-      last_name: 'In',
+      full_name: 'Walk In',
       email: email ?? `walkin-${randomUUID()}@example.com`,
       phone: '+15555550100',
     },

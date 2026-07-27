@@ -20,7 +20,9 @@ import { CircleCheck } from 'lucide-react';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { formatCents, formatSlotLocal } from '../format.js';
+import { firePurchaseOnce, initAnalytics } from '../lib/analytics.js';
 import { Button, Card, Field, Input } from '../components/ui/index.js';
+import PublicHeader from './walkin/PublicHeader.jsx';
 
 function storedValue(key) {
   try {
@@ -49,6 +51,10 @@ export default function WalkInSuccessPage() {
   const [lookupError, setLookupError] = useState(null);
 
   useEffect(() => {
+    initAnalytics(tenant.ga4_measurement_id);
+  }, [tenant.ga4_measurement_id]);
+
+  useEffect(() => {
     if (!bookingId || !email) return;
     let cancelled = false;
     let attempts = 0;
@@ -69,6 +75,11 @@ export default function WalkInSuccessPage() {
         // pending_payment. Retry briefly, then show what we have.
         if (body.booking.status === 'pending_payment' && attempts < 5) {
           setTimeout(fetchBooking, 2000);
+        } else if (body.booking.status !== 'pending_payment') {
+          // GA4 purchase — the funnel's last step. Deduped per
+          // booking id (localStorage), so polls and refreshes can't
+          // double-count.
+          firePurchaseOnce(body.booking);
         }
       } catch (err) {
         if (!cancelled) setLookupError(err.message);
@@ -88,14 +99,7 @@ export default function WalkInSuccessPage() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <header className="flex items-center border-b border-slate-200 bg-white px-4 py-3 sm:px-6">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-sm font-semibold text-white">
-            {tenant.name?.charAt(0).toUpperCase()}
-          </div>
-          <div className="font-semibold text-slate-900">{tenant.name}</div>
-        </div>
-      </header>
+      <PublicHeader />
       <main className="mx-auto max-w-md p-4 sm:p-6">
         <Card className="mt-12 text-center">
           <CircleCheck size={40} className="mx-auto text-emerald-500" />
@@ -192,7 +196,12 @@ export default function WalkInSuccessPage() {
             </form>
           )}
 
-          <p className="mt-6 text-sm text-slate-500">{contactLine}</p>
+          <p className="mt-6 text-sm text-slate-500">
+            Can't make it? Reschedule free — the link is in your
+            confirmation email, no account needed.
+          </p>
+
+          <p className="mt-3 text-sm text-slate-500">{contactLine}</p>
 
           <Button as={Link} to="/walk-in" variant="secondary" className="mt-4">
             Book another session

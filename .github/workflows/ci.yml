@@ -115,3 +115,44 @@ jobs:
           # Disposable super-admin secret for /api/platform/* tests.
           SUPER_ADMIN_TOKEN: ci_super_admin_token_disposable
         run: npm test
+
+  e2e:
+    name: walk-in checkout e2e (Playwright, 390×844)
+    runs-on: ubuntu-latest
+
+    # Hermetic: every /api call is route-intercepted in
+    # client/e2e/mocks.js, so this job needs no Postgres and no
+    # backend — just the built client under `vite preview`. Covers
+    # the funnel-audit acceptance criteria: occlusion, tap count,
+    # one-price parity, no-login path.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install client deps
+        run: npm --prefix client ci
+
+      - name: Get Playwright version
+        id: pw-version
+        run: echo "version=$(node -p "require('./client/node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw-version.outputs.version }}
+
+      - name: Install chromium
+        run: cd client && npx playwright install --with-deps chromium
+
+      - name: Build client
+        run: npm --prefix client run build
+
+      - name: Run e2e
+        run: npm --prefix client run e2e

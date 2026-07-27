@@ -51,6 +51,7 @@ const ACCENT_HEX = {
   violet: '#7c3aed',
   rose: '#e11d48',
   slate: '#0f172a',
+  court: '#16a34a',
 };
 
 export function accentHex(key) {
@@ -96,6 +97,16 @@ export function tenantUrl(subdomain, path = '/') {
   const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
   const port = apex === 'localhost' ? ':5173' : '';
   return `${protocol}://${subdomain}.${apex}${port}${path}`;
+}
+
+// The no-login manage/reschedule capability URL embedded in walk-in
+// confirmation + reschedule emails. One constructor so the client
+// route and the email link can't drift.
+export function buildManageUrl(subdomain, token) {
+  return tenantUrl(
+    subdomain,
+    `/walk-in/manage?token=${encodeURIComponent(token)}`,
+  );
 }
 
 // Redact a recipient for log lines: keep the first character and the
@@ -199,6 +210,8 @@ export function renderBookingConfirmationEmail({
   creditCost = null,
   amountPaidCents = null,
   amountDueCents = null,
+  manageUrl = null,
+  customerNote = null,
 }) {
   const when = formatInTenantTz(startTime, timezone);
   const payment = paymentLine({ creditCost, amountPaidCents, amountDueCents });
@@ -207,16 +220,26 @@ export function renderBookingConfirmationEmail({
     ['Where', resourceName],
     ['When', when],
     ['Payment', payment],
+    ['Your note', customerNote],
   ];
   const greeting = recipientName ? `Hi ${recipientName},` : 'Hi,';
   const subject = `Booking confirmed: ${offeringName}`;
+  const hex = accentHex(accent);
+  // Walk-in confirmations carry the no-login manage link; member
+  // confirmations (no manageUrl) keep the reply-to footer.
+  const footerHtml = manageUrl
+    ? `                <p style="margin:0 0 16px;">
+                  <a href="${escapeHtml(manageUrl)}" style="display:inline-block;background-color:${hex};color:#ffffff;text-decoration:none;font-weight:600;padding:10px 20px;border-radius:8px;">Reschedule or view your booking</a>
+                </p>
+                <p style="margin:0;color:#64748b;font-size:13px;">No account needed — that link is your booking. Questions? Reply to this email.</p>`
+    : `                <p style="margin:0;color:#64748b;font-size:13px;">Need to change something? Reply to this email or contact the facility.</p>`;
   const html = renderLayout({
     tenantName,
     accent,
     bodyHtml: `                <p style="margin:0 0 8px;font-size:17px;font-weight:700;">Booking confirmed</p>
                 <p style="margin:0;">${escapeHtml(greeting)} your booking at ${escapeHtml(tenantName)} is confirmed.</p>
 ${detailRowsHtml(rows)}
-                <p style="margin:0;color:#64748b;font-size:13px;">Need to change something? Reply to this email or contact the facility.</p>`,
+${footerHtml}`,
   });
   const text = [
     'Booking confirmed',
@@ -225,7 +248,63 @@ ${detailRowsHtml(rows)}
     '',
     detailRowsText(rows),
     '',
-    'Need to change something? Reply to this email or contact the facility.',
+    ...(manageUrl
+      ? [
+          'Reschedule or view your booking (no account needed):',
+          manageUrl,
+          '',
+          'Questions? Reply to this email.',
+        ]
+      : ['Need to change something? Reply to this email or contact the facility.']),
+  ].join('\n');
+  return { subject, html, text };
+}
+
+export function renderBookingRescheduleEmail({
+  tenantName,
+  accent,
+  timezone,
+  recipientName,
+  offeringName,
+  resourceName,
+  previousStartTime,
+  startTime,
+  manageUrl = null,
+}) {
+  const wasWhen = formatInTenantTz(previousStartTime, timezone);
+  const nowWhen = formatInTenantTz(startTime, timezone);
+  const rows = [
+    ['What', offeringName],
+    ['Where', resourceName],
+    ['New time', nowWhen],
+    ['Was', wasWhen],
+  ];
+  const greeting = recipientName ? `Hi ${recipientName},` : 'Hi,';
+  const subject = `Booking moved: ${offeringName}`;
+  const hex = accentHex(accent);
+  const manageHtml = manageUrl
+    ? `                <p style="margin:0 0 16px;">
+                  <a href="${escapeHtml(manageUrl)}" style="display:inline-block;background-color:${hex};color:#ffffff;text-decoration:none;font-weight:600;padding:10px 20px;border-radius:8px;">View or reschedule again</a>
+                </p>
+`
+    : '';
+  const html = renderLayout({
+    tenantName,
+    accent,
+    bodyHtml: `                <p style="margin:0 0 8px;font-size:17px;font-weight:700;">Booking moved</p>
+                <p style="margin:0;">${escapeHtml(greeting)} your booking at ${escapeHtml(tenantName)} has a new time.</p>
+${detailRowsHtml(rows)}
+${manageHtml}                <p style="margin:0;color:#64748b;font-size:13px;">Questions? Reply to this email or contact the facility.</p>`,
+  });
+  const text = [
+    'Booking moved',
+    '',
+    `${greeting} your booking at ${tenantName} has a new time.`,
+    '',
+    detailRowsText(rows),
+    '',
+    ...(manageUrl ? ['View or reschedule again:', manageUrl, ''] : []),
+    'Questions? Reply to this email or contact the facility.',
   ].join('\n');
   return { subject, html, text };
 }
@@ -523,6 +602,8 @@ export function sendBookingConfirmation({
   creditCost = null,
   amountPaidCents = null,
   amountDueCents = null,
+  manageUrl = null,
+  customerNote = null,
 }) {
   const { tenantName, accent, replyTo } = tenantSendFields(tenant);
   const { subject, html, text } = renderBookingConfirmationEmail({
@@ -536,6 +617,33 @@ export function sendBookingConfirmation({
     creditCost,
     amountPaidCents,
     amountDueCents,
+    manageUrl,
+    customerNote,
+  });
+  return sendEmail({ to, subject, html, text, replyTo });
+}
+
+export function sendBookingReschedule({
+  tenant,
+  to,
+  recipientName,
+  offeringName,
+  resourceName,
+  previousStartTime,
+  startTime,
+  manageUrl = null,
+}) {
+  const { tenantName, accent, replyTo } = tenantSendFields(tenant);
+  const { subject, html, text } = renderBookingRescheduleEmail({
+    tenantName,
+    accent,
+    timezone: tenant.timezone,
+    recipientName,
+    offeringName,
+    resourceName,
+    previousStartTime,
+    startTime,
+    manageUrl,
   });
   return sendEmail({ to, subject, html, text, replyTo });
 }

@@ -17,5 +17,9 @@ npm-debug.log*
 coverage/
 .nyc_output/
 
+# Playwright artifacts
+client/test-results/
+client/playwright-report/
+
 files/
 files.zip

@@ -197,6 +197,7 @@ export function ResourceEditModal({ resource, onClose, onSaved }) {
 export function OfferingEditModal({ offering, resources, onClose, onSaved }) {
   const [name, setName] = useState(offering.name);
   const [category, setCategory] = useState(offering.category);
+  const [description, setDescription] = useState(offering.description ?? '');
   const [duration, setDuration] = useState(offering.duration_minutes);
   const [creditCost, setCreditCost] = useState(offering.credit_cost);
   const [dollarPrice, setDollarPrice] = useState(offering.dollar_price / 100);
@@ -248,6 +249,7 @@ export function OfferingEditModal({ offering, resources, onClose, onSaved }) {
       const body = {
         name,
         category,
+        description: description.trim() || null,
         duration_minutes: Number(duration),
         credit_cost: Number(creditCost),
         // Math.round: float dollars → integer cents (19.99 * 100
@@ -304,6 +306,17 @@ export function OfferingEditModal({ offering, resources, onClose, onSaved }) {
               onChange={(e) => setCategory(e.target.value)}
               required
               className="font-mono"
+              list="offering-category-keys"
+            />
+          </Field>
+          <Field
+            label="Description"
+            hint="Shown to customers in the booking page's details expander. Keep the name short; explain here."
+          >
+            <Textarea
+              rows={3}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">

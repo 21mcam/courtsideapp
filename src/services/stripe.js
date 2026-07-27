@@ -48,6 +48,23 @@ const _fakeCheckoutSessions = new Map();// `${acct}:${sessionId}` → session
 const _fakeSubscriptions = new Map();   // `${acct}:${subId}` → subscription
 const _fakeRefunds = new Map();         // `${acct}:${refundId}` → refund
 
+// Local-dev affordance: pre-register fully-onboarded fake accounts at
+// boot so a seeded tenant's walk-in checkout works against the fake
+// without a test driving __setAccountState first. Comma-separated
+// account ids; only meaningful alongside STRIPE_TEST_MODE=1.
+if (process.env.STRIPE_FAKE_ACCOUNTS) {
+  for (const id of process.env.STRIPE_FAKE_ACCOUNTS.split(',')) {
+    const acct = id.trim();
+    if (!acct) continue;
+    _fakeAccounts.set(acct, {
+      id: acct,
+      details_submitted: true,
+      charges_enabled: true,
+      payouts_enabled: true,
+    });
+  }
+}
+
 export function __resetStripeFake() {
   _fakeAccounts.clear();
   _fakeProducts.clear();

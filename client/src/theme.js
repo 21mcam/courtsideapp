@@ -62,6 +62,18 @@ export const ACCENTS = {
       600: '51 65 85', 700: '30 41 59', 800: '15 23 42', 900: '2 6 23',
     },
   },
+  // Black & green (first user: Momentum Sports Training). Green
+  // through 600 (buttons/links), near-black 800/900 so dark surfaces
+  // read black rather than forest.
+  court: {
+    label: 'Court',
+    swatch: '#16a34a',
+    vars: {
+      50: '240 253 244', 100: '220 252 231', 200: '187 247 208',
+      300: '134 239 172', 400: '74 222 128', 500: '34 197 94',
+      600: '22 163 74', 700: '21 128 61', 800: '20 44 30', 900: '10 22 15',
+    },
+  },
 };
 
 export function applyAccent(key) {

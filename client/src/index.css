@@ -16,10 +16,20 @@
   --brand-700: 67 56 202;
   --brand-800: 55 48 163;
   --brand-900: 49 46 129;
+
+  /* Measured height of the walk-in flow's fixed bottom summary bar
+     (SummaryBar.jsx writes it via ResizeObserver, resets to 0 on
+     unmount). Everything that must never be occluded pads by it —
+     the hard rule from the funnel audit: nothing purchasable may
+     ever sit under fixed UI. */
+  --summary-bar-h: 0px;
 }
 
 @layer base {
   html {
     @apply antialiased text-slate-900;
+    /* Programmatic/focus scrolls (keyboard opening on the details
+       form, scrollIntoView) also respect the summary bar. */
+    scroll-padding-bottom: calc(var(--summary-bar-h) + 16px);
   }
 }

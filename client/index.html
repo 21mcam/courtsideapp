@@ -9,7 +9,28 @@
     <title>Courtside</title>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Static first paint: a neutral splash that renders at HTML
+         parse, before any JS arrives — matters on the public booking
+         page, where most visitors are on phone connections. React
+         replaces the whole #root subtree on mount. -->
+    <div id="root">
+      <div
+        style="
+          min-height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background-color: #f8fafc;
+          color: #94a3b8;
+          font-family:
+            ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+            sans-serif;
+          font-size: 14px;
+        "
+      >
+        loading…
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

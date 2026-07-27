@@ -172,9 +172,17 @@ export async function updateResource(req, res, next) {
 // has a reserved-subdomain CHECK).
 const CATEGORY_REGEX = /^[a-z0-9][a-z0-9-]*$/;
 
+// Customer-facing blurb for the booking page's details expander.
+// Whitespace-only → null (the DB CHECK rejects blank non-null).
+const descriptionSchema = z.preprocess(
+  (v) => (typeof v === 'string' && v.trim() === '' ? null : v),
+  z.string().trim().max(5000).nullable().optional(),
+);
+
 const offeringCreateSchema = z.object({
   name: z.string().trim().min(1).max(200),
   category: z.string().regex(CATEGORY_REGEX, 'category must be lowercase, hyphenated, alphanumeric'),
+  description: descriptionSchema,
   duration_minutes: z.number().int().positive(),
   credit_cost: z.number().int().nonnegative(),
   // dollar_price is in cents — clarified in CLAUDE.md
@@ -188,9 +196,10 @@ const offeringCreateSchema = z.object({
 export async function listOfferings(req, res, next) {
   try {
     const result = await req.db.query(
-      `SELECT id, name, category, duration_minutes, credit_cost, dollar_price,
-              capacity, allow_member_booking, allow_public_booking, active,
-              display_order, created_at, updated_at
+      `SELECT id, name, category, description, duration_minutes, credit_cost,
+              dollar_price, capacity, allow_member_booking,
+              allow_public_booking, active, display_order,
+              created_at, updated_at
          FROM offerings
         WHERE tenant_id = $1
         ORDER BY display_order ASC, name ASC`,
@@ -226,19 +235,20 @@ export async function createOffering(req, res, next) {
     try {
       const result = await req.db.query(
         `INSERT INTO offerings (
-           tenant_id, name, category, duration_minutes, credit_cost,
-           dollar_price, capacity, allow_member_booking, allow_public_booking,
-           display_order
+           tenant_id, name, category, description, duration_minutes,
+           credit_cost, dollar_price, capacity, allow_member_booking,
+           allow_public_booking, display_order
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING id, name, category, duration_minutes, credit_cost,
-                   dollar_price, capacity, allow_member_booking,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING id, name, category, description, duration_minutes,
+                   credit_cost, dollar_price, capacity, allow_member_booking,
                    allow_public_booking, active, display_order,
                    created_at, updated_at`,
         [
           req.tenant.id,
           d.name,
           d.category,
+          d.description ?? null,
           d.duration_minutes,
           d.credit_cost,
           d.dollar_price,
@@ -267,6 +277,7 @@ const offeringUpdateSchema = z.object({
     .string()
     .regex(CATEGORY_REGEX, 'category must be lowercase, hyphenated, alphanumeric')
     .optional(),
+  description: descriptionSchema,
   duration_minutes: z.number().int().positive().optional(),
   credit_cost: z.number().int().nonnegative().optional(),
   dollar_price: z.number().int().nonnegative().optional(),
@@ -308,9 +319,10 @@ export async function updateOffering(req, res, next) {
     // audience state app-side (cleaner error than the DB's 23514)
     // and as the response body when only links change.
     const curRes = await req.db.query(
-      `SELECT id, name, category, duration_minutes, credit_cost, dollar_price,
-              capacity, allow_member_booking, allow_public_booking, active,
-              display_order, created_at, updated_at
+      `SELECT id, name, category, description, duration_minutes, credit_cost,
+              dollar_price, capacity, allow_member_booking,
+              allow_public_booking, active, display_order,
+              created_at, updated_at
          FROM offerings
         WHERE tenant_id = $1 AND id = $2
         FOR UPDATE`,
@@ -369,6 +381,7 @@ export async function updateOffering(req, res, next) {
     const { clauses, values, nextIndex } = buildSetClause({
       name: d.name,
       category: d.category,
+      description: d.description,
       duration_minutes: d.duration_minutes,
       credit_cost: d.credit_cost,
       dollar_price: d.dollar_price,
@@ -386,10 +399,10 @@ export async function updateOffering(req, res, next) {
           `UPDATE offerings
               SET ${clauses.join(', ')}
             WHERE tenant_id = $${nextIndex} AND id = $${nextIndex + 1}
-            RETURNING id, name, category, duration_minutes, credit_cost,
-                      dollar_price, capacity, allow_member_booking,
-                      allow_public_booking, active, display_order,
-                      created_at, updated_at`,
+            RETURNING id, name, category, description, duration_minutes,
+                      credit_cost, dollar_price, capacity,
+                      allow_member_booking, allow_public_booking, active,
+                      display_order, created_at, updated_at`,
           [...values, req.tenant.id, id],
         );
         offering = result.rows[0];
@@ -571,6 +584,101 @@ export async function linkResourceToOffering(req, res, next) {
       }
       throw err;
     }
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
+// category_display (section labels + ordering, migration 028)
+// ============================================================
+//
+// Pure display overlay for the public booking page: a label + section
+// order per category key. A key with no row falls back to a
+// client-derived label (formatCategoryLabel). Deleting a row reverts
+// to the derived label; nothing here touches offerings or plan
+// restrictions.
+
+const categoryDisplaySchema = z.object({
+  label: z.string().trim().min(1).max(200),
+  display_order: z.number().int().nonnegative().optional(),
+});
+
+// GET /api/admin/category-display — the overlay rows PLUS every
+// category key currently in use by offerings, so the admin UI can
+// show unlabeled keys and prune orphans.
+export async function listCategoryDisplay(req, res, next) {
+  try {
+    const rowsRes = await req.db.query(
+      `SELECT category, label, display_order, updated_at
+         FROM category_display
+        WHERE tenant_id = $1
+        ORDER BY display_order ASC, category ASC`,
+      [req.tenant.id],
+    );
+    const usedRes = await req.db.query(
+      `SELECT DISTINCT category FROM offerings
+        WHERE tenant_id = $1
+        ORDER BY category ASC`,
+      [req.tenant.id],
+    );
+    res.json({
+      categories: rowsRes.rows,
+      categories_in_use: usedRes.rows.map((r) => r.category),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// PUT /api/admin/category-display/:category — upsert label + order.
+export async function upsertCategoryDisplay(req, res, next) {
+  try {
+    const category = req.params.category;
+    if (!CATEGORY_REGEX.test(category)) {
+      return res.status(400).json({
+        error: 'category must be lowercase, hyphenated, alphanumeric',
+      });
+    }
+    const parsed = categoryDisplaySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const d = parsed.data;
+    const result = await req.db.query(
+      `INSERT INTO category_display (tenant_id, category, label, display_order)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, category) DO UPDATE SET
+         label = EXCLUDED.label,
+         display_order = EXCLUDED.display_order
+       RETURNING category, label, display_order, updated_at`,
+      [req.tenant.id, category, d.label, d.display_order ?? 0],
+    );
+    res.json({ category_display: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// DELETE /api/admin/category-display/:category — revert to derived.
+export async function deleteCategoryDisplay(req, res, next) {
+  try {
+    const category = req.params.category;
+    if (!CATEGORY_REGEX.test(category)) {
+      return res.status(404).json({ error: 'category display not found' });
+    }
+    const result = await req.db.query(
+      `DELETE FROM category_display
+        WHERE tenant_id = $1 AND category = $2
+        RETURNING category`,
+      [req.tenant.id, category],
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'category display not found' });
+    }
+    res.json({ ok: true, deleted_category: result.rows[0].category });
   } catch (err) {
     next(err);
   }

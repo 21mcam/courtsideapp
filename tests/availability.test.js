@@ -313,12 +313,16 @@ test('split shifts: 9-12 and 14-17 → two contiguous slot blocks', { skip }, as
 });
 
 test('DST spring-forward day: 1am-5am yields 3 slots, not 4 (the lost hour)', { skip }, async () => {
-  // 2026-03-08 is the US DST start. 02:00-03:00 local time does not
+  // 2027-03-14 is the US DST start. 02:00-03:00 local time does not
   // exist on this day; it jumps from 01:59:59 EST to 03:00:00 EDT.
   // Operating hours 1am-5am defines a 4-hour wall-clock window but
   // a 3-hour real-time window. We must produce 3 slots (not 4) for
   // a 60-min duration.
-  const DST_DATE = '2026-03-08';
+  //
+  // Pinned to a FUTURE spring-forward date: availability now trims
+  // slots that already started (min-advance filter), so a historical
+  // DST date would return zero slots regardless of interval math.
+  const DST_DATE = '2027-03-14';
   const DOW_SUNDAY = 0;
   const resource_id = await makeResource();
   const offering_id = await makeOffering({ duration_minutes: 60 });
@@ -334,17 +338,55 @@ test('DST spring-forward day: 1am-5am yields 3 slots, not 4 (the lost hour)', { 
   );
 
   // First slot: 01:00 EST = 06:00 UTC
-  assert.equal(body.slots[0].start, '2026-03-08T06:00:00.000Z');
-  assert.equal(body.slots[0].end, '2026-03-08T07:00:00.000Z');
+  assert.equal(body.slots[0].start, '2027-03-14T06:00:00.000Z');
+  assert.equal(body.slots[0].end, '2027-03-14T07:00:00.000Z');
 
   // Second slot: post-DST. UTC 07:00 = 03:00 EDT (since DST started
   // at the moment 01:59:59 EST → 03:00:00 EDT, both at UTC 07:00).
-  assert.equal(body.slots[1].start, '2026-03-08T07:00:00.000Z');
-  assert.equal(body.slots[1].end, '2026-03-08T08:00:00.000Z');
+  assert.equal(body.slots[1].start, '2027-03-14T07:00:00.000Z');
+  assert.equal(body.slots[1].end, '2027-03-14T08:00:00.000Z');
 
   // Third slot: UTC 08:00 = 04:00 EDT
-  assert.equal(body.slots[2].start, '2026-03-08T08:00:00.000Z');
-  assert.equal(body.slots[2].end, '2026-03-08T09:00:00.000Z');
+  assert.equal(body.slots[2].start, '2027-03-14T08:00:00.000Z');
+  assert.equal(body.slots[2].end, '2027-03-14T09:00:00.000Z');
+});
+
+test('min_advance_booking_minutes trims near-term slots and rides the response', { skip }, async () => {
+  const resource_id = await makeResource();
+  const offering_id = await makeOffering({ duration_minutes: 60 });
+  await linkOfferingResource(offering_id, resource_id);
+  await makeOperatingHours(resource_id, 1, '09:00', '17:00'); // Mondays
+
+  // Baseline: no policy row → min advance 0, slots present.
+  const before_ = await fetchAvailability({ resource_id, offering_id, date: MONDAY_EST });
+  const beforeBody = await before_.json();
+  assert.ok(beforeBody.slots.length > 0);
+  assert.equal(beforeBody.min_advance_booking_minutes, 0);
+
+  // Push the floor past the fixture date entirely (~208 days out —
+  // MONDAY_EST is fixed, "now" moves, so an exact-boundary assertion
+  // would rot; beyond-the-date is stable until 2027).
+  await privilegedPool.query(
+    `INSERT INTO booking_policies
+       (tenant_id, min_advance_booking_minutes, max_advance_booking_days)
+     VALUES ($1, 300000, 400)
+     ON CONFLICT (tenant_id) DO UPDATE SET
+       min_advance_booking_minutes = EXCLUDED.min_advance_booking_minutes,
+       max_advance_booking_days = EXCLUDED.max_advance_booking_days`,
+    [tenant_id],
+  );
+  try {
+    const res = await fetchAvailability({ resource_id, offering_id, date: MONDAY_EST });
+    const body = await res.json();
+    assert.deepEqual(body.slots, []);
+    assert.equal(body.min_advance_booking_minutes, 300000);
+    assert.equal(body.max_advance_booking_days, 400);
+  } finally {
+    await privilegedPool.query(
+      `DELETE FROM booking_policies WHERE tenant_id = $1`,
+      [tenant_id],
+    );
+  }
 });
 
 test('class offering → returns empty + reason (slot model is rentals only)', { skip }, async () => {

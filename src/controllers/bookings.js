@@ -48,6 +48,10 @@ import {
   sendBookingCancellation,
 } from '../services/email.js';
 import {
+  getAdvancePolicy,
+  advanceWindowViolation,
+} from '../lib/advanceWindow.js';
+import {
   findMissingWaiverSignature,
   WAIVER_REQUIRED_CODE,
 } from './waivers.js';
@@ -197,36 +201,17 @@ export async function createMemberBooking(req, res, next) {
     const start = new Date(start_time);
     const end = new Date(start.getTime() + offering.duration_minutes * 60 * 1000);
 
-    // 3a. Advance-booking window policy. Tenants set the floor and
-    //     ceiling on how far out members can book. Pulled from
-    //     booking_policies; if the row is missing we use the schema
-    //     defaults (0 min / 30 days) so old tenants keep working.
+    // 3a. Advance-booking window policy (shared with the walk-in
+    //     create + reschedule paths — src/lib/advanceWindow.js).
     //
     //     Admin-initiated bookings (when this endpoint is later wired
     //     to an admin-on-behalf-of-member path) bypass — admins may
     //     legitimately book outside member windows. For now this
     //     endpoint is member-only, so the gate applies unconditionally.
-    const policyRes = await db.query(
-      `SELECT min_advance_booking_minutes, max_advance_booking_days
-         FROM booking_policies WHERE tenant_id = $1`,
-      [tenant.id],
-    );
-    const advancePolicy = policyRes.rows[0] ?? {
-      min_advance_booking_minutes: 0,
-      max_advance_booking_days: 30,
-    };
-    const minutesAhead = (start.getTime() - Date.now()) / 60000;
-    if (minutesAhead < advancePolicy.min_advance_booking_minutes) {
-      return res.status(409).json({
-        error: `bookings must be made at least ${advancePolicy.min_advance_booking_minutes} minutes in advance`,
-      });
-    }
-    // Compare in minutes for both bounds — avoids day-vs-DST surprises.
-    const maxMinutesAhead = advancePolicy.max_advance_booking_days * 1440;
-    if (minutesAhead > maxMinutesAhead) {
-      return res.status(409).json({
-        error: `bookings cannot be made more than ${advancePolicy.max_advance_booking_days} days in advance`,
-      });
+    const advancePolicy = await getAdvancePolicy(db, tenant.id);
+    const advanceViolation = advanceWindowViolation(advancePolicy, start);
+    if (advanceViolation) {
+      return res.status(409).json({ error: advanceViolation });
     }
 
     // 4. Lock the resource row to serialize concurrent attempts on it.
