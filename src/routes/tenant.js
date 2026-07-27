@@ -6,6 +6,7 @@
 // "Hello, {tenant.name}".
 
 import express from 'express';
+import { buildBookingUrl } from '../lib/publicUrl.js';
 
 const router = express.Router();
 
@@ -15,6 +16,12 @@ router.get('/', (req, res) => {
     subdomain: req.tenant.subdomain,
     name: req.tenant.name,
     timezone: req.tenant.timezone,
+    // Absolute URL of the public booking page, so the admin UI can
+    // show tenants a link they can actually paste somewhere. Built
+    // server-side because APP_HOSTNAME is server-only — the client
+    // can't derive it on bare-localhost dev, where the tenant lives
+    // in ?tenant= rather than the hostname.
+    booking_url: buildBookingUrl(req.tenant.subdomain),
     // Falls back to indigo until migration 019 is applied.
     theme_accent: req.tenant.theme_accent || 'indigo',
     // Falls back to null until migration 020 is applied.

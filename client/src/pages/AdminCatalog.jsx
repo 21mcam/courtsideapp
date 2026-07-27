@@ -8,6 +8,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.js';
+import { useAuth } from '../auth.jsx';
+import { CopyButton } from '../components/CopyLink.jsx';
+import { serviceBookingUrl } from '../lib/bookingLinks.js';
 import {
   Page,
   PageHeader,
@@ -44,6 +47,7 @@ function audienceLabel(o) {
 }
 
 export default function AdminCatalog() {
+  const { tenant } = useAuth();
   const [resources, setResources] = useState(null);
   const [offerings, setOfferings] = useState(null);
   const [plans, setPlans] = useState(null);
@@ -219,7 +223,32 @@ export default function AdminCatalog() {
             label: 'Status',
             render: (o) => <ActiveBadge active={o.active} />,
           },
-          editColumn('offering'),
+          {
+            key: 'actions',
+            label: '',
+            render: (o) => (
+              <div className="flex justify-end gap-2">
+                {/* Direct link into this service's time picker. Only
+                    for offerings the public page actually lists —
+                    otherwise the link would dump the customer back on
+                    the service list. The two columns to the left
+                    already explain why it's missing. */}
+                {o.active && o.allow_public_booking && (
+                  <CopyButton
+                    value={serviceBookingUrl(tenant, o.id)}
+                    label="Copy link"
+                  />
+                )}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setEditing({ type: 'offering', item: o })}
+                >
+                  Edit
+                </Button>
+              </div>
+            ),
+          },
         ]}
       />
 
