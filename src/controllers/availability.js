@@ -28,6 +28,7 @@
 
 import { z } from 'zod';
 import { mergeIntervals, sliceIntoSlots, subtractIntervals } from '../lib/intervals.js';
+import { getAdvancePolicy } from '../lib/advanceWindow.js';
 
 const querySchema = z.object({
   resource_id: z.string().uuid(),
@@ -157,7 +158,18 @@ export async function getAvailability(req, res, next) {
 
     const free = subtractIntervals(open, occupied);
     const durationMs = offering.duration_minutes * 60 * 1000;
-    const slots = sliceIntoSlots(free, durationMs);
+    const sliced = sliceIntoSlots(free, durationMs);
+
+    // Don't advertise slots the booking endpoints will reject: the
+    // advance-window floor also trims already-started slots for
+    // "today" (min = 0 → strictly-future only, matching the create
+    // gate's start > now). The max-advance ceiling is a date-picker
+    // concern; both numbers ride the response so the client can
+    // constrain its calendar and explain empty days.
+    const advancePolicy = await getAdvancePolicy(req.db, req.tenant.id);
+    const earliestStart =
+      Date.now() + advancePolicy.min_advance_booking_minutes * 60 * 1000;
+    const slots = sliced.filter((s) => s.start.getTime() > earliestStart);
 
     res.json({
       slots: slots.map((s) => ({
@@ -167,6 +179,8 @@ export async function getAvailability(req, res, next) {
       day_start: new Date(day_start).toISOString(),
       day_end: new Date(day_end).toISOString(),
       duration_minutes: offering.duration_minutes,
+      min_advance_booking_minutes: advancePolicy.min_advance_booking_minutes,
+      max_advance_booking_days: advancePolicy.max_advance_booking_days,
     });
   } catch (err) {
     next(err);

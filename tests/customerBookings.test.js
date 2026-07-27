@@ -68,6 +68,18 @@ before(async () => {
     )
   ).rows[0].id;
 
+  // Permissive max_advance_booking_days so the 2027-dated fixture
+  // slots aren't rejected by the advance-window gate (now enforced on
+  // the public path too). Specific tests tighten it to assert the
+  // gate works.
+  await privilegedPool.query(
+    `INSERT INTO booking_policies (tenant_id, max_advance_booking_days)
+     VALUES ($1, 730)
+     ON CONFLICT (tenant_id) DO UPDATE SET
+       max_advance_booking_days = EXCLUDED.max_advance_booking_days`,
+    [tenant_id],
+  );
+
   // Admin owner so platform endpoints work, even though walk-in booking
   // itself doesn't need auth.
   const adminEmail = `admin-${randomUUID()}@example.com`;
@@ -206,8 +218,7 @@ async function postWebhook(eventBody) {
 
 function someCustomer() {
   return {
-    first_name: 'Walk',
-    last_name: 'In',
+    full_name: 'Walk In',
     email: `walk-${randomUUID()}@example.com`,
     phone: '+15555550101',
   };
@@ -386,6 +397,13 @@ test('public booking 409 when tenant connection not charges-enabled', { skip }, 
      VALUES ($1, $2, 1, '00:00', '23:59:59')`,
     [otherTid, otherResource],
   );
+  // Permissive advance window so the 2027 slot reaches the Stripe
+  // connection gate (the thing under test) instead of 409ing earlier.
+  await privilegedPool.query(
+    `INSERT INTO booking_policies (tenant_id, max_advance_booking_days)
+     VALUES ($1, 730)`,
+    [otherTid],
+  );
 
   try {
     const res = await fetch(
@@ -447,7 +465,8 @@ test('public booking 201 happy path: pending_payment row + Checkout URL with met
        FROM bookings WHERE id = $1`,
     [body.booking.id],
   );
-  assert.equal(r.rows[0].customer_first_name, cust.first_name);
+  assert.equal(r.rows[0].customer_first_name, 'Walk');
+  assert.equal(r.rows[0].customer_last_name, 'In');
   assert.equal(r.rows[0].customer_email, cust.email);
   assert.equal(r.rows[0].status, 'pending_payment');
   assert.equal(r.rows[0].amount_due_cents, DOLLAR_PRICE);
@@ -650,4 +669,238 @@ test('walk-in Checkout session gets an expires_at aligned with the hold (>= Stri
   // DB hold ≈ 30 minutes out for a far-future slot.
   const hold = new Date(created.booking.hold_expires_at).getTime() / 1000;
   assert.ok(hold >= before_ + 29 * 60 && hold <= before_ + 31 * 60);
+});
+
+// ============================================================
+// walk-in checkout v2: full_name / phone / note / hold_minutes
+// ============================================================
+
+test('full_name splits into first/last; single-token names duplicate', { skip }, async () => {
+  const { splitFullName } = await import('../src/controllers/customerBookings.js');
+  assert.deepEqual(splitFullName('Mia Lopez'), {
+    first_name: 'Mia',
+    last_name: 'Lopez',
+  });
+  assert.deepEqual(splitFullName('  Mary  Jo   van der Berg '), {
+    first_name: 'Mary Jo van der',
+    last_name: 'Berg',
+  });
+  // Single token satisfies both non-empty CHECKs by duplication.
+  assert.deepEqual(splitFullName('Cher'), {
+    first_name: 'Cher',
+    last_name: 'Cher',
+  });
+});
+
+test('multi-word full_name lands split in the DB', { skip }, async () => {
+  const slot = '2027-06-28T15:00:00.000Z';
+  const cust = { ...someCustomer(), full_name: 'Mary Jo Catcher' };
+  const res = await publicFetch('/api/customers/bookings', {
+    method: 'POST',
+    body: JSON.stringify(bookingBody(slot, { customer: cust })),
+  });
+  assert.equal(res.status, 201);
+  const body = await res.json();
+  const r = await privilegedPool.query(
+    `SELECT customer_first_name, customer_last_name FROM bookings WHERE id = $1`,
+    [body.booking.id],
+  );
+  assert.equal(r.rows[0].customer_first_name, 'Mary Jo');
+  assert.equal(r.rows[0].customer_last_name, 'Catcher');
+});
+
+test('missing phone → 400 (phone is required for walk-ins)', { skip }, async () => {
+  const cust = someCustomer();
+  delete cust.phone;
+  const res = await publicFetch('/api/customers/bookings', {
+    method: 'POST',
+    body: JSON.stringify(
+      bookingBody('2027-06-28T16:00:00.000Z', { customer: cust }),
+    ),
+  });
+  assert.equal(res.status, 400);
+});
+
+test('customer note is persisted; blank note treated as absent', { skip }, async () => {
+  const res = await publicFetch('/api/customers/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      ...bookingBody('2027-06-28T17:00:00.000Z'),
+      note: '  First time — my kid is 9.  ',
+    }),
+  });
+  assert.equal(res.status, 201);
+  const body = await res.json();
+  const r = await privilegedPool.query(
+    `SELECT customer_note FROM bookings WHERE id = $1`,
+    [body.booking.id],
+  );
+  assert.equal(r.rows[0].customer_note, 'First time — my kid is 9.');
+
+  const res2 = await publicFetch('/api/customers/bookings', {
+    method: 'POST',
+    body: JSON.stringify({
+      ...bookingBody('2027-06-28T18:00:00.000Z'),
+      note: '   ',
+    }),
+  });
+  assert.equal(res2.status, 201);
+  const body2 = await res2.json();
+  const r2 = await privilegedPool.query(
+    `SELECT customer_note FROM bookings WHERE id = $1`,
+    [body2.booking.id],
+  );
+  assert.equal(r2.rows[0].customer_note, null);
+});
+
+test('201 response carries hold_minutes (UI copy source of truth)', { skip }, async () => {
+  const res = await publicFetch('/api/customers/bookings', {
+    method: 'POST',
+    body: JSON.stringify(bookingBody('2027-06-28T19:00:00.000Z')),
+  });
+  assert.equal(res.status, 201);
+  const body = await res.json();
+  assert.equal(body.hold_minutes, 30);
+});
+
+// ============================================================
+// advance-window enforcement on the public path
+// ============================================================
+
+test('advance window enforced on public create (uncoded 409s)', { skip }, async () => {
+  // Tighten: min 60 minutes, max 7 days.
+  await privilegedPool.query(
+    `UPDATE booking_policies
+        SET min_advance_booking_minutes = 60, max_advance_booking_days = 7
+      WHERE tenant_id = $1`,
+    [tenant_id],
+  );
+  try {
+    // Too soon: 30 minutes out (also inside operating hours? doesn't
+    // matter — the advance gate rejects before the hours check).
+    const soon = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const r1 = await publicFetch('/api/customers/bookings', {
+      method: 'POST',
+      body: JSON.stringify(bookingBody(soon)),
+    });
+    assert.equal(r1.status, 409);
+    const b1 = await r1.json();
+    assert.match(b1.error, /at least 60 minutes/i);
+    // NOT slot_conflict — hits every resource identically; the
+    // no-preference retry loop must not spin on it.
+    assert.equal(b1.code, undefined);
+
+    // Too far: fixture slot is months out, max is 7 days.
+    const r2 = await publicFetch('/api/customers/bookings', {
+      method: 'POST',
+      body: JSON.stringify(bookingBody('2027-07-05T15:00:00.000Z')),
+    });
+    assert.equal(r2.status, 409);
+    const b2 = await r2.json();
+    assert.match(b2.error, /more than 7 days/i);
+    assert.equal(b2.code, undefined);
+  } finally {
+    await privilegedPool.query(
+      `UPDATE booking_policies
+          SET min_advance_booking_minutes = 0, max_advance_booking_days = 730
+        WHERE tenant_id = $1`,
+      [tenant_id],
+    );
+  }
+});
+
+// ============================================================
+// one-price guarantee
+// ============================================================
+
+test('one price: Checkout charges exactly the listed dollar_price, no extra line items', { skip }, async () => {
+  // The listed price, from the same public endpoint customers see.
+  const listRes = await publicFetch('/api/customers/offerings');
+  const { offerings } = await listRes.json();
+  const listed = offerings.find((o) => o.id === public_offering_id);
+  assert.ok(listed, 'public offering must be listed');
+
+  const res = await publicFetch('/api/customers/bookings', {
+    method: 'POST',
+    body: JSON.stringify(bookingBody('2027-07-05T16:00:00.000Z')),
+  });
+  assert.equal(res.status, 201);
+  const body = await res.json();
+
+  const session = stripeFake.__getCheckoutSession(
+    stripe_account_id,
+    body.session_id,
+  );
+  assert.ok(session, 'session recorded on the fake');
+  // Exactly one line item, quantity 1, unit_amount === the LISTED
+  // price. If any later screen ever charges more than the service
+  // list shows, this is the test that fails.
+  assert.equal(session.line_items.length, 1);
+  assert.equal(session.line_items[0].quantity, 1);
+  assert.equal(session.line_items[0].price_data.unit_amount, listed.dollar_price);
+  assert.equal(session.amount_total, listed.dollar_price);
+  assert.equal(body.booking.amount_due_cents, listed.dollar_price);
+  assert.equal(session.discounts ?? undefined, undefined);
+});
+
+// ============================================================
+// manage token minting (webhook) + confirmation email link
+// ============================================================
+
+test('webhook mints manage token: hash stored, raw token only in the email link', { skip }, async () => {
+  const { createHash } = await import('node:crypto');
+  const emailSvc = await import('../src/services/email.js');
+  emailSvc.__clearSkippedEmails();
+
+  const cust = someCustomer();
+  const r1 = await publicFetch('/api/customers/bookings', {
+    method: 'POST',
+    body: JSON.stringify(
+      bookingBody('2027-07-05T17:00:00.000Z', { customer: cust }),
+    ),
+  });
+  assert.equal(r1.status, 201);
+  const created = await r1.json();
+  const { session, payment_intent } = stripeFake.__completeCheckoutSession(
+    stripe_account_id,
+    created.session_id,
+  );
+  const event = {
+    id: `evt_${randomUUID()}`,
+    type: 'checkout.session.completed',
+    account: stripe_account_id,
+    data: {
+      object: {
+        id: session.id,
+        mode: 'payment',
+        status: 'complete',
+        amount_total: DOLLAR_PRICE,
+        payment_intent,
+        metadata: session.metadata,
+      },
+    },
+  };
+  const res = await postWebhook(event);
+  assert.equal(res.status, 200);
+
+  const r = await privilegedPool.query(
+    `SELECT manage_token_hash FROM bookings WHERE id = $1`,
+    [created.booking.id],
+  );
+  const storedHash = r.rows[0].manage_token_hash;
+  assert.match(storedHash, /^[0-9a-f]{64}$/);
+
+  // The confirmation email (queued keyless → skipped log) carries the
+  // manage URL; its raw token must hash to exactly the stored value.
+  const mail = emailSvc
+    .__getSkippedEmails()
+    .find((e) => e.to === cust.email && /confirmed/i.test(e.subject));
+  assert.ok(mail, 'confirmation email queued');
+  const m = mail.text.match(/\/walk-in\/manage\?token=([A-Za-z0-9_-]+)/);
+  assert.ok(m, 'manage URL present in email text');
+  const rawToken = decodeURIComponent(m[1]);
+  assert.equal(
+    createHash('sha256').update(rawToken).digest('hex'),
+    storedHash,
+  );
 });

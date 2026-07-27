@@ -238,6 +238,7 @@ const POLICY_DEFAULTS = {
   max_advance_booking_days: 30,
   allow_member_self_cancel: true,
   allow_customer_self_cancel: true,
+  customer_reschedule_hours_before: 24,
   waiver_required: false,
   waiver_text: null,
   waiver_version: 1,
@@ -256,6 +257,7 @@ const bookingPoliciesUpsertSchema = z
     max_advance_booking_days: z.number().int().positive().optional(),
     allow_member_self_cancel: z.boolean().optional(),
     allow_customer_self_cancel: z.boolean().optional(),
+    customer_reschedule_hours_before: z.number().int().nonnegative().optional(),
     // liability waiver config. waiver_version is NOT accepted from
     // the client — it's bumped server-side whenever waiver_text
     // changes (see upsertBookingPolicies).
@@ -270,6 +272,7 @@ export async function getBookingPolicies(req, res, next) {
               partial_refund_percent, no_show_action, no_show_fee_cents,
               min_advance_booking_minutes, max_advance_booking_days,
               allow_member_self_cancel, allow_customer_self_cancel,
+              customer_reschedule_hours_before,
               waiver_required, waiver_text, waiver_version,
               created_at, updated_at
          FROM booking_policies
@@ -340,9 +343,10 @@ export async function upsertBookingPolicies(req, res, next) {
            partial_refund_percent, no_show_action, no_show_fee_cents,
            min_advance_booking_minutes, max_advance_booking_days,
            allow_member_self_cancel, allow_customer_self_cancel,
+           customer_reschedule_hours_before,
            waiver_required, waiver_text, waiver_version
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          ON CONFLICT (tenant_id) DO UPDATE SET
            free_cancel_hours_before    = EXCLUDED.free_cancel_hours_before,
            partial_refund_hours_before = EXCLUDED.partial_refund_hours_before,
@@ -353,6 +357,7 @@ export async function upsertBookingPolicies(req, res, next) {
            max_advance_booking_days    = EXCLUDED.max_advance_booking_days,
            allow_member_self_cancel    = EXCLUDED.allow_member_self_cancel,
            allow_customer_self_cancel  = EXCLUDED.allow_customer_self_cancel,
+           customer_reschedule_hours_before = EXCLUDED.customer_reschedule_hours_before,
            waiver_required             = EXCLUDED.waiver_required,
            waiver_text                 = EXCLUDED.waiver_text,
            waiver_version              = EXCLUDED.waiver_version
@@ -360,6 +365,7 @@ export async function upsertBookingPolicies(req, res, next) {
                    partial_refund_percent, no_show_action, no_show_fee_cents,
                    min_advance_booking_minutes, max_advance_booking_days,
                    allow_member_self_cancel, allow_customer_self_cancel,
+                   customer_reschedule_hours_before,
                    waiver_required, waiver_text, waiver_version,
                    created_at, updated_at`,
         [
@@ -373,6 +379,7 @@ export async function upsertBookingPolicies(req, res, next) {
           d.max_advance_booking_days,
           d.allow_member_self_cancel,
           d.allow_customer_self_cancel,
+          d.customer_reschedule_hours_before,
           waiverRequired,
           waiverText,
           waiverVersion,

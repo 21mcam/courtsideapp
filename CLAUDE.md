@@ -131,6 +131,9 @@ and TypeScript types use the canonical word.
   cage, 3 credits, $30." Has a credit cost, dollar price, duration,
   category, capacity, and resource association(s). Both rentals
   (capacity = 1) and classes (capacity > 1) live in this table.
+  Optional `description` (migration 027) feeds the public booking
+  page's per-service details expander — keep names short, explain
+  there.
 - **`category`** — a normalized lowercase key on offerings used for
   plan restrictions. Free-text per tenant, validated by the
   `category_key` domain (lowercase, hyphenated, no whitespace).
@@ -141,6 +144,12 @@ and TypeScript types use the canonical word.
 - **`resource`** — the physical thing being rented. "Cage 1," "Rink
   2," "Sim Bay 3." Offerings are associated with one or more
   resources via `offering_resources`.
+- **`category_display`** — per-tenant DISPLAY OVERLAY for category
+  keys (migration 028): section label + ordering on the public
+  booking page ("hittrax" → "HitTrax – See Your Hitting Stats"). NOT
+  a categories entity — no FK to offerings, orphan rows harmless, a
+  missing row falls back to a client-derived label
+  (formatCategoryLabel). Deleting a row reverts display only.
 
 ### Subscriptions and credits
 
@@ -210,8 +219,20 @@ exclusively by `apply_credit_change`:
 
 - **`booking`** — a reservation. Has a state, a resource, a time
   window, a tenant, and either a member (who spent credits) or a
-  customer (who paid cash or owes cash). State machine and full
-  schema TBD next session.
+  customer (who paid cash or owes cash).
+- **manage token** — the no-login self-serve capability for walk-in
+  bookings (migration 026). The Stripe webhook mints a random token
+  when payment confirms; only its sha256 lives in
+  `bookings.manage_token_hash`, and the raw token exists solely in
+  the confirmation/reschedule email link (`/walk-in/manage?token=…`).
+  Possession of the link IS the auth. No expiry column — validity is
+  bounded by booking state (confirmed + paid) and
+  `booking_policies.customer_reschedule_hours_before`. Reschedule is
+  same-offering-only, so the price can never change; the create-time
+  slot gates are re-run in the controller (the validity trigger does
+  NOT fire on time-only UPDATEs). A future customer self-cancel
+  should reuse this token and finally consume
+  `allow_customer_self_cancel`.
 - **`class_instance`** — a single occurrence of a class offering.
   TBD next session.
 - **`class_booking`** — a person's spot in a class_instance. TBD.
@@ -293,6 +314,39 @@ Same offering row, two views. Logged-in member sees credit cost
 - System emails use Resend with per-tenant reply-to address.
 - "From" is platform-owned (`noreply@app.com`) until per-tenant
   custom domains are built (post-v1).
+
+### Walk-in checkout (public booking page)
+
+Funnel-data-driven rules from the Setmore replacement (see the
+walk-in v2 slice; don't regress these):
+
+- **One price.** The service-row price IS the charged price. No fees
+  anywhere; the server test asserts the Checkout Session's
+  `unit_amount` equals the listed `dollar_price` with one line item.
+- **Guest-only.** No login exists in the purchase path. Three
+  required fields (full name, mobile phone, email) + one optional
+  note (`bookings.customer_note`). `full_name` is split server-side
+  (`splitFullName`); single-token names duplicate into both columns.
+- **Nothing purchasable under fixed UI.** The SummaryBar publishes
+  its measured height to `--summary-bar-h`; scroll containers pad by
+  it. Playwright e2e (client/e2e) enforces occlusion, tap count,
+  price parity, and no-login at 390×844.
+- **Trust copy is policy-driven** — hold minutes and the reschedule
+  cutoff ride the offerings response (`policy` block); never
+  hardcode them in copy.
+- **GA4 funnel events** (view_services → select_service →
+  select_slot → begin_checkout → purchase) fire only when
+  `tenants.ga4_measurement_id` is set (migration 029; public pages
+  only, purchase deduped per booking id).
+- Tenant business info (structured address with 2-letter state enum,
+  phone, manually-entered Google rating/review count, GA4 id) lives
+  on `tenants` via the migration-019/020 pattern (view + SECURITY
+  DEFINER setter, migration 029). Never concatenate address parts
+  server-side.
+- The advance-booking window is enforced on the public path too
+  (shared helper `src/lib/advanceWindow.js`), and `/api/availability`
+  trims slots inside the min-advance floor (including already-started
+  slots today).
 
 ### Tenant resolution
 

@@ -8,13 +8,25 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.js';
-import { Page, PageHeader, Card, Button, Badge } from '../components/ui/index.js';
+import {
+  Page,
+  PageHeader,
+  Card,
+  Button,
+  Badge,
+  Field,
+  Input,
+} from '../components/ui/index.js';
 import {
   ResourceEditModal,
   OfferingEditModal,
   PlanEditModal,
 } from './CatalogEditModals.jsx';
-import { formatAllowedCategories, formatCents } from '../format.js';
+import {
+  formatAllowedCategories,
+  formatCategoryLabel,
+  formatCents,
+} from '../format.js';
 
 // 'cage-time' → 'Cage time' — category keys are normalized lowercase
 // hyphenated in the DB; display is a UI concern (CLAUDE.md glossary).
@@ -35,6 +47,8 @@ export default function AdminCatalog() {
   const [resources, setResources] = useState(null);
   const [offerings, setOfferings] = useState(null);
   const [plans, setPlans] = useState(null);
+  // { categories: [...overlay rows], categories_in_use: [...keys] }
+  const [categoryDisplay, setCategoryDisplay] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [syncMessage, setSyncMessage] = useState(null);
   const [syncingPlanId, setSyncingPlanId] = useState(null);
@@ -51,11 +65,13 @@ export default function AdminCatalog() {
       api('/api/admin/resources').then(handle),
       api('/api/admin/offerings').then(handle),
       api('/api/admin/plans').then(handle),
+      api('/api/admin/category-display').then(handle),
     ])
-      .then(([r, o, p]) => {
+      .then(([r, o, p, c]) => {
         setResources(r.resources ?? []);
         setOfferings(o.offerings ?? []);
         setPlans(p.plans ?? []);
+        setCategoryDisplay(c);
       })
       .catch((err) => setLoadError(err.message));
   }
@@ -264,6 +280,17 @@ export default function AdminCatalog() {
         ]}
       />
 
+      <SectionsCard data={categoryDisplay} onChanged={load} />
+
+      {/* Category-key suggestions for the offering edit modal — one
+          existing key per option, so a typo can't quietly fork
+          'cage-time' into 'cagetime'. */}
+      <datalist id="offering-category-keys">
+        {(categoryDisplay?.categories_in_use ?? []).map((key) => (
+          <option key={key} value={key} />
+        ))}
+      </datalist>
+
       {editing?.type === 'resource' && (
         <ResourceEditModal
           resource={editing.item}
@@ -296,6 +323,185 @@ async function handle(res) {
     throw new Error(body.error || `HTTP ${res.status}`);
   }
   return res.json();
+}
+
+// Section labels + ordering for the public booking page. One row per
+// category key in use; a saved label overrides the derived one
+// ("hittrax" → "HitTrax – See Your Hitting Stats"), Reset reverts.
+function SectionsCard({ data, onChanged }) {
+  const [drafts, setDrafts] = useState({});
+  const [busyKey, setBusyKey] = useState(null);
+  const [error, setError] = useState(null);
+
+  if (!data) return null;
+  const overlay = new Map(data.categories.map((c) => [c.category, c]));
+  // Every key in use, plus orphan overlay rows (label saved for a key
+  // no offering uses anymore — visible so it can be pruned).
+  const keys = [
+    ...new Set([
+      ...data.categories_in_use,
+      ...data.categories.map((c) => c.category),
+    ]),
+  ].sort();
+
+  function draftFor(key) {
+    const row = overlay.get(key);
+    return (
+      drafts[key] ?? {
+        label: row?.label ?? '',
+        display_order: row != null ? String(row.display_order) : '0',
+      }
+    );
+  }
+
+  async function save(key) {
+    const d = draftFor(key);
+    if (!d.label.trim()) return;
+    setBusyKey(key);
+    setError(null);
+    try {
+      const res = await api(
+        `/api/admin/category-display/${encodeURIComponent(key)}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            label: d.label.trim(),
+            display_order: Number(d.display_order) || 0,
+          }),
+        },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      onChanged();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function reset(key) {
+    setBusyKey(key);
+    setError(null);
+    try {
+      const res = await api(
+        `/api/admin/category-display/${encodeURIComponent(key)}`,
+        { method: 'DELETE' },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      onChanged();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  return (
+    <Card title="Booking page sections">
+      <p className="mb-4 text-sm text-slate-500">
+        How categories appear as section headers on your public booking
+        page. Describe the product — "Cage + Pitching Machine" beats
+        "SPECIALS". Lower order shows first; leave a label blank to use
+        the automatic one.
+      </p>
+      {error && (
+        <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {error}
+        </div>
+      )}
+      {keys.length === 0 ? (
+        <p className="text-sm text-slate-500">
+          No categories yet — they appear here once you add offerings.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {keys.map((key) => {
+            const d = draftFor(key);
+            const hasRow = overlay.has(key);
+            const inUse = data.categories_in_use.includes(key);
+            return (
+              <div
+                key={key}
+                className="grid items-end gap-3 sm:grid-cols-[10rem_1fr_6rem_auto]"
+              >
+                <div className="pb-2 text-sm">
+                  <span className="font-mono text-xs text-slate-500">
+                    {key}
+                  </span>
+                  {!inUse && (
+                    <span className="ml-1 text-xs text-amber-600">
+                      (unused)
+                    </span>
+                  )}
+                </div>
+                <Field label="Section header">
+                  <Input
+                    placeholder={formatCategoryLabel(key)}
+                    value={d.label}
+                    onChange={(e) =>
+                      setDrafts((prev) => ({
+                        ...prev,
+                        [key]: { ...d, label: e.target.value },
+                      }))
+                    }
+                  />
+                </Field>
+                <Field label="Order">
+                  <Input
+                    type="number"
+                    min="0"
+                    value={d.display_order}
+                    onChange={(e) =>
+                      setDrafts((prev) => ({
+                        ...prev,
+                        [key]: { ...d, display_order: e.target.value },
+                      }))
+                    }
+                  />
+                </Field>
+                <div className="flex gap-2 pb-0.5">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={busyKey === key || !d.label.trim()}
+                    onClick={() => save(key)}
+                  >
+                    Save
+                  </Button>
+                  {hasRow && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={busyKey === key}
+                      onClick={() => reset(key)}
+                    >
+                      Reset
+                    </Button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
 }
 
 function ActiveBadge({ active }) {

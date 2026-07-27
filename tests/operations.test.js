@@ -465,6 +465,33 @@ test('PUT booking_policies — INSERT then UPDATE on second call', { skip }, asy
   assert.equal(second.no_show_action, 'none');
 });
 
+test('customer_reschedule_hours_before: default 24, roundtrips, negative rejected', { skip }, async () => {
+  // Default when unset.
+  const getRes = await adminFetch('/api/admin/booking-policies');
+  const { booking_policies: current } = await getRes.json();
+  assert.equal(current.customer_reschedule_hours_before, 24);
+
+  // Roundtrip a custom cutoff.
+  const putRes = await adminFetch('/api/admin/booking-policies', {
+    method: 'PUT',
+    body: JSON.stringify({ customer_reschedule_hours_before: 48 }),
+  });
+  assert.equal(putRes.status, 200);
+  const { booking_policies: updated } = await putRes.json();
+  assert.equal(updated.customer_reschedule_hours_before, 48);
+
+  const getRes2 = await adminFetch('/api/admin/booking-policies');
+  const { booking_policies: viewed } = await getRes2.json();
+  assert.equal(viewed.customer_reschedule_hours_before, 48);
+
+  // Negative rejected by Zod.
+  const badRes = await adminFetch('/api/admin/booking-policies', {
+    method: 'PUT',
+    body: JSON.stringify({ customer_reschedule_hours_before: -1 }),
+  });
+  assert.equal(badRes.status, 400);
+});
+
 test('PUT booking_policies with half-set partial_refund → 400', { skip }, async () => {
   // Schema CHECK: partial_refund_hours_before and partial_refund_percent
   // must both be set or both null.
@@ -615,4 +642,71 @@ test('tenant isolation: blackouts in tenant A are invisible from tenant B', { sk
     method: 'DELETE',
   });
   assert.equal(sameTenantDelete.status, 200);
+});
+
+// ============================================================
+// business info (migration 029): PUT + public visibility
+// ============================================================
+
+test('business-info PUT roundtrips onto GET /api/tenant as structured fields', { skip }, async () => {
+  const putRes = await adminFetch('/api/admin/business-info', {
+    method: 'PUT',
+    body: JSON.stringify({
+      address_street: '123 Main St',
+      address_city: 'Staten Island',
+      address_state: 'NY',
+      address_zip: '10307',
+      business_phone: '(718) 555-0100',
+      google_rating: 5.0,
+      google_review_count: 205,
+      google_reviews_url: 'https://g.page/example',
+      ga4_measurement_id: 'G-ABC123XYZ',
+    }),
+  });
+  assert.equal(putRes.status, 200);
+
+  const res = await fetch(`${baseUrl}/api/tenant?tenant=${TENANT}`);
+  assert.equal(res.status, 200);
+  const t = await res.json();
+  // Structured, never concatenated — the client renders the pieces.
+  assert.deepEqual(t.address, {
+    street: '123 Main St',
+    city: 'Staten Island',
+    state: 'NY',
+    zip: '10307',
+  });
+  assert.equal(t.business_phone, '(718) 555-0100');
+  assert.equal(t.google_rating, 5);
+  assert.equal(t.google_review_count, 205);
+  assert.equal(t.google_reviews_url, 'https://g.page/example');
+  assert.equal(t.ga4_measurement_id, 'G-ABC123XYZ');
+});
+
+test('business-info validation: free-text state, bad zip, bad GA4 id → 400', { skip }, async () => {
+  for (const patch of [
+    { address_state: 'new york,ny' }, // the exact bug this schema kills
+    { address_zip: '1030' },
+    { ga4_measurement_id: 'UA-12345-6' },
+    { google_rating: 6 },
+    { google_reviews_url: 'http://insecure.example' },
+  ]) {
+    const res = await adminFetch('/api/admin/business-info', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    });
+    assert.equal(res.status, 400, JSON.stringify(patch));
+  }
+});
+
+test('business-info nulls clear every field', { skip }, async () => {
+  const putRes = await adminFetch('/api/admin/business-info', {
+    method: 'PUT',
+    body: JSON.stringify({}),
+  });
+  assert.equal(putRes.status, 200);
+  const res = await fetch(`${baseUrl}/api/tenant?tenant=${TENANT}`);
+  const t = await res.json();
+  assert.deepEqual(t.address, { street: null, city: null, state: null, zip: null });
+  assert.equal(t.google_rating, null);
+  assert.equal(t.ga4_measurement_id, null);
 });

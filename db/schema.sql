@@ -87,7 +87,8 @@ CREATE TABLE tenants (
   -- client/src/theme.js. (Migration 019.)
   theme_accent                    text NOT NULL DEFAULT 'indigo'
                                   CHECK (theme_accent IN
-                                         ('indigo', 'sky', 'emerald', 'violet', 'rose', 'slate')),
+                                         ('indigo', 'sky', 'emerald', 'violet', 'rose', 'slate',
+                                          'court')),
   -- Reply-to for tenant transactional emails (Resend). NULL = none.
   -- Same normalize-on-write convention as users.email. (Migration 020.)
   reply_to_email                  text
@@ -99,6 +100,45 @@ CREATE TABLE tenants (
                                       AND reply_to_email !~ '\s'
                                     )
                                   ),
+  -- Business info for the public booking page (migration 029):
+  -- structured NAP (never concatenated free text — state is a
+  -- validated 2-letter enum), Google rating/review count as manually
+  -- entered social proof, optional GA4 measurement id for funnel
+  -- events. All nullable; admin-entered.
+  address_street                  text
+                                  CONSTRAINT tenants_address_street_not_blank
+                                  CHECK (address_street IS NULL OR btrim(address_street) <> ''),
+  address_city                    text
+                                  CONSTRAINT tenants_address_city_not_blank
+                                  CHECK (address_city IS NULL OR btrim(address_city) <> ''),
+  address_state                   text
+                                  CONSTRAINT tenants_address_state_valid
+                                  CHECK (address_state IS NULL OR address_state IN (
+                                    'AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL','GA','HI','ID',
+                                    'IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO',
+                                    'MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA',
+                                    'RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY')),
+  address_zip                     text
+                                  CONSTRAINT tenants_address_zip_valid
+                                  CHECK (address_zip IS NULL OR address_zip ~ '^\d{5}(-\d{4})?$'),
+  business_phone                  text
+                                  CONSTRAINT tenants_business_phone_not_blank
+                                  CHECK (business_phone IS NULL OR btrim(business_phone) <> ''),
+  google_rating                   numeric(2,1)
+                                  CONSTRAINT tenants_google_rating_range
+                                  CHECK (google_rating IS NULL
+                                         OR (google_rating >= 0 AND google_rating <= 5)),
+  google_review_count             integer
+                                  CONSTRAINT tenants_google_review_count_nonnegative
+                                  CHECK (google_review_count IS NULL OR google_review_count >= 0),
+  google_reviews_url              text
+                                  CONSTRAINT tenants_google_reviews_url_https
+                                  CHECK (google_reviews_url IS NULL
+                                         OR google_reviews_url ~ '^https://'),
+  ga4_measurement_id              text
+                                  CONSTRAINT tenants_ga4_measurement_id_shape
+                                  CHECK (ga4_measurement_id IS NULL
+                                         OR ga4_measurement_id ~ '^G-[A-Z0-9]{4,16}$'),
   -- Weekly credit reset bookkeeping: when run_weekly_credit_resets()
   -- last completed for this tenant. Default now() starts the cycle
   -- at tenant creation, so the first reset fires the following
@@ -174,7 +214,16 @@ SELECT
     )
   ) AS is_billing_ok,
   theme_accent,
-  reply_to_email
+  reply_to_email,
+  address_street,
+  address_city,
+  address_state,
+  address_zip,
+  business_phone,
+  google_rating,
+  google_review_count,
+  google_reviews_url,
+  ga4_measurement_id
 FROM tenants;
 
 COMMENT ON VIEW tenant_lookup IS
@@ -203,6 +252,54 @@ $$;
 
 REVOKE ALL ON FUNCTION set_tenant_reply_to(uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION set_tenant_reply_to(uuid, text) TO app_runtime;
+
+-- ----------------------------------------------------------
+-- Tenant business-info setter (migration 029). Full-replace semantics
+-- (all fields every call), matching the admin PUT that sends the whole
+-- business-info object. Same SECURITY DEFINER + GUC guard pattern as
+-- set_tenant_theme / set_tenant_reply_to.
+CREATE OR REPLACE FUNCTION set_tenant_business_info(
+  p_tenant_id    uuid,
+  p_street       text,
+  p_city         text,
+  p_state        text,
+  p_zip          text,
+  p_phone        text,
+  p_rating       numeric,
+  p_review_count integer,
+  p_reviews_url  text,
+  p_ga4          text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF p_tenant_id IS DISTINCT FROM current_setting('app.current_tenant_id', true)::uuid THEN
+    RAISE EXCEPTION 'tenant mismatch';
+  END IF;
+
+  UPDATE tenants SET
+    address_street      = p_street,
+    address_city        = p_city,
+    address_state       = p_state,
+    address_zip         = p_zip,
+    business_phone      = p_phone,
+    google_rating       = p_rating,
+    google_review_count = p_review_count,
+    google_reviews_url  = p_reviews_url,
+    ga4_measurement_id  = p_ga4
+  WHERE id = p_tenant_id;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION set_tenant_business_info(
+  uuid, text, text, text, text, text, numeric, integer, text, text
+) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION set_tenant_business_info(
+  uuid, text, text, text, text, text, numeric, integer, text, text
+) TO app_runtime;
 
 -- ----------------------------------------------------------
 -- Platform billing functions (migration 025) — tenants paying
@@ -511,6 +608,11 @@ CREATE TABLE offerings (
   name                  text NOT NULL
                         CHECK (btrim(name) <> '' AND name = btrim(name)),
   category              category_key NOT NULL,
+  -- Customer-facing blurb for the booking page's per-service details
+  -- expander. Keep names short; explain here. (Migration 027.)
+  description           text
+                        CONSTRAINT offerings_description_not_blank
+                        CHECK (description IS NULL OR btrim(description) <> ''),
   duration_minutes      integer NOT NULL CHECK (duration_minutes > 0),
   credit_cost           integer NOT NULL CHECK (credit_cost >= 0),
   dollar_price          integer NOT NULL CHECK (dollar_price >= 0),  -- cents
@@ -572,6 +674,33 @@ CREATE INDEX offering_resources_tenant_resource_idx
 ALTER TABLE offering_resources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE offering_resources FORCE ROW LEVEL SECURITY;
 CREATE POLICY offering_resources_tenant_isolation ON offering_resources
+  USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
+
+-- ----------------------------------------------------------
+-- Per-tenant display overlay for category keys: section label +
+-- ordering on the public booking page. NOT a categories entity —
+-- offerings.category stays a free-text category_key scalar, and a
+-- missing row here just means the client derives a label from the
+-- key. No FK to offerings (category isn't unique there); orphan rows
+-- are harmless and prunable. (Migration 028.)
+CREATE TABLE category_display (
+  tenant_id     uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  category      category_key NOT NULL,
+  label         text NOT NULL CHECK (btrim(label) <> ''),
+  display_order integer NOT NULL DEFAULT 0,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, category)
+);
+
+CREATE TRIGGER category_display_set_updated_at
+  BEFORE UPDATE ON category_display
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+ALTER TABLE category_display ENABLE ROW LEVEL SECURITY;
+ALTER TABLE category_display FORCE ROW LEVEL SECURITY;
+CREATE POLICY category_display_tenant_isolation ON category_display
   USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid)
   WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
@@ -1301,6 +1430,12 @@ CREATE TABLE booking_policies (
   -- self-service modification
   allow_member_self_cancel        boolean NOT NULL DEFAULT true,
   allow_customer_self_cancel      boolean NOT NULL DEFAULT true,
+  -- Walk-in customers can self-serve reschedule (via the emailed
+  -- manage link) until this many hours before the booking starts.
+  -- Shown at checkout as the flexibility promise. (Migration 026.)
+  customer_reschedule_hours_before integer NOT NULL DEFAULT 24
+                                  CONSTRAINT booking_policies_reschedule_hours_nonnegative
+                                  CHECK (customer_reschedule_hours_before >= 0),
   -- liability waiver (migration 023). waiver_version is bumped by
   -- the app whenever waiver_text changes; enforcement requires a
   -- waiver_signatures row at the CURRENT version, so a text change
@@ -1450,6 +1585,11 @@ CREATE TABLE bookings (
                                     AND customer_email !~ '\s')
                               ),
   customer_phone              text,
+  -- Optional free-text note from the walk-in checkout form ("Anything
+  -- we should know?"). Customer bookings only. (Migration 026.)
+  customer_note               text
+                              CONSTRAINT bookings_customer_note_not_blank
+                              CHECK (customer_note IS NULL OR btrim(customer_note) <> ''),
 
   -- timing
   start_time                  timestamptz NOT NULL,
@@ -1485,6 +1625,25 @@ CREATE TABLE bookings (
   cancellation_reason         text,
   no_show_marked_at           timestamptz,
   no_show_marked_by           uuid,
+
+  -- No-login self-serve manage capability (migration 026): sha256 hex
+  -- of a random token minted by the Stripe webhook when a walk-in
+  -- payment confirms. The raw token lives only in the confirmation /
+  -- reschedule emails; validity is bounded by booking state, not an
+  -- expiry column. NULL for member bookings and never-paid holds.
+  manage_token_hash           text
+                              CONSTRAINT bookings_manage_token_hash_shape
+                              CHECK (manage_token_hash IS NULL
+                                     OR manage_token_hash ~ '^[0-9a-f]{64}$'),
+
+  -- Reschedule audit trail (migration 026). Only the latest hop is
+  -- kept. The GiST exclusion below re-checks overlap automatically on
+  -- any reschedule because time_range is GENERATED.
+  rescheduled_at              timestamptz,
+  previous_start_time         timestamptz,
+  reschedule_count            integer NOT NULL DEFAULT 0
+                              CONSTRAINT bookings_reschedule_count_nonnegative
+                              CHECK (reschedule_count >= 0),
 
   created_at                  timestamptz NOT NULL DEFAULT now(),
   updated_at                  timestamptz NOT NULL DEFAULT now(),
@@ -1529,11 +1688,21 @@ CREATE TABLE bookings (
   -- refunds can't exceed payments
   CHECK (amount_refunded_cents <= amount_paid_cents),
 
+  -- notes belong to walk-in customers; member bookings have no form
+  -- that collects one (migration 026)
+  CONSTRAINT bookings_customer_note_customer_only
+  CHECK (member_id IS NULL OR customer_note IS NULL),
+
+  -- a rescheduled booking always carries its trail; an untouched one
+  -- never does (migration 026)
+  CONSTRAINT bookings_reschedule_audit_consistent
+  CHECK ((reschedule_count = 0) = (rescheduled_at IS NULL AND previous_start_time IS NULL)),
+
   -- pending_payment must have an expiry, and the hold can't outlast
   -- the slot itself (otherwise abandoned holds block real availability
   -- through the actual booked time). App code separately enforces a
-  -- shorter hold duration (e.g. 15 min); the DB constraint is the
-  -- absolute upper bound.
+  -- shorter hold duration (HOLD_DURATION_MINUTES, currently 30); the
+  -- DB constraint is the absolute upper bound.
   CHECK (status <> 'pending_payment' OR hold_expires_at IS NOT NULL),
   CHECK (status <> 'pending_payment' OR hold_expires_at <= start_time),
 
@@ -1612,6 +1781,12 @@ CREATE TABLE bookings (
 CREATE UNIQUE INDEX bookings_stripe_payment_intent_unique
   ON bookings (stripe_payment_intent_id)
   WHERE stripe_payment_intent_id IS NOT NULL;
+
+-- Globally unique by construction (sha256 of 256 random bits); doubles
+-- as the lookup index for the manage endpoints. (Migration 026.)
+CREATE UNIQUE INDEX bookings_manage_token_hash_unique
+  ON bookings (manage_token_hash)
+  WHERE manage_token_hash IS NOT NULL;
 
 CREATE INDEX bookings_tenant_member_start_idx
   ON bookings (tenant_id, member_id, start_time DESC)

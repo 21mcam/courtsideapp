@@ -352,7 +352,8 @@ export async function listAllBookings(req, res, next) {
               m.first_name AS member_first_name,
               m.last_name  AS member_last_name,
               m.email      AS member_email,
-              b.customer_first_name, b.customer_last_name, b.customer_email
+              b.customer_first_name, b.customer_last_name, b.customer_email,
+              b.customer_phone, b.customer_note
          FROM bookings b
          JOIN offerings o ON o.tenant_id = b.tenant_id AND o.id = b.offering_id
          JOIN resources r ON r.tenant_id = b.tenant_id AND r.id = b.resource_id
@@ -812,9 +813,9 @@ export async function createAdminBooking(req, res, next) {
 }
 
 // Accent keys mirror the CHECK constraint on tenants.theme_accent
-// (migration 019) and ACCENTS in client/src/theme.js.
+// (migrations 019 + 030) and ACCENTS in client/src/theme.js.
 const themeSchema = z.object({
-  accent: z.enum(['indigo', 'sky', 'emerald', 'violet', 'rose', 'slate']),
+  accent: z.enum(['indigo', 'sky', 'emerald', 'violet', 'rose', 'slate', 'court']),
 });
 
 export async function updateTenantTheme(req, res, next) {
@@ -857,6 +858,84 @@ export async function updateTenantReplyTo(req, res, next) {
       parsed.data.reply_to_email,
     ]);
     res.json({ reply_to_email: parsed.data.reply_to_email });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// PUT /api/admin/business-info — the tenant's public-page identity
+// (migration 029): structured address (state is a validated 2-letter
+// enum — never free text, that's how "new york,ny" happened on the
+// system this replaces), phone, manually-entered Google rating /
+// review count / reviews URL, optional GA4 measurement id. Full
+// replace: every field is sent on every save; '' clears to NULL.
+// Same SECURITY DEFINER write path as theme/reply-to.
+
+const US_STATES = [
+  'AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL','GA','HI','ID','IL',
+  'IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE',
+  'NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD',
+  'TN','TX','UT','VT','VA','WA','WV','WI','WY',
+];
+
+const emptyToNull = (schema) =>
+  z.preprocess((v) => (v === '' || v === undefined ? null : v), schema);
+
+const businessInfoSchema = z.object({
+  address_street: emptyToNull(z.string().trim().min(1).max(200).nullable()),
+  address_city: emptyToNull(z.string().trim().min(1).max(100).nullable()),
+  address_state: emptyToNull(z.enum(US_STATES).nullable()),
+  address_zip: emptyToNull(
+    z.string().regex(/^\d{5}(-\d{4})?$/, 'zip must be 12345 or 12345-6789').nullable(),
+  ),
+  business_phone: emptyToNull(z.string().trim().min(7).max(30).nullable()),
+  google_rating: emptyToNull(z.number().min(0).max(5).nullable()),
+  google_review_count: emptyToNull(z.number().int().nonnegative().nullable()),
+  google_reviews_url: emptyToNull(
+    z.string().url().startsWith('https://').max(500).nullable(),
+  ),
+  ga4_measurement_id: emptyToNull(
+    z
+      .string()
+      .regex(/^G-[A-Z0-9]{4,16}$/, 'GA4 measurement id looks like G-XXXXXXXXXX')
+      .nullable(),
+  ),
+});
+
+export async function updateTenantBusinessInfo(req, res, next) {
+  try {
+    const parsed = businessInfoSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'invalid input', details: parsed.error.flatten() });
+    }
+    const d = parsed.data;
+    try {
+      await req.db.query(
+        `SELECT set_tenant_business_info($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          req.tenant.id,
+          d.address_street,
+          d.address_city,
+          d.address_state,
+          d.address_zip,
+          d.business_phone,
+          d.google_rating,
+          d.google_review_count,
+          d.google_reviews_url,
+          d.ga4_measurement_id,
+        ],
+      );
+    } catch (err) {
+      if (err.code === '23514') {
+        return res
+          .status(400)
+          .json({ error: 'invalid business info: schema CHECK failed' });
+      }
+      throw err;
+    }
+    res.json({ business_info: d });
   } catch (err) {
     next(err);
   }

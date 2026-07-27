@@ -22,43 +22,61 @@
 //
 // Wrapping AuthProvider so any page can read tenant + me state.
 
+import { Suspense, lazy } from 'react';
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth.jsx';
-import AppShell from './components/AppShell.jsx';
-import LoginPage from './pages/LoginPage.jsx';
-import MemberHome from './pages/MemberHome.jsx';
-import AdminHome from './pages/AdminHome.jsx';
-import Wizard from './pages/Wizard.jsx';
-import BookingPage from './pages/BookingPage.jsx';
-import AdminBookings from './pages/AdminBookings.jsx';
-import ClassesPage from './pages/ClassesPage.jsx';
-import AdminClasses from './pages/AdminClasses.jsx';
-import AdminStripe from './pages/AdminStripe.jsx';
-import AdminCalendar from './pages/AdminCalendar.jsx';
-import MemberPlans from './pages/MemberPlans.jsx';
-import AdminSettings from './pages/AdminSettings.jsx';
-import AdminHours from './pages/AdminHours.jsx';
-import AdminBlackouts from './pages/AdminBlackouts.jsx';
-import AdminPolicies from './pages/AdminPolicies.jsx';
-import AdminWaivers from './pages/AdminWaivers.jsx';
-import WalkInPage from './pages/WalkInPage.jsx';
-import WalkInSuccessPage from './pages/WalkInSuccessPage.jsx';
-import RegisterPage from './pages/RegisterPage.jsx';
-import ForgotPasswordPage from './pages/ForgotPasswordPage.jsx';
-import ResetPasswordPage from './pages/ResetPasswordPage.jsx';
-import AdminMembers from './pages/AdminMembers.jsx';
-import AdminMemberDetail from './pages/AdminMemberDetail.jsx';
-import AdminStaff from './pages/AdminStaff.jsx';
-import AdminPacks from './pages/AdminPacks.jsx';
-import AdminReports from './pages/AdminReports.jsx';
-import AdminBilling from './pages/AdminBilling.jsx';
-import AdminCatalog from './pages/AdminCatalog.jsx';
+
+// Lazy like the pages: the sidebar shell (and its icon set) is
+// authed-surface weight the public storefront must not download.
+const AppShell = lazy(() => import('./components/AppShell.jsx'));
+
+// Route-level code splitting: the public walk-in page is the
+// storefront (~80% phones, parking-lot cell connections) and must
+// not ship the whole admin SPA. React.lazy + one Suspense gives each
+// page its own chunk; react/router/auth/ui stay in the shared entry.
+//
+// The walk-in flow itself is the exception: statically imported so
+// the highest-value route costs zero extra chunk round trips on a
+// cell connection (its weight is a few KB gzipped; the admin pages
+// are the ones worth splitting away from it).
+import WalkInPage from './pages/walkin/WalkInPage.jsx';
+
+const LoginPage = lazy(() => import('./pages/LoginPage.jsx'));
+const MemberHome = lazy(() => import('./pages/MemberHome.jsx'));
+const AdminHome = lazy(() => import('./pages/AdminHome.jsx'));
+const Wizard = lazy(() => import('./pages/Wizard.jsx'));
+const BookingPage = lazy(() => import('./pages/BookingPage.jsx'));
+const AdminBookings = lazy(() => import('./pages/AdminBookings.jsx'));
+const ClassesPage = lazy(() => import('./pages/ClassesPage.jsx'));
+const AdminClasses = lazy(() => import('./pages/AdminClasses.jsx'));
+const AdminStripe = lazy(() => import('./pages/AdminStripe.jsx'));
+const AdminCalendar = lazy(() => import('./pages/AdminCalendar.jsx'));
+const MemberPlans = lazy(() => import('./pages/MemberPlans.jsx'));
+const AdminSettings = lazy(() => import('./pages/AdminSettings.jsx'));
+const AdminHours = lazy(() => import('./pages/AdminHours.jsx'));
+const AdminBlackouts = lazy(() => import('./pages/AdminBlackouts.jsx'));
+const AdminPolicies = lazy(() => import('./pages/AdminPolicies.jsx'));
+const AdminWaivers = lazy(() => import('./pages/AdminWaivers.jsx'));
+const WalkInSuccessPage = lazy(() => import('./pages/WalkInSuccessPage.jsx'));
+const ManageBookingPage = lazy(() => import('./pages/walkin/ManageBookingPage.jsx'));
+const RegisterPage = lazy(() => import('./pages/RegisterPage.jsx'));
+const ForgotPasswordPage = lazy(() => import('./pages/ForgotPasswordPage.jsx'));
+const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage.jsx'));
+const AdminMembers = lazy(() => import('./pages/AdminMembers.jsx'));
+const AdminMemberDetail = lazy(() => import('./pages/AdminMemberDetail.jsx'));
+const AdminStaff = lazy(() => import('./pages/AdminStaff.jsx'));
+const AdminPacks = lazy(() => import('./pages/AdminPacks.jsx'));
+const AdminReports = lazy(() => import('./pages/AdminReports.jsx'));
+const AdminBilling = lazy(() => import('./pages/AdminBilling.jsx'));
+const AdminCatalog = lazy(() => import('./pages/AdminCatalog.jsx'));
 
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <Shell />
+        <Suspense fallback={<Loading />}>
+          <Shell />
+        </Suspense>
       </AuthProvider>
     </BrowserRouter>
   );
@@ -108,6 +126,8 @@ function Shell() {
       <Route path="/reset" element={<ResetPasswordPage />} />
       <Route path="/walk-in" element={<WalkInPage />} />
       <Route path="/walk-in/success" element={<WalkInSuccessPage />} />
+      {/* No-login manage/reschedule via the emailed capability link */}
+      <Route path="/walk-in/manage" element={<ManageBookingPage />} />
 
       {/* Everything authed renders inside the sidebar shell */}
       <Route element={<RouteAuthed><AppShell /></RouteAuthed>}>

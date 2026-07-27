@@ -65,6 +65,9 @@ export default function AdminPolicies() {
           max_advance_booking_days: String(p.max_advance_booking_days),
           allow_member_self_cancel: p.allow_member_self_cancel,
           allow_customer_self_cancel: p.allow_customer_self_cancel,
+          customer_reschedule_hours_before: String(
+            p.customer_reschedule_hours_before ?? 24,
+          ),
           waiver_required: p.waiver_required ?? false,
           waiver_text: p.waiver_text ?? '',
           waiver_version: p.waiver_version ?? 1,
@@ -107,6 +110,9 @@ export default function AdminPolicies() {
         max_advance_booking_days: Number(form.max_advance_booking_days),
         allow_member_self_cancel: form.allow_member_self_cancel,
         allow_customer_self_cancel: form.allow_customer_self_cancel,
+        customer_reschedule_hours_before: Number(
+          form.customer_reschedule_hours_before,
+        ),
         waiver_required: form.waiver_required,
         waiver_text: form.waiver_text.trim() === '' ? null : form.waiver_text,
       };
@@ -215,6 +221,21 @@ export default function AdminPolicies() {
                   label="Walk-in customers can cancel their own bookings"
                 />
               </div>
+              <Field
+                label="Reschedule cutoff (hours before start)"
+                hint="Walk-in customers can move their booking for free until this many hours before it starts — the promise shown at checkout."
+                className="max-w-xs"
+              >
+                <Input
+                  required
+                  type="number"
+                  min="0"
+                  value={form.customer_reschedule_hours_before}
+                  onChange={(e) =>
+                    set({ customer_reschedule_hours_before: e.target.value })
+                  }
+                />
+              </Field>
             </div>
           </Card>
 

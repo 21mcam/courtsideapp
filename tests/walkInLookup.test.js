@@ -56,6 +56,16 @@ before(async () => {
     )
   ).rows[0].id;
 
+  // Permissive max_advance_booking_days so 2027-dated fixture slots
+  // pass the advance-window gate (now enforced on the public path).
+  await privilegedPool.query(
+    `INSERT INTO booking_policies (tenant_id, max_advance_booking_days)
+     VALUES ($1, 730)
+     ON CONFLICT (tenant_id) DO UPDATE SET
+       max_advance_booking_days = EXCLUDED.max_advance_booking_days`,
+    [tenant_id],
+  );
+
   // Charges-enabled Stripe connection so walk-in creates succeed.
   stripe_account_id = `acct_test_${randomUUID().slice(0, 8)}`;
   stripeFake.__setAccountState(stripe_account_id, {
@@ -139,8 +149,7 @@ async function createBooking(start_time, email) {
       resource_id,
       start_time,
       customer: {
-        first_name: 'Look',
-        last_name: 'Up',
+        full_name: 'Look Up',
         email,
         phone: '+15555550142',
       },
