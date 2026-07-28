@@ -18,10 +18,17 @@
 //      courtside_tenant_id + courtside_member_id + courtside_plan_id.
 //   4. Same for the customer (less critical but cleaner).
 //
+// Fail-closed: per-subscription errors are collected (the batch keeps
+// going so one bad row doesn't hide the rest), then every failure is
+// logged and the script exits nonzero. A partial backfill must never
+// report success — any subscription left without courtside_* metadata
+// means that member silently stops receiving weekly credits, which is
+// exactly the failure mode this script exists to prevent.
+//
 // Idempotent: setting metadata that's already present is a no-op
-// from Stripe's perspective. Safe to rerun.
+// from Stripe's perspective. Safe to rerun after fixing failures.
 
-import { banner, info } from './shared/log.js';
+import { banner, info, error as logError } from './shared/log.js';
 import { pool } from './shared/db.js';
 import { getStripe } from '../../src/services/stripe.js';
 
@@ -46,7 +53,11 @@ async function main() {
 
   const stripe = getStripe();
 
-  // Pull every Courtside subscription with stripe ids
+  // Pull every non-terminal Courtside subscription with stripe ids.
+  // Terminal subscriptions (cancelled) emit no further billing
+  // webhooks, so they need no metadata — and Stripe refuses the
+  // metadata update on a canceled subscription anyway, which would
+  // guarantee exit 1 for any tenant with churn history.
   const subs = await pool.query(
     `SELECT s.id, s.member_id, s.stripe_subscription_id, s.stripe_customer_id,
             spp.plan_id
@@ -56,12 +67,14 @@ async function main() {
         AND spp.subscription_id = s.id
         AND spp.ended_at IS NULL
       WHERE s.tenant_id = $1
-        AND s.stripe_subscription_id IS NOT NULL`,
+        AND s.stripe_subscription_id IS NOT NULL
+        AND s.status IN ('pending', 'active', 'past_due', 'incomplete')`,
     [tenant_id],
   );
   info('subscriptions to backfill', { count: subs.rows.length });
 
   let updated = 0;
+  const failures = [];
   for (const row of subs.rows) {
     const meta = {
       courtside_tenant_id: tenant_id,
@@ -88,16 +101,33 @@ async function main() {
       }
       updated += 1;
     } catch (err) {
-      // Continue past per-subscription errors so one bad row
-      // doesn't kill the batch. Log for follow-up.
-      info('backfill error', {
+      // Continue past per-subscription errors so one bad row doesn't
+      // kill the batch — the operator should see EVERY failure in one
+      // run, not one per rerun. But remember it: a swallowed failure
+      // here means a member who silently stops getting weekly credits.
+      failures.push({
         stripe_subscription_id: row.stripe_subscription_id,
         error: err.message,
       });
     }
   }
-  info('backfill done', { updated, total: subs.rows.length });
+  info('backfill done', {
+    updated,
+    failed: failures.length,
+    total: subs.rows.length,
+  });
   await pool.end();
+
+  if (failures.length > 0) {
+    for (const f of failures) {
+      logError('backfill failure', f);
+    }
+    process.stderr.write(
+      `\n${failures.length} subscription(s) failed to backfill — fix and ` +
+        `rerun; metadata updates are idempotent so rerunning is safe.\n`,
+    );
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {
