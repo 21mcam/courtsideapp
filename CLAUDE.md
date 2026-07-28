@@ -449,6 +449,15 @@ ones emerge.
    transaction → commit → external call. Use the outbox pattern
    (TBD) for reliability-critical flows.
 
+10. **A bare `ON CONFLICT DO NOTHING` (no conflict target) also
+    swallows EXCLUSION-constraint violations**, not just unique ones.
+    On tables with a GiST exclusion (bookings, operating_hours,
+    subscription_plan_periods) that silently discards overlapping
+    rows instead of raising 23P01 — and any "log the conflict" catch
+    branch becomes dead code. Always name the arbiter
+    (`ON CONFLICT (id)`, `ON CONFLICT (tenant_id, name)`) so
+    exclusion violations still raise.
+
 ## Layout
 
 ```
