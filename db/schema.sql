@@ -1645,6 +1645,21 @@ CREATE TABLE bookings (
                               CONSTRAINT bookings_reschedule_count_nonnegative
                               CHECK (reschedule_count >= 0),
 
+  -- Import provenance (migration 031): which external system this
+  -- booking was imported from + its id there. Both NULL for bookings
+  -- born in Courtside. (tenant_id, external_source, external_id) is
+  -- the migration loader's idempotency key (partial unique index
+  -- below) — before it, loader reruns deduped only via the GiST
+  -- overlap exclusion, which never covered cancelled bookings.
+  -- Sources deliberately narrow; widen when a new one actually exists.
+  external_source             text
+                              CONSTRAINT bookings_external_source_known
+                              CHECK (external_source IS NULL
+                                     OR external_source IN ('setmore', 'diamond')),
+  external_id                 text
+                              CONSTRAINT bookings_external_id_not_blank
+                              CHECK (external_id IS NULL OR btrim(external_id) <> ''),
+
   created_at                  timestamptz NOT NULL DEFAULT now(),
   updated_at                  timestamptz NOT NULL DEFAULT now(),
 
@@ -1697,6 +1712,11 @@ CREATE TABLE bookings (
   -- never does (migration 026)
   CONSTRAINT bookings_reschedule_audit_consistent
   CHECK ((reschedule_count = 0) = (rescheduled_at IS NULL AND previous_start_time IS NULL)),
+
+  -- provenance is a pair: an imported booking carries both, a
+  -- Courtside-born booking carries neither (migration 031)
+  CONSTRAINT bookings_external_both_or_neither
+  CHECK ((external_source IS NULL) = (external_id IS NULL)),
 
   -- pending_payment must have an expiry, and the hold can't outlast
   -- the slot itself (otherwise abandoned holds block real availability
@@ -1787,6 +1807,14 @@ CREATE UNIQUE INDEX bookings_stripe_payment_intent_unique
 CREATE UNIQUE INDEX bookings_manage_token_hash_unique
   ON bookings (manage_token_hash)
   WHERE manage_token_hash IS NOT NULL;
+
+-- Migration loader idempotency key: 03_load INSERTs with ON CONFLICT
+-- on this, so reruns report "already present" per imported row —
+-- including cancelled rows, which the GiST exclusion never covered.
+-- Partial: Courtside-born bookings never contend. (Migration 031.)
+CREATE UNIQUE INDEX bookings_external_import_unique
+  ON bookings (tenant_id, external_source, external_id)
+  WHERE external_id IS NOT NULL;
 
 CREATE INDEX bookings_tenant_member_start_idx
   ON bookings (tenant_id, member_id, start_time DESC)

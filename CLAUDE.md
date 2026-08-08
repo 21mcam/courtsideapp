@@ -233,6 +233,11 @@ exclusively by `apply_credit_change`:
   NOT fire on time-only UPDATEs). A future customer self-cancel
   should reuse this token and finally consume
   `allow_customer_self_cancel`.
+- **import provenance** — `bookings.external_source` /
+  `external_id` (migration 031). Set only by the Momentum importer
+  (`scripts/migration/`); the loader's idempotency key for rerun-safe
+  imports. Never written by app code — NULL on every organically
+  created booking.
 - **`class_instance`** — a single occurrence of a class offering.
   TBD next session.
 - **`class_booking`** — a person's spot in a class_instance. TBD.

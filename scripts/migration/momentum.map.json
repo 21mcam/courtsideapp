@@ -1,0 +1,69 @@
+{
+  "_comment": [
+    "Momentum → Courtside mapping config, consumed by 02_transform.js.",
+    "Fail-closed: any entry containing the string 'TODO' (or a null",
+    "numeric) that is actually referenced by snapshot data aborts the",
+    "transform with a full list of gaps. Fill this in from the live",
+    "Courtside admin catalog + a real Setmore export BEFORE the",
+    "staging dry run. Offerings/resources/plans are NOT created by the",
+    "migration — they are admin-UI prework; these maps only translate",
+    "source names onto rows that must already exist."
+  ],
+  "timezone": "America/New_York",
+  "plans": {
+    "basic": {
+      "name": "TODO Courtside plan name for Diamond 'basic'",
+      "monthly_price_cents": null,
+      "stripe_price_id": "TODO price_... from Momentum's connected account"
+    },
+    "pro": {
+      "name": "TODO Courtside plan name for Diamond 'pro'",
+      "monthly_price_cents": null,
+      "stripe_price_id": "TODO"
+    },
+    "unlimited": {
+      "name": "TODO Courtside plan name for Diamond 'unlimited'",
+      "monthly_price_cents": null,
+      "stripe_price_id": "TODO",
+      "_note": "Diamond models unlimited as credits_per_week=999. Courtside has no unlimited concept yet; the 999 value carries over as-is at cutover and is tracked as a known wart in SOURCE_SCHEMA.md."
+    }
+  },
+  "services": {
+    "1/2 Hour Cage Time (No Machine)": "1/2 Hour Cage Time (No Machine)",
+    "1/2 Hour Machine and Cage": "1/2 Hour Machine and Cage",
+    "1/2 Hour Hit Trax and Pitching Machine": "1/2 Hour Hit Trax and Pitching Machine",
+    "1/2 Hour Softball Machine & Cage": "1/2 Hour Softball Machine & Cage",
+    "1 Hour Cage Time (No Machine)": "1 Hour Cage Time (No Machine)",
+    "1 Hour Pitching Machine And Cage": "1 Hour Pitching Machine And Cage",
+    "1 Hour Softball Machine and Cage": "1 Hour Softball Machine and Cage",
+    "Hit Trax (One Hour) + 1 Hour Cage Rental": "Hit Trax (One Hour) + 1 Hour Cage Rental",
+    "HitTrax Simulator Special": "HitTrax Simulator Special",
+    "Pitching Rapsodo + 1 Hour Cage Rental": "Pitching Rapsodo + 1 Hour Cage Rental",
+    "1.5 Hours Cage Time (No Machine)": "1.5 Hours Cage Time (No Machine)",
+    "1.5 Hours Cage And Pitching Machine": "1.5 Hours Cage And Pitching Machine",
+    "2 Hours Cage Time (No Machine)": "2 Hours Cage Time (No Machine)",
+    "2 Hours Cage And Machine Time": "2 Hours Cage And Machine Time",
+    "HitTrax (Two Hours) + 2 Hour Cage Rental": "HitTrax (Two Hours) + 2 Hour Cage Rental",
+    "3 Hours Cage Time (No Machine)": "3 Hours Cage Time (No Machine)"
+  },
+  "staff_keys": {
+    "_comment": "Setmore staff key (or Diamond bookings.staff_key) → Courtside resource name. Unknown until a real Setmore export is inspected; transform fails listing every unmapped key it encounters."
+  },
+  "setmore_columns": {
+    "_comment": "Header names in the Setmore CSV export → canonical fields. Inspect a real export and replace the TODOs; transform refuses to parse until they are set. Times are naive local wall-clock in the top-level \"timezone\". OPTIONAL \"date\": set it when the export splits date and time into separate columns — the parsed start becomes '<date> <start_time>' (and likewise for end); leave it null when start/end carry full timestamps.",
+    "appointment_id": "TODO",
+    "service_name": "TODO",
+    "staff_key": "TODO",
+    "customer_name": "TODO",
+    "customer_email": "TODO",
+    "customer_phone": "TODO",
+    "start_time": "TODO",
+    "end_time": "TODO",
+    "status": "TODO",
+    "date": null
+  },
+  "setmore_status_map": {
+    "_comment": "Setmore status value → Courtside booking status intent ('confirmed', 'cancelled', 'no_show'). Past-dated confirmed rows become 'completed' automatically.",
+    "TODO Setmore status seen in export": "confirmed"
+  }
+}

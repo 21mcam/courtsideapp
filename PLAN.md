@@ -258,14 +258,22 @@ members through their own Stripe account.
 **Goal:** Momentum runs on Courtside. Old portal and Setmore are
 archived.
 
-- Data migration script: members, credit balances, plans, upcoming
-  bookings. Tested against a Supabase snapshot before touching live.
-- Forward cutover: pick a date (e.g. Sept 1). From that date, all new
-  bookings go through Courtside. Setmore continues to hold pre-existing
-  bookings scheduled after that date, and the current keepalive /
-  hard-delete workaround keeps running until those bookings complete.
-- Run both systems concurrently for up to 60 days until the last
-  Setmore booking completes.
+- Data migration pipeline: members, credit balances, plans, and
+  bookings — member bookings from the Momentum DB plus walk-ins
+  (including future ones) from a Setmore export. Tested against a
+  Supabase snapshot before touching live.
+- Hard cutover: pick a date (e.g. Sept 1). That morning: freeze the
+  old portal and Setmore intake, import everything — future Setmore
+  bookings included — verify, flip webhook + DNS. No parallel
+  running: walk-in checkout v2 removed the reason Setmore had to
+  stay (Courtside couldn't take walk-ins), so from cutover there is
+  one source of truth per booking and no dual-write scheduling. The
+  keepalive workaround runs until cutover day only; the Setmore
+  account stays read-only for 30 days as the reference copy.
+- Pipeline gates (see `scripts/migration/README.md`): every stage
+  requires its upstream checksummed manifest, blockers abort unless
+  explicitly acknowledged with a recorded plan, and `05_verify.js`
+  must pass before anything flips.
 - Member communication: email blast about the switch, FAQ page, login
   links to new URL.
 - Final Setmore shutdown: cancel account, remove env vars, delete
