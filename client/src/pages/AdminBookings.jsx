@@ -17,6 +17,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { addDays, localDateString, todayLocalString, zonedDayStartIso } from '../lib/tz.js';
+import { stripeRefundNotice } from '../lib/cancelNotice.js';
 import { bookingStatusBadge, formatSlotLocal } from '../format.js';
 import {
   Badge,
@@ -100,9 +101,10 @@ export default function AdminBookings() {
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       const refunded = body.refund_credits ?? 0;
       setActionMessage(
-        refunded > 0
+        (refunded > 0
           ? `Cancelled. ${refunded} credit${refunded === 1 ? '' : 's'} refunded (${body.refund_percent}%).`
-          : 'Cancelled. No refund per policy.',
+          : 'Cancelled. No credit refund per policy.') +
+          stripeRefundNotice(body),
       );
       load();
     } catch (err) {

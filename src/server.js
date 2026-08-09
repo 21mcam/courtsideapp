@@ -10,6 +10,20 @@ import { runHorizonSweep } from './controllers/classSchedules.js';
 
 const port = Number.parseInt(process.env.PORT, 10) || 3000;
 
+// Live email with the default From is a silent failure mode: Resend
+// rejects senders on unverified domains, every call site is
+// fire-and-forget, and the UI reports success. Can't be a hard error
+// (keyless dev is fine) — but make the misconfiguration loud.
+if (process.env.RESEND_API_KEY && !process.env.EMAIL_FROM) {
+  console.warn(
+    '[email] RESEND_API_KEY is set but EMAIL_FROM is not. Sends will use the ' +
+      "default 'Courtside <noreply@courtside.app>' — Resend rejects senders " +
+      'on domains not verified in YOUR account, so every email (booking ' +
+      'confirmations, walk-in manage links, password resets) will silently ' +
+      'fail. Set EMAIL_FROM to an address on a domain verified in Resend.',
+  );
+}
+
 app.listen(port, () => {
   console.log(`courtside listening on :${port}`);
 });

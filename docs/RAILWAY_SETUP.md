@@ -32,12 +32,22 @@ Railway dashboard → your service → **Variables** → add each:
 |---|---|
 | `DATABASE_URL` | The runtime pooler URL from [SUPABASE_SETUP.md](SUPABASE_SETUP.md) step 4. Same string as your local `.env` — `app_runtime` role, hex password, transaction pooler host, port 6543. |
 | `JWT_SECRET` | A long random string. Generate locally with `openssl rand -hex 64` (longer than the DB password for extra entropy). Different value per environment (don't reuse dev's secret in prod). |
-| `APP_HOSTNAME` | Your apex hostname, e.g. `app.yourdomain.com`. The subdomain middleware strips this off `req.hostname` to extract the tenant. |
+| `APP_HOSTNAME` | Your apex hostname, e.g. `app.yourdomain.com`. The subdomain middleware strips this off `req.hostname` to extract the tenant. Emailed links and the admin "share booking page" URLs are also built from it. |
 | `NODE_ENV` | `production` |
-| `RESEND_API_KEY` | (Phase 3+) From Resend dashboard. Leave blank in Phase 0. |
-| `STRIPE_SECRET_KEY` | (Phase 3+) Live key from Stripe dashboard. Test key is fine until launch. |
-| `STRIPE_WEBHOOK_SECRET` | (Phase 5+) Provided by Stripe when you create the webhook endpoint. |
-| `STRIPE_CONNECT_CLIENT_ID` | (Phase 3+) From Stripe Connect settings. |
+| `SUPER_ADMIN_TOKEN` | Long random string (`openssl rand -hex 32`). Gates `/api/platform/*` — the ONLY way to create a tenant via API. Unset = those routes 503. |
+| `RESEND_API_KEY` | From Resend dashboard. Unset = every email is a logged no-op (fine for dev, not beta). |
+| `EMAIL_FROM` | **Required whenever `RESEND_API_KEY` is set.** A sender on a domain verified in YOUR Resend account, e.g. `Courtside <noreply@yourdomain.com>`. Left unset, the code falls back to `noreply@courtside.app`, Resend rejects every send, and emails silently vanish (the server logs a boot warning). |
+| `STRIPE_SECRET_KEY` | Live key from Stripe dashboard. Test key is fine until launch. |
+| `STRIPE_WEBHOOK_SECRET` | Signing secret of the **Connect** webhook endpoint (`/webhooks/stripe`, "listen to events on connected accounts"). See [BETA_CHECKLIST.md](BETA_CHECKLIST.md) §3 for the endpoint recipe + event list. |
+| `PLATFORM_STRIPE_WEBHOOK_SECRET` | (only if charging tenants) Signing secret of the platform-account endpoint `/webhooks/stripe-platform`. |
+| `PLATFORM_PRICE_ID` | (only if charging tenants) Platform-account recurring Price for the SaaS fee. Unset = Billing tab shows a contact-us state. |
+| `PLATFORM_TRIAL_DAYS` | Default 30. **Set `0` for beta** unless platform billing is fully configured — otherwise an API-created tenant hits a 402 billing hold 30 days after signup. |
+| `SCHEDULER_ENABLED` | Leave **unset**. The literal string `false` disables the Node scheduler — the only thing running weekly credit resets, cleanup sweeps, and class-horizon extension until pg_cron is enabled. |
+
+Not variables: `STRIPE_CONNECT_CLIENT_ID` is read by no code (Connect
+Standard onboarding uses API account links, not OAuth) — skip it.
+`STRIPE_TEST_MODE` / `STRIPE_FAKE_ACCOUNTS` are dev/test fakes and
+must never be set in production.
 
 **Do NOT set `VITE_API_URL`.** The frontend bundle uses same-origin
 relative URLs in production — both backend and frontend are served

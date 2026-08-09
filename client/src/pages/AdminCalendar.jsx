@@ -61,6 +61,7 @@ import {
   gridBounds,
 } from '../lib/calendarLayout.js';
 import { zonedTimeToUtc } from '../lib/tz.js';
+import { stripeRefundNotice } from '../lib/cancelNotice.js';
 
 // Desktop vertical scale: 1px per minute → ~1020px tall grid by
 // default. Phones double it (see pxPerMin in Grid) so short bookings
@@ -882,7 +883,7 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
       onActionSuccess(
         isClass
           ? `Class cancelled — ${body.roster_cancelled} roster row(s), ${body.members_refunded} refunded`
-          : `Booking cancelled — ${body.refund_credits ?? 0} credit(s) refunded (${body.refund_percent ?? 0}%)`,
+          : `Booking cancelled — ${body.refund_credits ?? 0} credit(s) refunded (${body.refund_percent ?? 0}%).${stripeRefundNotice(body)}`,
       );
     } catch (err) {
       onActionSuccess(`Cancel failed: ${err.message}`);

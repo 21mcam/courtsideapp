@@ -1,8 +1,10 @@
 // Admin-only views + light writes for member management.
 //
 // Phase 1 slice 4 had read-only lists. Phase 2 slice 4 adds:
-//   - manual member create (user_id = NULL — invite flow / data
-//     import; the member can later set up a login and link)
+//   - manual member create — finds-or-creates the login identity
+//     (users row, NULL password_hash for new emails) and links it,
+//     so the welcome email can carry a set-password link. Mirrors
+//     the staff-invite flow.
 //   - credit adjustments via apply_credit_change()
 //   - members list now includes current_credits via LEFT JOIN
 
@@ -36,12 +38,18 @@ export async function listMembers(req, res, next) {
   try {
     // LEFT JOIN with credit_balances so the list always returns one
     // row per member, with balance defaulting to 0 if no balance row
-    // exists yet (first credit change auto-creates it).
+    // exists yet (first credit change auto-creates it). login_active
+    // distinguishes "can sign in" from "linked but hasn't set a
+    // password yet" (admin-created members start with a NULL hash).
     const result = await req.db.query(
       `SELECT m.id, m.email, m.first_name, m.last_name, m.phone,
               m.user_id, m.created_at,
+              (u.password_hash IS NOT NULL) AS login_active,
               COALESCE(cb.current_credits, 0) AS current_credits
          FROM members m
+    LEFT JOIN users u
+           ON u.tenant_id = m.tenant_id
+          AND u.id = m.user_id
     LEFT JOIN credit_balances cb
            ON cb.tenant_id = m.tenant_id
           AND cb.member_id = m.id
@@ -64,46 +72,97 @@ export async function createManualMember(req, res, next) {
         .json({ error: 'invalid input', details: parsed.error.flatten() });
     }
     const { email, first_name, last_name, phone } = parsed.data;
+    const { tenant, db } = req;
 
+    let member;
+    let user_id;
+    let needsPassword;
     try {
-      // user_id stays NULL — this is a manual member without a login.
-      // The composite FK (tenant_id, user_id, email) is inactive when
-      // user_id is null; no FK enforcement.
-      const result = await req.db.query(
-        `INSERT INTO members
-           (tenant_id, email, first_name, last_name, phone)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, email, first_name, last_name, phone, user_id, created_at`,
-        [req.tenant.id, email, first_name, last_name, phone ?? null],
+      // Find-or-create the login identity so the member can actually
+      // sign in (same tenant + same email = one user identity,
+      // CLAUDE.md). A brand-new email gets a users row with a NULL
+      // password_hash and a set-password link in the welcome email —
+      // the staff-invite mechanism. An existing user (e.g. an admin
+      // adding themselves as a member) is linked as-is and welcomed
+      // with a plain sign-in link.
+      const userRes = await db.query(
+        `SELECT id, password_hash FROM users
+          WHERE tenant_id = $1 AND email = $2`,
+        [tenant.id, email],
       );
-      const member = { ...result.rows[0], current_credits: 0 };
 
-      // Welcome email — sent AFTER the transaction commits (res
-      // 'finish' fires after withTenantContext's COMMIT flushes),
-      // fire-and-forget. TODO: outbox for reliability-critical
-      // delivery.
-      const tenant = req.tenant;
-      res.on('finish', () => {
-        sendMemberWelcome({
-          tenant,
-          to: member.email,
-          firstName: member.first_name,
-        }).catch((err) =>
-          console.error('[email] member welcome send failed:', err),
+      if (userRes.rows.length > 0) {
+        user_id = userRes.rows[0].id;
+        needsPassword = userRes.rows[0].password_hash == null;
+      } else {
+        needsPassword = true;
+        const ins = await db.query(
+          `INSERT INTO users (tenant_id, email, password_hash, first_name, last_name)
+           VALUES ($1, $2, NULL, $3, $4)
+           RETURNING id`,
+          [tenant.id, email, first_name, last_name],
         );
-      });
+        user_id = ins.rows[0].id;
+      }
 
-      res.status(201).json({ member });
+      // The composite FK (tenant_id, user_id, email) enforces that a
+      // linked member's email matches the user's — both come from the
+      // same normalized input here.
+      const result = await db.query(
+        `INSERT INTO members
+           (tenant_id, user_id, email, first_name, last_name, phone)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, email, first_name, last_name, phone, user_id, created_at`,
+        [tenant.id, user_id, email, first_name, last_name, phone ?? null],
+      );
+      member = { ...result.rows[0], current_credits: 0 };
     } catch (err) {
       if (err.code === '23505') {
-        // UNIQUE (tenant_id, email) — email already in use by another
-        // member in this tenant. (May or may not have a linked user.)
+        // UNIQUE (tenant_id, email) on members — or on users when two
+        // creates for the same brand-new email race (double-submit;
+        // member-create vs self-registration): either way the email
+        // is taken by the time we land. The 4xx response makes
+        // withTenantContext ROLLBACK, discarding any users row
+        // created above.
         return res
           .status(409)
           .json({ error: 'email already in use by another member in this tenant' });
       }
       throw err;
     }
+
+    // Token mint sits OUTSIDE the 23505→409 mapping (mirrors
+    // inviteAdmin): its own unique index can also raise 23505 under
+    // a concurrent forgot-password race, which is not an
+    // email-already-in-use condition.
+    const setPasswordUrl = needsPassword
+      ? tenantUrl(
+          tenant.subdomain,
+          `/reset?token=${await issuePasswordSetupToken(
+            db,
+            tenant.id,
+            user_id,
+            INVITE_TOKEN_EXPIRY_HOURS,
+          )}&invite=1`,
+        )
+      : null;
+
+    // Welcome email — sent AFTER the transaction commits (res
+    // 'finish' fires after withTenantContext's COMMIT flushes),
+    // fire-and-forget. TODO: outbox for reliability-critical
+    // delivery.
+    res.on('finish', () => {
+      sendMemberWelcome({
+        tenant,
+        to: member.email,
+        firstName: member.first_name,
+        setPasswordUrl,
+      }).catch((err) =>
+        console.error('[email] member welcome send failed:', err),
+      );
+    });
+
+    res.status(201).json({ member });
   } catch (err) {
     next(err);
   }
@@ -191,8 +250,12 @@ export async function getMemberDetail(req, res, next) {
     const memberRes = await db.query(
       `SELECT m.id, m.email, m.first_name, m.last_name, m.phone,
               m.user_id, m.created_at, m.updated_at,
+              (u.password_hash IS NOT NULL) AS login_active,
               COALESCE(cb.current_credits, 0) AS current_credits
          FROM members m
+    LEFT JOIN users u
+           ON u.tenant_id = m.tenant_id
+          AND u.id = m.user_id
     LEFT JOIN credit_balances cb
            ON cb.tenant_id = m.tenant_id
           AND cb.member_id = m.id

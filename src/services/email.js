@@ -367,26 +367,44 @@ export function renderPasswordResetEmail({ tenantName, accent, resetUrl }) {
   return { subject, html, text };
 }
 
-export function renderWelcomeEmail({ tenantName, accent, firstName, loginUrl }) {
+// Two variants share the template (like the staff invite):
+//   * setPasswordUrl provided: the member has no password yet (manual
+//     admin create) — the button is a set-password link
+//     (password-reset-token infrastructure, 7-day expiry).
+//   * otherwise: they can already sign in — plain login link.
+export function renderWelcomeEmail({
+  tenantName,
+  accent,
+  firstName,
+  loginUrl,
+  setPasswordUrl = null,
+}) {
   const subject = `Welcome to ${tenantName}`;
   const greeting = firstName ? `Hi ${firstName},` : 'Hi,';
   const hex = accentHex(accent);
+  const actionUrl = setPasswordUrl ?? loginUrl;
+  const lead = setPasswordUrl
+    ? 'your membership is set up. Set a password to activate your account — then you can see your credits, book sessions, and manage everything yourself. The link below expires in 7 days.'
+    : 'your membership is set up. Sign in to see your credits, book sessions, and manage your account.';
+  const buttonLabel = setPasswordUrl
+    ? 'Set your password'
+    : `Go to ${tenantName}`;
   const html = renderLayout({
     tenantName,
     accent,
     bodyHtml: `                <p style="margin:0 0 8px;font-size:17px;font-weight:700;">Welcome to ${escapeHtml(tenantName)}</p>
-                <p style="margin:0 0 16px;">${escapeHtml(greeting)} your membership is set up. Sign in to see your credits, book sessions, and manage your account.</p>
+                <p style="margin:0 0 16px;">${escapeHtml(greeting)} ${escapeHtml(lead)}</p>
                 <p style="margin:0 0 16px;">
-                  <a href="${escapeHtml(loginUrl)}" style="display:inline-block;background-color:${hex};color:#ffffff;text-decoration:none;font-weight:600;padding:10px 20px;border-radius:8px;">Go to ${escapeHtml(tenantName)}</a>
+                  <a href="${escapeHtml(actionUrl)}" style="display:inline-block;background-color:${hex};color:#ffffff;text-decoration:none;font-weight:600;padding:10px 20px;border-radius:8px;">${escapeHtml(buttonLabel)}</a>
                 </p>
                 <p style="margin:0;color:#64748b;font-size:13px;">Questions? Reply to this email or contact the facility.</p>`,
   });
   const text = [
     `Welcome to ${tenantName}`,
     '',
-    `${greeting} your membership is set up. Sign in to see your credits, book sessions, and manage your account.`,
+    `${greeting} ${lead}`,
     '',
-    loginUrl,
+    actionUrl,
     '',
     'Questions? Reply to this email or contact the facility.',
   ].join('\n');
@@ -702,13 +720,14 @@ export function sendPackReceipt({
   return sendEmail({ to, subject, html, text, replyTo });
 }
 
-export function sendMemberWelcome({ tenant, to, firstName }) {
+export function sendMemberWelcome({ tenant, to, firstName, setPasswordUrl = null }) {
   const { tenantName, accent, replyTo } = tenantSendFields(tenant);
   const { subject, html, text } = renderWelcomeEmail({
     tenantName,
     accent,
     firstName,
     loginUrl: tenantUrl(tenant.subdomain, '/login'),
+    setPasswordUrl,
   });
   return sendEmail({ to, subject, html, text, replyTo });
 }

@@ -166,6 +166,24 @@ test('welcome renders greeting and login URL', () => {
   assert.ok(text.includes('http://momentum.localhost:5173/login'));
 });
 
+test('welcome set-password variant swaps the action link and copy', () => {
+  const setPasswordUrl =
+    'http://momentum.localhost:5173/reset?token=abc123&invite=1';
+  const { subject, html, text } = renderWelcomeEmail({
+    tenantName: 'Momentum',
+    accent: 'sky',
+    firstName: 'Casey',
+    loginUrl: 'http://momentum.localhost:5173/login',
+    setPasswordUrl,
+  });
+  assert.equal(subject, 'Welcome to Momentum');
+  // The button targets the set-password link, not the login page.
+  assert.ok(html.includes('Set your password'));
+  assert.ok(text.includes(setPasswordUrl));
+  assert.ok(text.includes('expires in 7 days'));
+  assert.ok(!text.includes('/login'), 'no login URL in the set-password variant');
+});
+
 test('tenantUrl matches resolveTenant hostname shapes (dev and prod)', () => {
   const prevHost = process.env.APP_HOSTNAME;
   const prevEnv = process.env.NODE_ENV;
@@ -462,7 +480,7 @@ test('member self-signup gets a welcome email (keyless no-op)', { skip }, async 
   assert.ok(mail.text.includes(`http://${TENANT}.localhost:5173/login`));
 });
 
-test('admin-created member gets a welcome email (keyless no-op)', { skip }, async () => {
+test('admin-created member gets a welcome email with a set-password link (keyless no-op)', { skip }, async () => {
   __clearSkippedEmails();
   const email = `manual-${randomUUID()}@example.com`;
   const res = await adminFetch('/api/admin/members', {
@@ -476,7 +494,14 @@ test('admin-created member gets a welcome email (keyless no-op)', { skip }, asyn
   assert.equal(mail.subject, 'Welcome to Email Tests');
   assert.equal(mail.replyTo, REPLY_TO);
   assert.ok(mail.html.includes('Hi Manny,'));
-  assert.ok(mail.text.includes(`http://${TENANT}.localhost:5173/login`));
+  // A fresh email has no login yet — the welcome carries the
+  // set-password link (staff-invite mechanism), not a bare /login.
+  assert.match(
+    mail.text,
+    new RegExp(
+      `http://${TENANT}\\.localhost:5173/reset\\?token=[0-9a-f]+&invite=1`,
+    ),
+  );
 });
 
 test('member booking sends a confirmation with credits + local time', { skip }, async () => {
