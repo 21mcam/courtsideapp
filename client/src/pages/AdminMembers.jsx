@@ -95,8 +95,20 @@ export default function AdminMembers() {
                     </td>
                     <td className="px-4 py-3 font-mono text-xs">{m.email}</td>
                     <td className="px-4 py-3">
-                      <Badge tone={m.user_id ? 'success' : 'neutral'}>
-                        {m.user_id ? 'has login' : 'no login'}
+                      <Badge
+                        tone={
+                          m.login_active
+                            ? 'success'
+                            : m.user_id
+                            ? 'warning'
+                            : 'neutral'
+                        }
+                      >
+                        {m.login_active
+                          ? 'has login'
+                          : m.user_id
+                          ? 'invite sent'
+                          : 'no login'}
                       </Badge>
                     </td>
                     <td className="px-4 py-3">{m.current_credits ?? 0}</td>
@@ -181,8 +193,9 @@ function AddMemberModal({ onClose, onAdded }) {
           </button>
         </div>
         <p className="text-sm text-slate-500 mb-4">
-          Creates the member record without a login — they get a welcome
-          email and can set up their own account later.
+          The member gets a welcome email with a link to set their
+          password, so they can sign in to book sessions and manage
+          their own account.
         </p>
         <form onSubmit={submit}>
           <div className="space-y-4">

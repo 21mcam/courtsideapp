@@ -17,6 +17,10 @@ import bcrypt from 'bcryptjs';
 import pg from 'pg';
 import { app } from '../src/app.js';
 
+const { __getSkippedEmails, __clearSkippedEmails } = await import(
+  '../src/services/email.js'
+);
+
 const TENANT = 'verify-admin';
 
 const skip =
@@ -29,6 +33,8 @@ let privilegedPool;
 let adminToken;
 let memberToken;
 let tenant_id;
+let adminEmail;
+let adminUserId;
 
 before(async () => {
   if (!process.env.DATABASE_URL_PRIVILEGED) return;
@@ -50,7 +56,7 @@ before(async () => {
   tenant_id = tenantResult.rows[0].id;
 
   // Create an admin user (no member row) directly via privileged pool.
-  const adminEmail = `admin-${randomUUID()}@example.com`;
+  adminEmail = `admin-${randomUUID()}@example.com`;
   const adminPassword = 'correcthorsebatterystaple';
   const adminHash = await bcrypt.hash(adminPassword, 10);
   const adminUser = await privilegedPool.query(
@@ -58,10 +64,11 @@ before(async () => {
      VALUES ($1, $2, $3, 'Admin', 'Tester') RETURNING id`,
     [tenant_id, adminEmail, adminHash],
   );
+  adminUserId = adminUser.rows[0].id;
   await privilegedPool.query(
     `INSERT INTO tenant_admins (tenant_id, user_id, role)
      VALUES ($1, $2, 'owner')`,
-    [tenant_id, adminUser.rows[0].id],
+    [tenant_id, adminUserId],
   );
 
   // Boot the in-process app on a random port.
@@ -167,7 +174,19 @@ function adminFetch(path, init = {}) {
   });
 }
 
-test('admin creates a manual member (user_id null, current_credits 0)', { skip }, async () => {
+// Request-path emails fire on res 'finish' — poll briefly.
+async function waitForEmail(pred, { timeout = 2000 } = {}) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const hit = __getSkippedEmails().find(pred);
+    if (hit) return hit;
+    if (Date.now() > deadline) return null;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+test('admin-created member gets a linked passwordless user; set-password link works; member logs in', { skip }, async () => {
+  __clearSkippedEmails();
   const email = `manual-${randomUUID()}@example.com`;
   const res = await adminFetch('/api/admin/members', {
     method: 'POST',
@@ -180,13 +199,84 @@ test('admin creates a manual member (user_id null, current_credits 0)', { skip }
   assert.equal(res.status, 201);
   const { member } = await res.json();
   assert.equal(member.email, email);
-  assert.equal(member.user_id, null, 'manual member should have user_id null');
+  assert.ok(member.user_id, 'manual member should be linked to a users row');
   assert.equal(member.current_credits, 0);
 
-  // Confirm visible in list
+  // The linked user exists with NO password yet (migration 021).
+  const userRow = await privilegedPool.query(
+    `SELECT id, password_hash FROM users WHERE tenant_id = $1 AND email = $2`,
+    [tenant_id, email],
+  );
+  assert.equal(userRow.rows.length, 1);
+  assert.equal(userRow.rows[0].id, member.user_id);
+  assert.equal(userRow.rows[0].password_hash, null);
+
+  // Confirm visible in list — linked but not yet activated, so the
+  // list must say login_active=false (drives the 'invite sent' badge).
   const listRes = await adminFetch('/api/admin/members');
   const { members } = await listRes.json();
-  assert.ok(members.some((m) => m.id === member.id));
+  const listed = members.find((m) => m.id === member.id);
+  assert.ok(listed);
+  assert.equal(listed.login_active, false);
+
+  // Welcome email carries the set-password link; extract the token.
+  const mail = await waitForEmail((e) => e.to === email);
+  assert.ok(mail, 'welcome email was not queued');
+  assert.equal(mail.subject, 'Welcome to Admin Tests');
+  const match = mail.text.match(/\/reset\?token=([0-9a-f]+)&invite=1/);
+  assert.ok(match, `set-password link missing from welcome text:\n${mail.text}`);
+
+  // Consume the token through the normal reset endpoint, then log in
+  // as the member — the whole point of linking the user at create.
+  const set = await fetch(`${baseUrl}/api/auth/reset-password?tenant=${TENANT}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: match[1], new_password: 'membersetme1' }),
+  });
+  assert.equal(set.status, 200);
+
+  const login = await fetch(`${baseUrl}/api/auth/login?tenant=${TENANT}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: 'membersetme1' }),
+  });
+  assert.equal(login.status, 200);
+  const loginBody = await login.json();
+  assert.equal(loginBody.role, 'member');
+});
+
+test('admin adds a member with an existing user email → links that user, welcome has sign-in link', { skip }, async () => {
+  __clearSkippedEmails();
+  // The admin's own email already has a users row WITH a password.
+  const res = await adminFetch('/api/admin/members', {
+    method: 'POST',
+    body: JSON.stringify({
+      email: adminEmail,
+      first_name: 'Admin',
+      last_name: 'AsMember',
+    }),
+  });
+  assert.equal(res.status, 201);
+  const { member } = await res.json();
+  assert.equal(
+    member.user_id,
+    adminUserId,
+    'member should link the existing user, not create a duplicate',
+  );
+
+  // The admin already has a password → list shows an active login.
+  const { members } = await (await adminFetch('/api/admin/members')).json();
+  assert.equal(
+    members.find((m) => m.id === member.id)?.login_active,
+    true,
+  );
+
+  // Welcome email is the plain sign-in variant — no reset token,
+  // which would have invalidated the admin's own password flow.
+  const mail = await waitForEmail((e) => e.to === adminEmail);
+  assert.ok(mail, 'welcome email was not queued');
+  assert.ok(!mail.text.includes('/reset?token='), 'no set-password token for existing users');
+  assert.ok(mail.text.includes('/login'), 'sign-in link expected');
 });
 
 test('admin grants credits via credit-adjustments; balance reflects', { skip }, async () => {
@@ -389,4 +479,97 @@ test('GET /api/admin/bookings rejects from >= to with 400', { skip }, async () =
   assert.equal(res.status, 400);
   const body = await res.json();
   assert.match(body.error, /from must be before to/i);
+});
+
+test('cancelling a Stripe-paid walk-in reports the un-refunded amount; cash walk-in reports 0', { skip }, async () => {
+  // Cancel never touches Stripe — the response must say how much of
+  // the customer's money the tenant still holds so the admin UI can
+  // prompt a manual dashboard refund.
+  const resourceId = (
+    await privilegedPool.query(
+      `INSERT INTO resources (tenant_id, name) VALUES ($1, 'Refund Cage') RETURNING id`,
+      [tenant_id],
+    )
+  ).rows[0].id;
+  const offeringId = (
+    await privilegedPool.query(
+      `INSERT INTO offerings
+         (tenant_id, name, category, duration_minutes, credit_cost,
+          dollar_price, allow_member_booking, allow_public_booking)
+       VALUES ($1, 'refund-cage-30', 'cage-time', 30, 1, 3000, true, true)
+       RETURNING id`,
+      [tenant_id],
+    )
+  ).rows[0].id;
+  await privilegedPool.query(
+    `INSERT INTO offering_resources (tenant_id, offering_id, resource_id)
+     VALUES ($1, $2, $3)`,
+    [tenant_id, offeringId, resourceId],
+  );
+
+  const mkWalkIn = async (startOffsetH, paymentFields) => {
+    const start = new Date(Date.now() + startOffsetH * 60 * 60 * 1000);
+    const end = new Date(start.getTime() + 30 * 60 * 1000);
+    return (
+      await privilegedPool.query(
+        `INSERT INTO bookings (
+           tenant_id, offering_id, resource_id,
+           customer_first_name, customer_last_name, customer_email,
+           start_time, end_time, status,
+           amount_due_cents, amount_paid_cents, payment_status
+         ) VALUES (
+           $1, $2, $3, 'Walk', 'In', $4, $5, $6, 'confirmed',
+           3000, $7, $8
+         ) RETURNING id`,
+        [
+          tenant_id,
+          offeringId,
+          resourceId,
+          `walkin-${randomUUID()}@example.com`,
+          start,
+          end,
+          paymentFields.paid,
+          paymentFields.status,
+        ],
+      )
+    ).rows[0].id;
+  };
+
+  const paidId = await mkWalkIn(48, { paid: 3000, status: 'paid' });
+  const cashId = await mkWalkIn(72, { paid: 0, status: 'pending' });
+
+  try {
+    const paidRes = await adminFetch(`/api/bookings/${paidId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(paidRes.status, 200);
+    const paidBody = await paidRes.json();
+    assert.equal(paidBody.status, 'cancelled');
+    assert.equal(paidBody.payment_status, 'paid');
+    assert.equal(
+      paidBody.stripe_refund_due_cents,
+      3000,
+      'paid walk-in cancel must surface the un-refunded Stripe amount',
+    );
+
+    const cashRes = await adminFetch(`/api/bookings/${cashId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    assert.equal(cashRes.status, 200);
+    const cashBody = await cashRes.json();
+    assert.equal(
+      cashBody.stripe_refund_due_cents,
+      0,
+      'cash-on-arrival cancel holds no Stripe money',
+    );
+  } finally {
+    await privilegedPool.query(
+      `DELETE FROM bookings WHERE id = ANY($1::uuid[])`,
+      [[paidId, cashId]],
+    );
+    await privilegedPool.query(`DELETE FROM offerings WHERE id = $1`, [offeringId]);
+    await privilegedPool.query(`DELETE FROM resources WHERE id = $1`, [resourceId]);
+  }
 });

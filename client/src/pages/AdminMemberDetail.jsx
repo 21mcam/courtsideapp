@@ -33,6 +33,8 @@ const LEDGER_REASON_LABELS = {
   booking_refund: 'booking refund',
   plan_change: 'plan change',
   manual: 'manual',
+  pack_purchase: 'credit pack',
+  migration: 'imported',
 };
 
 export default function AdminMemberDetail() {
@@ -121,8 +123,20 @@ export default function AdminMemberDetail() {
             <div className="flex justify-between gap-3">
               <dt className="text-slate-500">Login</dt>
               <dd>
-                <Badge tone={member.user_id ? 'success' : 'neutral'}>
-                  {member.user_id ? 'has login' : 'no login'}
+                <Badge
+                  tone={
+                    member.login_active
+                      ? 'success'
+                      : member.user_id
+                      ? 'warning'
+                      : 'neutral'
+                  }
+                >
+                  {member.login_active
+                    ? 'has login'
+                    : member.user_id
+                    ? 'invite sent'
+                    : 'no login'}
                 </Badge>
               </dd>
             </div>

@@ -457,6 +457,7 @@ export async function cancelMemberBooking(req, res, next) {
       `SELECT b.id, b.member_id, b.offering_id, b.resource_id,
               b.start_time, b.end_time, b.status,
               b.credit_cost_charged, b.payment_status,
+              b.amount_paid_cents, b.amount_refunded_cents,
               b.cancelled_at,
               b.customer_first_name, b.customer_email,
               o.name AS offering_name,
@@ -607,6 +608,18 @@ export async function cancelMemberBooking(req, res, next) {
       });
     }
 
+    // Cancelling does NOT touch Stripe: money a walk-in paid online
+    // stays with the tenant until the operator refunds it in their
+    // Stripe dashboard (no in-app refund path yet). Surface what's
+    // still held so the admin UI can say so instead of implying the
+    // customer was made whole. Always 0 for member bookings
+    // (payment_status 'not_required').
+    const stripeRefundDueCents = ['paid', 'partial_refund'].includes(
+      booking.payment_status,
+    )
+      ? booking.amount_paid_cents - booking.amount_refunded_cents
+      : 0;
+
     res.json({
       booking_id: id,
       status: 'cancelled',
@@ -614,6 +627,8 @@ export async function cancelMemberBooking(req, res, next) {
       refund_percent: refundPercent,
       balance_after,
       refund_entry_id,
+      payment_status: booking.payment_status,
+      stripe_refund_due_cents: stripeRefundDueCents,
     });
   } catch (err) {
     next(err);

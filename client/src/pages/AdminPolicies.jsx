@@ -25,9 +25,16 @@ import {
 const NO_SHOW_OPTIONS = [
   { value: 'none', label: 'Do nothing' },
   { value: 'forfeit_credits', label: 'Forfeit the spent credits' },
-  { value: 'charge_fee', label: 'Charge a fee' },
-  { value: 'block_member', label: 'Block the member from booking' },
 ];
+
+// Offered by earlier versions but never implemented — no fee is ever
+// charged, no member is ever blocked (bookings are only marked
+// no-show). Not selectable anymore; a tenant that already stored one
+// sees it flagged so they can move off it.
+const UNAVAILABLE_NO_SHOW_LABELS = {
+  charge_fee: 'Charge a fee (not available yet)',
+  block_member: 'Block the member from booking (not available yet)',
+};
 
 export default function AdminPolicies() {
   const [form, setForm] = useState(null);
@@ -215,11 +222,13 @@ export default function AdminPolicies() {
                   onChange={(v) => set({ allow_member_self_cancel: v })}
                   label="Members can cancel their own bookings"
                 />
-                <Checkbox
-                  checked={form.allow_customer_self_cancel}
-                  onChange={(v) => set({ allow_customer_self_cancel: v })}
-                  label="Walk-in customers can cancel their own bookings"
-                />
+                {/* allow_customer_self_cancel deliberately has no
+                    control: customer self-cancel isn't built (the
+                    walk-in manage link is reschedule-only), so a
+                    toggle here would be a promise the product can't
+                    keep. The stored value still round-trips through
+                    the PUT payload untouched for when the feature
+                    lands. */}
               </div>
               <Field
                 label="Reschedule cutoff (hours before start)"
@@ -251,6 +260,11 @@ export default function AdminPolicies() {
                       {o.label}
                     </option>
                   ))}
+                  {UNAVAILABLE_NO_SHOW_LABELS[form.no_show_action] && (
+                    <option value={form.no_show_action}>
+                      {UNAVAILABLE_NO_SHOW_LABELS[form.no_show_action]}
+                    </option>
+                  )}
                 </Select>
               </Field>
               {form.no_show_action === 'charge_fee' && (
@@ -268,6 +282,13 @@ export default function AdminPolicies() {
                 </Field>
               )}
             </div>
+            {UNAVAILABLE_NO_SHOW_LABELS[form.no_show_action] && (
+              <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                This action isn't built yet — no-shows are only marked, no
+                fee is charged and nobody is blocked. Pick one of the other
+                options.
+              </p>
+            )}
           </Card>
 
           <Card title="Liability waiver">

@@ -24,7 +24,14 @@ You'll do this once for the live environment. Doing it again later
 4. Pick a region (`us-east-1` etc — closer to your users is faster)
 5. Wait ~2 min for provisioning
 
-## 2. Apply migrations 001–011
+## 2. Apply ALL migrations in `db/migrations/`, in order
+
+This doc was written when the series ended at 011; it now runs well
+past that (031 at last count — `ls db/migrations/` is the truth).
+Apply **every** file in numeric order; nothing applies automatically
+on deploy (CLAUDE.md gotcha #1). Record how far you've applied in
+[MIGRATIONS_APPLIED.md](MIGRATIONS_APPLIED.md) — the repo has no
+other record of the live DB's state.
 
 Open the SQL editor: dashboard → **SQL editor** in the left sidebar.
 
@@ -196,13 +203,17 @@ npm run dev          # backend on :3000
 npm test             # smoke test against the live DB
 ```
 
-`npm test` should report 4 passing assertions. `curl
+The full suite needs the CI-style env (`DATABASE_URL`,
+`DATABASE_URL_PRIVILEGED`, `JWT_SECRET`, `SUPER_ADMIN_TOKEN` — see
+`.github/workflows/ci.yml` for the exact recipe); without it most
+suites skip or fail fast on the missing env. `curl
 http://localhost:3000/health` should return `{"ok":true,"db":"ok",...}`.
 
 ## When you add a new migration
 
-1. Add `db/migrations/012_*.sql` (next number)
-2. Apply it via the SQL editor manually, with verification
+1. Add `db/migrations/0NN_*.sql` (next number)
+2. Apply it via the SQL editor manually, with verification, and
+   bump [MIGRATIONS_APPLIED.md](MIGRATIONS_APPLIED.md)
 3. Commit. CI replays from scratch on every PR — if your new migration
    breaks the chain, CI fails before merge
 
@@ -213,5 +224,6 @@ disaster, second environment), the only thing that's not in the repo
 is the runtime role's password. Generate a fresh one in step 3, set
 it via `ALTER ROLE`, update `.env` and any deployed env vars.
 
-The schema and grants are entirely reproducible from
-`db/migrations/001` through `011` applied in order.
+The schema and grants are entirely reproducible from the full
+`db/migrations/` series applied in order (CI proves the replay on
+every PR).
