@@ -7,22 +7,16 @@ brought forward — update it every time you apply a migration.
 
 | Environment | Applied through | Date | Notes |
 |---|---|---|---|
-| Production (live Supabase) | **031** | 2026-08-08 | 001–019 during initial phases; 020–025 at PR #51 merge (025 = platform billing); 026–029 with walk-in checkout v2 (PR #53, live 2026-07-27); 030 theme; 031 booking import provenance applied by hand 2026-08-08. |
-
-**Pending:** 032 (platform console — `platform_admins`,
-`platform_audit_log`, `platform_*` functions). Apply it before
-deploying the branch that adds the console; until then
-`/api/platform/auth/login` 500s (no function).
+| Production (live Supabase) | **032** | 2026-10-08 | 001–019 during initial phases; 020–025 at PR #51 merge (025 = platform billing); 026–029 with walk-in checkout v2 (PR #53, live 2026-07-27); 030 theme; 031 booking import provenance applied by hand 2026-08-08; 032 platform console (PR #57) applied by hand 2026-10-08. |
 
 To verify what's actually live, run this in the SQL editor and
 compare against `ls db/migrations/`:
 
 ```sql
 -- spot-check the newest migration's artifacts:
--- 031 → bookings.external_source / external_id columns
-SELECT column_name FROM information_schema.columns
- WHERE table_name = 'bookings'
-   AND column_name IN ('external_source', 'external_id');
+-- 032 → platform console tables (expect 2 rows)
+SELECT table_name FROM information_schema.tables
+ WHERE table_name IN ('platform_admins', 'platform_audit_log');
 ```
 
 pg_cron status: **not enabled**. The Node scheduler in
