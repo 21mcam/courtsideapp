@@ -45,10 +45,14 @@ function extractSubdomain(hostname, query) {
 //
 //   * /api/tenant          the client's bootstrap call (renders the
 //                          billing-hold screen instead of a hard error)
+//   * /api/tenant/manifest.webmanifest, /api/tenant/icon.svg
+//                          home-screen install files — an already-
+//                          installed icon shouldn't break on a lapse
 //   * /api/auth/*          sign in / password reset
 //   * /api/me              the session probe the client boots with
 //   * /api/admin/billing*  view billing, start checkout, open portal
-const BILLING_EXEMPT = /^\/api\/(tenant$|auth\/|me$|admin\/billing($|\/))/;
+const BILLING_EXEMPT =
+  /^\/api\/(tenant(\/(manifest\.webmanifest|icon\.svg))?$|auth\/|me$|admin\/billing($|\/))/;
 
 function isBillingExemptPath(req) {
   const path = (req.originalUrl ?? '').split('?')[0];

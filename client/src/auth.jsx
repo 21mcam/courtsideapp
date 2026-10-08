@@ -32,6 +32,10 @@ export function AuthProvider({ children }) {
           // (admin, member, public booking). Falls back to the
           // platform name from index.html when the tenant has none.
           document.title = t.name || 'Courtside';
+          // iOS "Add to Home Screen" label (it ignores the manifest).
+          document
+            .querySelector('meta[name="apple-mobile-web-app-title"]')
+            ?.setAttribute('content', t.name || 'Courtside');
         } else {
           const body = await tRes.json().catch(() => ({}));
           setTenantError({ status: tRes.status, body });
