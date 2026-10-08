@@ -674,6 +674,24 @@ export async function lookupCustomerBooking(req, res, next) {
         WHERE b.tenant_id = $1 AND b.id = $2 AND b.customer_email = $3`,
       [tenant.id, booking_id, email],
     );
+    // Not a rental? It may be a walk-in class spot — same id + email
+    // gate, same response shape (the success page renders either).
+    if (result.rows.length === 0) {
+      const cls = await db.query(
+        `SELECT cb.id, cb.status, ci.start_time, ci.end_time,
+                cb.amount_due_cents, cb.amount_paid_cents, cb.payment_status,
+                o.name AS offering_name,
+                r.name AS resource_name
+           FROM class_bookings cb
+           JOIN class_instances ci
+             ON ci.tenant_id = cb.tenant_id AND ci.id = cb.class_instance_id
+           JOIN offerings o ON o.tenant_id = ci.tenant_id AND o.id = ci.offering_id
+           JOIN resources r ON r.tenant_id = ci.tenant_id AND r.id = ci.resource_id
+          WHERE cb.tenant_id = $1 AND cb.id = $2 AND cb.customer_email = $3`,
+        [tenant.id, booking_id, email],
+      );
+      result.rows.push(...cls.rows.map((row) => ({ ...row, kind: 'class' })));
+    }
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'booking not found' });
     }
@@ -682,6 +700,7 @@ export async function lookupCustomerBooking(req, res, next) {
     res.json({
       booking: {
         id: b.id,
+        kind: b.kind ?? 'rental',
         reference: bookingReference(b.id),
         status: b.status,
         start_time: b.start_time,

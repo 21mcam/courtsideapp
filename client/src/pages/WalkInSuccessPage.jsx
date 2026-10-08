@@ -196,9 +196,12 @@ export default function WalkInSuccessPage() {
             </form>
           )}
 
+          {/* Class spots have no self-serve reschedule link (yet) —
+              don't promise one. Rentals keep the reschedule copy. */}
           <p className="mt-6 text-sm text-slate-500">
-            Can't make it? Reschedule free — the link is in your
-            confirmation email, no account needed.
+            {booking?.kind === 'class'
+              ? "Can't make it? Reply to your confirmation email and the facility will sort it out."
+              : "Can't make it? Reschedule free — the link is in your confirmation email, no account needed."}
           </p>
 
           <p className="mt-3 text-sm text-slate-500">{contactLine}</p>
