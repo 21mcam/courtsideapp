@@ -33,7 +33,10 @@ Full table with per-variable failure modes in
       Without it every emailed link — including the walk-in
       manage/reschedule link — points at `tenant.localhost:5173`.
 - [ ] `JWT_SECRET` set (login 500s without it), `NODE_ENV=production`.
-- [ ] `SUPER_ADMIN_TOKEN` set — required to create a tenant (§5).
+- [ ] Platform console login created (migration 032 +
+      `scripts/platform/create-admin.js` — see
+      [PLATFORM_CONSOLE.md](PLATFORM_CONSOLE.md)). `SUPER_ADMIN_TOKEN`
+      is only needed for the legacy curl path.
 - [ ] `RESEND_API_KEY` **and** `EMAIL_FROM` set together.
       `EMAIL_FROM` must be a sender on a domain verified in your
       Resend account; the built-in default (`noreply@courtside.app`)
@@ -99,24 +102,15 @@ Paste `db/seeds/sunset_park_demo.sql` into the Supabase SQL editor.
 Login: `owner@sunsetparkbaseball.com` / `sunset2026` at
 `https://sunsetpark.<apex>/login` (subdomain `sunsetpark`, no hyphen).
 
-**Option B — a real tenant via the platform API:**
+**Option B — a real tenant via the platform console:**
 
-```bash
-curl -X POST https://<apex>/api/platform/signup-tenant \
-  -H "X-Super-Admin-Token: $SUPER_ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "subdomain": "myfacility",
-    "name": "My Facility",
-    "timezone": "America/New_York",
-    "owner_email": "you@yourdomain.com",
-    "owner_password": "min 8 chars",
-    "owner_first_name": "Mike",
-    "owner_last_name": "Campbell"
-  }'
-```
+Sign in at `https://admin.<apex>` → **New facility**. The owner gets an
+email with a set-password link (needs `RESEND_API_KEY` + `EMAIL_FROM`).
+The legacy curl to `POST /api/platform/signup-tenant` with
+`X-Super-Admin-Token` still works — see
+[PLATFORM_CONSOLE.md](PLATFORM_CONSOLE.md).
 
-Then log in at `https://myfacility.<apex>/login` and run the setup
+Then the owner logs in at `https://<subdomain>.<apex>/login` and run the setup
 wizard (`/wizard`): resources → offerings → plans.
 
 ## 6. Tenant configuration (in the admin UI)

@@ -65,6 +65,11 @@ export async function me(req, res, next) {
         member: memberResult.rows[0] ?? null,
       },
       credits,
+      // Present only for a platform operator's read-only support
+      // session; the client shows a banner and the API refuses writes.
+      support_session: req.user.read_only
+        ? { read_only: true, expires_at: new Date(req.user.exp * 1000).toISOString() }
+        : null,
     });
   } catch (err) {
     next(err);

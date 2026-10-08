@@ -9,6 +9,11 @@ brought forward — update it every time you apply a migration.
 |---|---|---|---|
 | Production (live Supabase) | **031** | 2026-08-08 | 001–019 during initial phases; 020–025 at PR #51 merge (025 = platform billing); 026–029 with walk-in checkout v2 (PR #53, live 2026-07-27); 030 theme; 031 booking import provenance applied by hand 2026-08-08. |
 
+**Pending:** 032 (platform console — `platform_admins`,
+`platform_audit_log`, `platform_*` functions). Apply it before
+deploying the branch that adds the console; until then
+`/api/platform/auth/login` 500s (no function).
+
 To verify what's actually live, run this in the SQL editor and
 compare against `ls db/migrations/`:
 

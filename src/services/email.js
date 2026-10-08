@@ -423,8 +423,17 @@ export function renderAdminInviteEmail({
   firstName,
   actionUrl,
   isNewUser,
+  isOwner = false,
 }) {
-  const subject = `You've been invited to help manage ${tenantName}`;
+  // isOwner: the facility's first login, created from the platform
+  // console — "help manage ... as a staff member" would be wrong copy
+  // for the person who owns the place.
+  const subject = isOwner
+    ? `Your ${tenantName} account is ready`
+    : `You've been invited to help manage ${tenantName}`;
+  const role = isOwner
+    ? `your ${tenantName} account has been set up on Courtside`
+    : `you've been invited to help manage ${tenantName} as a staff member`;
   const greeting = firstName ? `Hi ${firstName},` : 'Hi,';
   const hex = accentHex(accent);
   const safeUrl = escapeHtml(actionUrl);
@@ -432,11 +441,12 @@ export function renderAdminInviteEmail({
     ? 'Set a password to activate your account. The link below expires in 7 days.'
     : 'Sign in with your existing password to get started.';
   const buttonLabel = isNewUser ? 'Set your password' : 'Sign in';
+  const heading = isOwner ? 'Welcome to Courtside' : "You're invited";
   const html = renderLayout({
     tenantName,
     accent,
-    bodyHtml: `                <p style="margin:0 0 8px;font-size:17px;font-weight:700;">You're invited</p>
-                <p style="margin:0 0 16px;">${escapeHtml(greeting)} you've been invited to help manage ${escapeHtml(tenantName)} as a staff member. ${escapeHtml(lead)}</p>
+    bodyHtml: `                <p style="margin:0 0 8px;font-size:17px;font-weight:700;">${escapeHtml(heading)}</p>
+                <p style="margin:0 0 16px;">${escapeHtml(greeting)} ${escapeHtml(role)}. ${escapeHtml(lead)}</p>
                 <p style="margin:0 0 16px;">
                   <a href="${safeUrl}" style="display:inline-block;background-color:${hex};color:#ffffff;text-decoration:none;font-weight:600;padding:10px 20px;border-radius:8px;">${escapeHtml(buttonLabel)}</a>
                 </p>
@@ -444,9 +454,9 @@ export function renderAdminInviteEmail({
                 <p style="margin:0;color:#64748b;font-size:13px;">If you weren't expecting this invitation, you can safely ignore this email.</p>`,
   });
   const text = [
-    "You're invited",
+    heading,
     '',
-    `${greeting} you've been invited to help manage ${tenantName} as a staff member.`,
+    `${greeting} ${role}.`,
     lead,
     '',
     actionUrl,
@@ -686,7 +696,7 @@ export function sendPasswordReset({ tenant, to, resetUrl }) {
   return sendEmail({ to, subject, html, text, replyTo });
 }
 
-export function sendAdminInvite({ tenant, to, firstName, actionUrl, isNewUser }) {
+export function sendAdminInvite({ tenant, to, firstName, actionUrl, isNewUser, isOwner = false }) {
   const { tenantName, accent, replyTo } = tenantSendFields(tenant);
   const { subject, html, text } = renderAdminInviteEmail({
     tenantName,
@@ -694,6 +704,7 @@ export function sendAdminInvite({ tenant, to, firstName, actionUrl, isNewUser })
     firstName,
     actionUrl,
     isNewUser,
+    isOwner,
   });
   return sendEmail({ to, subject, html, text, replyTo });
 }

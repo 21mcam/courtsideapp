@@ -494,7 +494,9 @@ export async function startOnboarding(req, res, next) {
 export async function getConnection(req, res, next) {
   try {
     const { tenant, db } = req;
-    const refresh = String(req.query.refresh) === 'true';
+    // A refresh reconciles the DB from Stripe (a write) — skipped for
+    // read-only support sessions, which just see the cached row.
+    const refresh = String(req.query.refresh) === 'true' && !req.user?.read_only;
 
     const r = await db.query(
       `SELECT stripe_account_id, details_submitted, charges_enabled,

@@ -19,6 +19,8 @@
 //   /admin/members + /admin/members/:id → member management
 //   /admin/staff    → staff roster + invites
 //   /admin/reports  → summary stats + CSV exports
+//   /support-session → PUBLIC landing for the platform console's
+//                      read-only "View as owner" handoff
 //
 // Wrapping AuthProvider so any page can read tenant + me state.
 
@@ -69,6 +71,9 @@ const AdminPacks = lazy(() => import('./pages/AdminPacks.jsx'));
 const AdminReports = lazy(() => import('./pages/AdminReports.jsx'));
 const AdminBilling = lazy(() => import('./pages/AdminBilling.jsx'));
 const AdminCatalog = lazy(() => import('./pages/AdminCatalog.jsx'));
+const SupportSessionPage = lazy(() => import('./pages/SupportSessionPage.jsx'));
+// Lazy: only a platform operator's read-only session ever renders it.
+const SupportBanner = lazy(() => import('./components/SupportBanner.jsx'));
 
 export default function App() {
   return (
@@ -83,6 +88,16 @@ export default function App() {
 }
 
 function Shell() {
+  const { me } = useAuth();
+  return (
+    <>
+      <ShellRoutes />
+      {me?.support_session && <SupportBanner />}
+    </>
+  );
+}
+
+function ShellRoutes() {
   const { tenant, tenantError, booting } = useAuth();
 
   if (tenantError) {
@@ -104,6 +119,7 @@ function Shell() {
         <Route path="/login" element={<RouteLogin />} />
         <Route path="/forgot" element={<ForgotPasswordPage />} />
         <Route path="/reset" element={<ResetPasswordPage />} />
+        <Route path="/support-session" element={<SupportSessionPage />} />
         <Route
           path="/admin/settings/billing"
           element={
@@ -128,6 +144,8 @@ function Shell() {
       <Route path="/walk-in/success" element={<WalkInSuccessPage />} />
       {/* No-login manage/reschedule via the emailed capability link */}
       <Route path="/walk-in/manage" element={<ManageBookingPage />} />
+      {/* Platform console "View as owner" handoff (read-only) */}
+      <Route path="/support-session" element={<SupportSessionPage />} />
 
       {/* Everything authed renders inside the sidebar shell */}
       <Route element={<RouteAuthed><AppShell /></RouteAuthed>}>

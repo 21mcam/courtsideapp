@@ -14,6 +14,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 
+import { signSupportSession, verifySupportHandoff } from '../lib/supportSession.js';
+import { platformAudit } from '../middleware/platformAuth.js';
 import { sendMemberWelcome } from '../services/email.js';
 
 const TOKEN_EXPIRY = '7d';
@@ -195,6 +197,64 @@ export async function login(req, res, next) {
     });
 
     res.json({ token, user_id, member_id, admin_id, role });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// POST /api/auth/support-session — trade a platform console handoff
+// (lib/supportSession.js) for a read-only session as this tenant's
+// owner. The handoff proves the platform operator asked for THIS
+// tenant within the last 60 seconds; the platform admin row is
+// re-checked so a deactivated operator's in-flight handoff dies too.
+// Recorded in platform_audit_log (required — no unaudited sessions).
+export async function exchangeSupportSession(req, res, next) {
+  try {
+    const raw = typeof req.body?.token === 'string' ? req.body.token : '';
+    const handoff = verifySupportHandoff(raw);
+    if (!handoff || handoff.tenantId !== req.tenant.id) {
+      return res.status(401).json({ error: 'support link is invalid or expired' });
+    }
+
+    const op = await req.db.query(
+      'SELECT id FROM platform_admin_session($1)',
+      [handoff.adminId],
+    );
+    if (op.rows.length === 0) {
+      return res.status(401).json({ error: 'support link is invalid or expired' });
+    }
+
+    // The owner, falling back to the earliest admin for tenants whose
+    // owner row was removed.
+    const owner = await req.db.query(
+      `SELECT id AS admin_id, user_id
+         FROM tenant_admins
+        WHERE tenant_id = $1
+        ORDER BY (role = 'owner') DESC, created_at
+        LIMIT 1`,
+      [req.tenant.id],
+    );
+    if (owner.rows.length === 0) {
+      return res.status(409).json({ error: 'this facility has no admin to view as' });
+    }
+    const { admin_id, user_id } = owner.rows[0];
+
+    await platformAudit(req.db, {
+      adminId: handoff.adminId,
+      action: 'support_session.open',
+      tenantId: req.tenant.id,
+      detail: { subdomain: req.tenant.subdomain, viewing_as_user_id: user_id },
+      ip: req.ip,
+      required: true,
+    });
+
+    const token = signSupportSession({
+      tenantId: req.tenant.id,
+      userId: user_id,
+      adminId: admin_id,
+      platformAdminId: handoff.adminId,
+    });
+    res.json({ token });
   } catch (err) {
     next(err);
   }
