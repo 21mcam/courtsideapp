@@ -23,6 +23,7 @@ import {
   Store,
   Ticket,
   UserCog,
+  UserRound,
   Users,
   UsersRound,
   X,
@@ -76,6 +77,7 @@ const MEMBER_NAV = [
       { to: '/book', label: 'Book', icon: CalendarDays },
       { to: '/classes', label: 'Classes', icon: Users },
       { to: '/plans', label: 'Plans', icon: Ticket },
+      { to: '/account', label: 'Account', icon: UserRound },
     ],
   },
 ];
@@ -228,14 +230,26 @@ function SidebarContent({ nav, onClose }) {
 
       {/* User section */}
       <div className="border-t border-slate-200 p-3">
-        <div className="flex items-center gap-3 px-2 py-1.5">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-200 text-sm font-semibold text-slate-600">
-            {first.charAt(0).toUpperCase()}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium text-slate-900">{first}</div>
-            <div className="truncate text-xs capitalize text-slate-500">{roleLabel}</div>
-          </div>
+        <div className="flex items-center gap-1">
+          {/* The name card is the way to your own account (profile,
+              password) — for staff too, who have no Account nav item. */}
+          <NavLink
+            to="/account"
+            title="Your account"
+            className={({ isActive }) =>
+              `flex min-w-0 flex-1 items-center gap-3 rounded-lg px-2 py-1.5 ${
+                isActive ? 'bg-brand-50' : 'hover:bg-slate-100'
+              }`
+            }
+          >
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-200 text-sm font-semibold text-slate-600">
+              {first.charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium text-slate-900">{first}</div>
+              <div className="truncate text-xs capitalize text-slate-500">{roleLabel}</div>
+            </div>
+          </NavLink>
           <button
             onClick={logout}
             title="Sign out"

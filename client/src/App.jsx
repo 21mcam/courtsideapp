@@ -12,6 +12,7 @@
 //   /walk-in → PUBLIC walk-in booking, no login (Phase 5 slice 7 UI)
 //   /classes → member class browser + booking (Phase 4 slice 4)
 //   /plans   → member subscription chooser (Phase 5 slice 4a)
+//   /account → own profile, password, credit history (members + staff)
 //   /admin/bookings → admin booking calendar (Phase 3 slice 6)
 //   /admin/classes  → admin schedules + instances + roster (Phase 4 slice 4)
 //   /admin/stripe   → Stripe Connect onboarding + status (Phase 5 slice 1)
@@ -72,6 +73,7 @@ const AdminReports = lazy(() => import('./pages/AdminReports.jsx'));
 const AdminBilling = lazy(() => import('./pages/AdminBilling.jsx'));
 const AdminCatalog = lazy(() => import('./pages/AdminCatalog.jsx'));
 const SupportSessionPage = lazy(() => import('./pages/SupportSessionPage.jsx'));
+const AccountPage = lazy(() => import('./pages/AccountPage.jsx'));
 // Lazy: only a platform operator's read-only session ever renders it.
 const SupportBanner = lazy(() => import('./components/SupportBanner.jsx'));
 
@@ -153,6 +155,7 @@ function ShellRoutes() {
         <Route path="/book" element={<BookingPage />} />
         <Route path="/classes" element={<ClassesPage />} />
         <Route path="/plans" element={<MemberPlans />} />
+        <Route path="/account" element={<AccountPage />} />
         <Route element={<RouteAdminOnly />}>
           <Route path="/wizard" element={<Wizard />} />
           <Route path="/admin/bookings" element={<AdminBookings />} />
