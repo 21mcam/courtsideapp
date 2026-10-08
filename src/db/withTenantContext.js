@@ -91,6 +91,13 @@ export async function withTenantContext(req, res, next) {
 
   try {
     await client.query('BEGIN');
+    // Read-only support sessions (requireAuth ran first on every
+    // authed router) get a READ ONLY transaction: the DB refuses any
+    // write a GET handler might attempt. Must precede the first query
+    // of the transaction, hence before set_config.
+    if (req.user?.read_only) {
+      await client.query('SET TRANSACTION READ ONLY');
+    }
     await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [
       req.tenant.id,
     ]);

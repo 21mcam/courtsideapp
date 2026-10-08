@@ -59,6 +59,12 @@ after(async () => {
       `DELETE FROM tenants WHERE subdomain = ANY($1::text[])`,
       [Array.from(createdSubdomains)],
     );
+    // tenant.create audit rows (migration 032) outlive the tenant
+    // (tenant_id SET NULL); match them by the subdomain in detail.
+    await privilegedPool.query(
+      `DELETE FROM platform_audit_log WHERE detail->>'subdomain' = ANY($1::text[])`,
+      [Array.from(createdSubdomains)],
+    );
   }
 
   if (server) {
@@ -90,7 +96,10 @@ test('signup-tenant rejects request with no super-admin token', { skip }, async 
   });
   assert.equal(res.status, 401);
   const body = await res.json();
-  assert.match(body.error, /missing super-admin token/);
+  // No token header and no console session: the session gate answers
+  // (requirePlatformAccess only takes the token path when the header
+  // is present).
+  assert.match(body.error, /not signed in/);
 });
 
 test('signup-tenant rejects request with wrong super-admin token', { skip }, async () => {

@@ -46,13 +46,32 @@ export function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'invalid or expired token' });
   }
 
+  // Tenant tokens never carry an audience. Platform console sessions
+  // and support handoffs do (aud 'platform' / 'support-handoff') — they
+  // are not tenant credentials, whatever else they contain.
+  if (payload.aud !== undefined) {
+    return res.status(401).json({ error: 'invalid or expired token' });
+  }
+
   if (payload.tenant_id !== req.tenant.id) {
     return res.status(403).json({ error: 'token does not belong to this tenant' });
+  }
+
+  // Read-only support session (platform operator viewing as the
+  // owner — lib/supportSession.js). Refuse anything that isn't a read
+  // here; withTenantContext also runs the transaction READ ONLY, so a
+  // GET handler that writes fails instead of writing.
+  if (payload.read_only && !READ_METHODS.has(req.method)) {
+    return res
+      .status(403)
+      .json({ error: 'read-only support session: changes are disabled' });
   }
 
   req.user = payload;
   next();
 }
+
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 // Gate routes to admin/owner-only callers. Mount AFTER requireAuth.
 // Phase 1 makes no distinction between admin and owner roles for

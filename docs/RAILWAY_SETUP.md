@@ -34,7 +34,7 @@ Railway dashboard → your service → **Variables** → add each:
 | `JWT_SECRET` | A long random string. Generate locally with `openssl rand -hex 64` (longer than the DB password for extra entropy). Different value per environment (don't reuse dev's secret in prod). |
 | `APP_HOSTNAME` | Your apex hostname, e.g. `app.yourdomain.com`. The subdomain middleware strips this off `req.hostname` to extract the tenant. Emailed links and the admin "share booking page" URLs are also built from it. |
 | `NODE_ENV` | `production` |
-| `SUPER_ADMIN_TOKEN` | Long random string (`openssl rand -hex 32`). Gates `/api/platform/*` — the ONLY way to create a tenant via API. Unset = those routes 503. |
+| `SUPER_ADMIN_TOKEN` | Long random string (`openssl rand -hex 32`). Legacy curl access to `/api/platform/signup-tenant` + `/tenants/:subdomain/billing`. Optional since the platform console (docs/PLATFORM_CONSOLE.md) — unset = the header is refused, the console still works. |
 | `RESEND_API_KEY` | From Resend dashboard. Unset = every email is a logged no-op (fine for dev, not beta). |
 | `EMAIL_FROM` | **Required whenever `RESEND_API_KEY` is set.** A sender on a domain verified in YOUR Resend account, e.g. `Courtside <noreply@yourdomain.com>`. Left unset, the code falls back to `noreply@courtside.app`, Resend rejects every send, and emails silently vanish (the server logs a boot warning). |
 | `STRIPE_SECRET_KEY` | Live key from Stripe dashboard. Test key is fine until launch. |

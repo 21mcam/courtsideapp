@@ -6,7 +6,7 @@
 
 import express from 'express';
 import { withTenantContext } from '../db/withTenantContext.js';
-import { registerMember, login } from '../controllers/auth.js';
+import { registerMember, login, exchangeSupportSession } from '../controllers/auth.js';
 import { forgotPassword, resetPassword } from '../controllers/passwordReset.js';
 
 const router = express.Router();
@@ -15,5 +15,7 @@ router.post('/register-member', withTenantContext, registerMember);
 router.post('/login', withTenantContext, login);
 router.post('/forgot-password', withTenantContext, forgotPassword);
 router.post('/reset-password', withTenantContext, resetPassword);
+// Platform operator's read-only "view as owner" (lib/supportSession.js).
+router.post('/support-session', withTenantContext, exchangeSupportSession);
 
 export default router;

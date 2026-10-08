@@ -31,7 +31,9 @@ Every query is scoped by tenant_id. Supabase RLS policies enforce
 isolation at the database layer; application code is the second line
 of defense, not the first.
 
-The `tenants` table itself has no `tenant_id` (it's the root). Every
+The `tenants` table itself has no `tenant_id` (it's the root);
+neither do the platform-level `platform_admins` /
+`platform_audit_log` (they sit above tenants, privileged-only). Every
 table below it follows the convention:
 - `tenant_id` column with FK to `tenants(id) ON DELETE CASCADE`
 - `UNIQUE (tenant_id, id)` if it has its own `id` column
@@ -108,6 +110,17 @@ and TypeScript types use the canonical word.
   whatever the tenant calls themselves.
 - **`tenant_admin`** — a staff member at a tenant who can configure
   the system and manage members. There can be multiple per tenant.
+- **`platform_admin`** — the platform operator (you), NOT a tenant
+  role. Table `platform_admins` (migration 032) — like `tenants`, it
+  has no `tenant_id` and no runtime grants. Logs into the platform
+  console at `admin.{APP_HOSTNAME}` with password + TOTP. Every
+  cross-tenant read goes through a `platform_*` SECURITY DEFINER
+  function that checks the admin and writes `platform_audit_log`.
+  "View as owner" is a **read-only** support session: a tenant JWT
+  for the owner with `read_only` + `support_admin_id`; `requireAuth`
+  refuses non-GET and `withTenantContext` runs `SET TRANSACTION READ
+  ONLY`. Tenant tokens never carry `aud`; platform/handoff tokens
+  always do. See docs/PLATFORM_CONSOLE.md.
 
 ### People
 
@@ -471,6 +484,7 @@ db/
   schema.sql             Canonical destination state (this is the file
                          we're authoring during pre-Phase-0 sessions)
   migrations/            Applied manually to live Supabase
+client/src/platform/     Platform console SPA (admin.{APP_HOSTNAME})
 docs/                    Operator runbooks
 PLAN.md                  Build plan (phases, scope, decisions)
 CLAUDE.md                This file

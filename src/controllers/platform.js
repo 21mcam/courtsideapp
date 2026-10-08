@@ -1,7 +1,9 @@
 // Super-admin / platform controllers. Live on /api/platform/* on the
 // apex hostname (no tenant context — these are platform-level ops).
 //
-// All paths are gated by requireSuperAdmin (X-Super-Admin-Token).
+// Gated by requirePlatformAccess: a platform console session, or the
+// legacy X-Super-Admin-Token header for curl/scripts. Both actions are
+// written to platform_audit_log (admin NULL for token callers).
 // All DB writes go through SECURITY DEFINER functions so the runtime
 // pool itself never has direct access to privileged tables. The web
 // process holds zero superuser DB credentials.
@@ -10,7 +12,14 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 
 import { pool } from '../db/pool.js';
+import { tenantUrl } from '../lib/publicUrl.js';
+import { platformAudit } from '../middleware/platformAuth.js';
+import { sendAdminInvite } from '../services/email.js';
 import { platformTrialEndsAt } from './platformBilling.js';
+import {
+  INVITE_TOKEN_EXPIRY_HOURS,
+  issuePasswordSetupToken,
+} from './passwordReset.js';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -22,15 +31,60 @@ const signupTenantSchema = z.object({
     .string()
     .regex(/^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/, 'invalid subdomain'),
   name: z.string().trim().min(1).max(200),
-  // IANA timezone name (e.g. America/New_York). Loose validation —
-  // the DB CHECK only requires non-empty trimmed; PG will accept any
-  // string here. App-level deeper validation can come later.
-  timezone: z.string().trim().min(1).max(100),
+  // IANA timezone name (e.g. America/New_York). The DB CHECK only
+  // requires non-empty, so validate against the runtime's tz database
+  // here — a typo'd zone would break every booking time the tenant
+  // ever renders.
+  timezone: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .refine(isValidTimeZone, 'unknown timezone'),
   owner_email: z.string().email().toLowerCase().trim(),
-  owner_password: z.string().min(8, 'password must be at least 8 characters'),
+  // Optional: omit it and the owner is emailed a set-password link
+  // instead (the console's default — the operator never handles the
+  // tenant's password).
+  owner_password: z
+    .string()
+    .min(8, 'password must be at least 8 characters')
+    .optional(),
   owner_first_name: z.string().trim().min(1).max(100),
   owner_last_name: z.string().trim().min(1).max(100),
 });
+
+function isValidTimeZone(tz) {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Mint the owner's set-password token inside the new tenant's context
+// (password_reset_tokens is RLS-scoped). Separate short transaction
+// after create_tenant_with_owner commits.
+async function issueOwnerSetupLink(tenantId, subdomain, userId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+    const token = await issuePasswordSetupToken(
+      client,
+      tenantId,
+      userId,
+      INVITE_TOKEN_EXPIRY_HOURS,
+    );
+    await client.query('COMMIT');
+    return tenantUrl(subdomain, `/reset?token=${token}&invite=1`);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
 
 export async function signupTenant(req, res, next) {
   try {
@@ -42,10 +96,11 @@ export async function signupTenant(req, res, next) {
     }
     const data = parsed.data;
 
-    const owner_password_hash = await bcrypt.hash(
-      data.owner_password,
-      BCRYPT_ROUNDS,
-    );
+    // NULL hash = invited user who hasn't set a password yet
+    // (migration 021); login treats it like a wrong password.
+    const owner_password_hash = data.owner_password
+      ? await bcrypt.hash(data.owner_password, BCRYPT_ROUNDS)
+      : null;
 
     let row;
     try {
@@ -84,11 +139,44 @@ export async function signupTenant(req, res, next) {
       throw err;
     }
 
+    await platformAudit(pool, {
+      adminId: req.platformAdmin?.id,
+      action: 'tenant.create',
+      tenantId: row.tenant_id,
+      detail: {
+        subdomain: data.subdomain,
+        name: data.name,
+        owner_email: data.owner_email,
+        owner_invited: !data.owner_password,
+        via: req.platformVia,
+      },
+      ip: req.ip,
+    });
+
+    // Invite path: the token is committed before the email goes out
+    // (CLAUDE.md: no external calls inside a transaction). Fire-and-
+    // forget like every other email. TODO: outbox.
+    let owner_invite_sent = false;
+    if (!data.owner_password) {
+      const actionUrl = await issueOwnerSetupLink(row.tenant_id, data.subdomain, row.user_id);
+      const t = await pool.query('SELECT * FROM tenant_lookup WHERE id = $1', [row.tenant_id]);
+      sendAdminInvite({
+        tenant: t.rows[0],
+        to: data.owner_email,
+        firstName: data.owner_first_name,
+        actionUrl,
+        isNewUser: true,
+        isOwner: true,
+      }).catch((err) => console.error('[email] owner setup send failed:', err));
+      owner_invite_sent = true;
+    }
+
     res.status(201).json({
       tenant_id: row.tenant_id,
       user_id: row.user_id,
       admin_id: row.admin_id,
       subdomain: data.subdomain,
+      owner_invite_sent,
     });
   } catch (err) {
     next(err);
@@ -138,6 +226,20 @@ export async function setTenantBilling(req, res, next) {
       clearTrial ? null : (trial_ends_at ?? null),
       clearTrial,
     ]);
+
+    await platformAudit(pool, {
+      adminId: req.platformAdmin?.id,
+      action: 'tenant.billing_update',
+      tenantId: t.rows[0].id,
+      detail: {
+        subdomain: req.params.subdomain,
+        status: status ?? null,
+        trial_ends_at: clearTrial ? null : (trial_ends_at ?? undefined),
+        clear_trial: clearTrial,
+        via: req.platformVia,
+      },
+      ip: req.ip,
+    });
 
     res.json({ ok: true });
   } catch (err) {
