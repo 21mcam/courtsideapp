@@ -82,4 +82,9 @@ export function applyAccent(key) {
   for (const [step, rgb] of Object.entries(accent.vars)) {
     root.style.setProperty(`--brand-${step}`, rgb);
   }
+  // Mobile browser chrome (address bar / installed-app title bar)
+  // matches the tenant accent, same as the manifest's theme_color.
+  document
+    .querySelector('meta[name="theme-color"]')
+    ?.setAttribute('content', accent.swatch);
 }

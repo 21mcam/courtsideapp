@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- "Add to Home Screen": per-tenant manifest + icon served by the
+         API (src/lib/webManifest.js). theme-color and the iOS title are
+         updated to the tenant's accent/name at runtime (theme.js,
+         auth.jsx). -->
+    <link rel="manifest" href="/api/tenant/manifest.webmanifest" />
+    <meta name="theme-color" content="#4f46e5" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Courtside" />
     <!-- Replaced with the tenant's display name once tenant context
          loads (client/src/auth.jsx). -->
     <title>Courtside</title>
