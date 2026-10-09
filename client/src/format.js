@@ -197,3 +197,25 @@ export function formatNoShowAction(action) {
       return action || '—';
   }
 }
+
+// Member-facing description of one credit-history row
+// (GET /api/me/credits). Plain words, never the raw reason key; booking
+// rows say what was booked and when (tenant timezone). Staff notes are
+// never sent to members, so "Adjusted by staff" is all they see.
+const MEMBER_CREDIT_REASONS = {
+  weekly_reset: 'Weekly credits',
+  pack_purchase: 'Credit pack purchase',
+  signup_bonus: 'Welcome bonus',
+  admin_adjustment: 'Adjusted by staff',
+  manual: 'Adjusted by staff',
+  plan_change: 'Plan change',
+  migration: 'Carried over from your old account',
+};
+
+export function memberCreditLabel(entry, tz) {
+  const what = entry.offering_name ?? 'a booking';
+  const when = entry.booking_start ? ` · ${formatSlotLocal(entry.booking_start, tz)}` : '';
+  if (entry.reason === 'booking_spend') return `Booked ${what}${when}`;
+  if (entry.reason === 'booking_refund') return `Refund · cancelled ${what}${when}`;
+  return MEMBER_CREDIT_REASONS[entry.reason] ?? 'Credit change';
+}
