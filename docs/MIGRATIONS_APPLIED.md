@@ -7,7 +7,7 @@ brought forward — update it every time you apply a migration.
 
 | Environment | Applied through | Date | Notes |
 |---|---|---|---|
-| Production (live Supabase) | **035** | 2026-10-08 | 001–019 during initial phases; 020–025 at PR #51 merge (025 = platform billing); 026–029 with walk-in checkout v2 (PR #53, live 2026-07-27); 030 theme; 031 booking import provenance applied by hand 2026-08-08; 032 platform console (PR #57), 033 booking reminders (PR #63) 034 family accounts (PR #64) and 035 tenant visibility applied by hand 2026-10-08. |
+| Production (live Supabase) | **035** | 2026-10-08 | 001–019 during initial phases; 020–025 at PR #51 merge (025 = platform billing); 026–029 with walk-in checkout v2 (PR #53, live 2026-07-27); 030 theme; 031 booking import provenance applied by hand 2026-08-08; 032 platform console (PR #57), 033 booking reminders (PR #63), 034 family accounts (PR #64) and 035 tenant visibility applied by hand 2026-10-08. |
 
 To verify what's actually live, run this in the SQL editor and
 compare against `ls db/migrations/`:
