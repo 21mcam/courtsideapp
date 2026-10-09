@@ -203,9 +203,14 @@ export async function getClassInstanceRoster(req, res, next) {
               cb.customer_first_name, cb.customer_last_name, cb.customer_email,
               m.first_name AS member_first_name,
               m.last_name  AS member_last_name,
-              m.email      AS member_email
+              m.email      AS member_email,
+              -- Who attends when a member booked for family (034).
+              cb.dependent_id,
+              d.first_name AS participant_first_name,
+              d.last_name  AS participant_last_name
          FROM class_bookings cb
     LEFT JOIN members m ON m.tenant_id = cb.tenant_id AND m.id = cb.member_id
+    LEFT JOIN dependents d ON d.tenant_id = cb.tenant_id AND d.id = cb.dependent_id
         WHERE cb.tenant_id = $1 AND cb.class_instance_id = $2
         ORDER BY cb.created_at ASC`,
       [tenant.id, id],

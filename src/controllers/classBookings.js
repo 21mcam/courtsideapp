@@ -32,6 +32,7 @@
 //   POST  /api/class-bookings/:id/mark-no-show   admin-only
 
 import { z } from 'zod';
+import { dependentIdSchema, resolveDependent } from '../lib/dependents.js';
 
 import { findPlanCategoryRestriction } from './bookings.js';
 import {
@@ -118,6 +119,8 @@ export async function listAvailableClassInstances(req, res, next) {
 // ============================================================
 const createSchema = z.object({
   class_instance_id: z.string().uuid(),
+  // Who attends (migration 034); absent/null = the member.
+  dependent_id: dependentIdSchema,
 });
 
 export async function createMemberClassBooking(req, res, next) {
@@ -137,6 +140,9 @@ export async function createMemberClassBooking(req, res, next) {
         .json({ error: 'invalid input', details: parsed.error.flatten() });
     }
     const { class_instance_id } = parsed.data;
+
+    const who = await resolveDependent(db, tenant.id, member_id, parsed.data.dependent_id);
+    if (who.error) return res.status(who.error.status).json(who.error.body);
 
     // Pull instance + its offering. RLS scopes by tenant; missing or
     // wrong-tenant id returns no rows. Trigger would also catch
@@ -233,24 +239,28 @@ export async function createMemberClassBooking(req, res, next) {
     try {
       const insertRes = await db.query(
         `INSERT INTO class_bookings (
-           tenant_id, class_instance_id, member_id, status,
+           tenant_id, class_instance_id, member_id, dependent_id, status,
            amount_due_cents, credit_cost_charged, payment_status
          ) VALUES (
-           $1, $2, $3, 'confirmed', 0, $4, 'not_required'
+           $1, $2, $3, $5, 'confirmed', 0, $4, 'not_required'
          )
-         RETURNING id, class_instance_id, member_id, status,
+         RETURNING id, class_instance_id, member_id, dependent_id, status,
                    credit_cost_charged, payment_status, created_at`,
-        [tenant.id, class_instance_id, member_id, ci.credit_cost],
+        [tenant.id, class_instance_id, member_id, ci.credit_cost, who.dependent?.id ?? null],
       );
       booking = insertRes.rows[0];
     } catch (err) {
       // 23505 unique_violation — the partial unique index on
       // (tenant_id, class_instance_id, member_id) for non-cancelled
       // rows. Member already has a spot here.
+      // (One spot per PARTICIPANT since migration 034: siblings can
+      // share a class, the same person can't hold two spots.)
       if (err.code === '23505') {
-        return res
-          .status(409)
-          .json({ error: 'you already have a spot in this class' });
+        return res.status(409).json({
+          error: who.dependent
+            ? `${who.dependent.first_name} already has a spot in this class`
+            : 'you already have a spot in this class',
+        });
       }
       // 23514 check_violation — capacity trigger or validity trigger.
       // Distinguish by message keyword for a more useful response.
@@ -308,11 +318,13 @@ export async function listMyClassBookings(req, res, next) {
               cb.cancelled_at, cb.created_at,
               ci.start_time, ci.end_time,
               o.name AS offering_name,
-              r.name AS resource_name
+              r.name AS resource_name,
+              cb.dependent_id, d.first_name AS participant_first_name
          FROM class_bookings cb
          JOIN class_instances ci ON ci.tenant_id = cb.tenant_id AND ci.id = cb.class_instance_id
          JOIN offerings o        ON o.tenant_id = ci.tenant_id  AND o.id = ci.offering_id
          JOIN resources r        ON r.tenant_id = ci.tenant_id  AND r.id = ci.resource_id
+         LEFT JOIN dependents d  ON d.tenant_id = cb.tenant_id  AND d.id = cb.dependent_id
         WHERE cb.tenant_id = $1 AND cb.member_id = $2
         ORDER BY ci.start_time DESC`,
       [req.tenant.id, req.user.member_id],

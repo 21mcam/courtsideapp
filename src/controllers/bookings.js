@@ -55,6 +55,7 @@ import {
   findMissingWaiverSignature,
   WAIVER_REQUIRED_CODE,
 } from './waivers.js';
+import { dependentIdSchema, participantName, resolveDependent } from '../lib/dependents.js';
 
 // Enforce plans.allowed_categories for a member booking. Returns null
 // when the booking may proceed, or { plan_name, category } when the
@@ -102,6 +103,9 @@ const createBookingSchema = z.object({
   start_time: z.string().datetime({
     message: 'start_time must be ISO 8601 (e.g. 2027-01-04T14:00:00.000Z)',
   }),
+  // Who attends (migration 034): one of the member's family; absent or
+  // null = the member. Credits still come off the member's balance.
+  dependent_id: dependentIdSchema,
 });
 
 export async function createMemberBooking(req, res, next) {
@@ -121,6 +125,9 @@ export async function createMemberBooking(req, res, next) {
         .json({ error: 'invalid input', details: parsed.error.flatten() });
     }
     const { offering_id, resource_id, start_time } = parsed.data;
+
+    const who = await resolveDependent(db, tenant.id, member_id, parsed.data.dependent_id);
+    if (who.error) return res.status(who.error.status).json(who.error.body);
 
     // 1. Offering
     const offerRes = await db.query(
@@ -333,13 +340,13 @@ export async function createMemberBooking(req, res, next) {
     try {
       const bookRes = await db.query(
         `INSERT INTO bookings (
-           tenant_id, offering_id, resource_id, member_id,
+           tenant_id, offering_id, resource_id, member_id, dependent_id,
            start_time, end_time, status,
            amount_due_cents, credit_cost_charged, payment_status
          ) VALUES (
-           $1, $2, $3, $4, $5, $6, 'confirmed', 0, $7, 'not_required'
+           $1, $2, $3, $4, $8, $5, $6, 'confirmed', 0, $7, 'not_required'
          )
-         RETURNING id, offering_id, resource_id, member_id,
+         RETURNING id, offering_id, resource_id, member_id, dependent_id,
                    start_time, end_time, status,
                    credit_cost_charged, payment_status, created_at`,
         [
@@ -350,6 +357,7 @@ export async function createMemberBooking(req, res, next) {
           start,
           end,
           offering.credit_cost,
+          who.dependent?.id ?? null,
         ],
       );
       booking = bookRes.rows[0];
@@ -404,6 +412,7 @@ export async function createMemberBooking(req, res, next) {
             resourceName: resource_name,
             startTime: booking.start_time,
             creditCost: offering.credit_cost,
+            participantName: participantName(who.dependent),
           }).catch((err) =>
             console.error('[email] booking confirmation send failed:', err),
           );
@@ -781,10 +790,12 @@ export async function listMyBookings(req, res, next) {
               b.status, b.credit_cost_charged, b.payment_status,
               b.cancelled_at, b.created_at,
               o.name AS offering_name,
-              r.name AS resource_name
+              r.name AS resource_name,
+              b.dependent_id, d.first_name AS participant_first_name
          FROM bookings b
          JOIN offerings o ON o.tenant_id = b.tenant_id AND o.id = b.offering_id
          JOIN resources r ON r.tenant_id = b.tenant_id AND r.id = b.resource_id
+         LEFT JOIN dependents d ON d.tenant_id = b.tenant_id AND d.id = b.dependent_id
         WHERE b.tenant_id = $1 AND b.member_id = $2
         ORDER BY b.start_time DESC`,
       [req.tenant.id, req.user.member_id],

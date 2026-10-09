@@ -10,6 +10,8 @@
 
 import { z } from 'zod';
 
+import { resolveDependent } from '../lib/dependents.js';
+
 import {
   sendAdminInvite,
   sendBookingConfirmation,
@@ -426,11 +428,15 @@ export async function listAllBookings(req, res, next) {
               m.last_name  AS member_last_name,
               m.email      AS member_email,
               b.customer_first_name, b.customer_last_name, b.customer_email,
-              b.customer_phone, b.customer_note
+              b.customer_phone, b.customer_note,
+              b.dependent_id,
+              d.first_name AS participant_first_name,
+              d.last_name  AS participant_last_name
          FROM bookings b
          JOIN offerings o ON o.tenant_id = b.tenant_id AND o.id = b.offering_id
          JOIN resources r ON r.tenant_id = b.tenant_id AND r.id = b.resource_id
     LEFT JOIN members   m ON m.tenant_id = b.tenant_id AND m.id = b.member_id
+    LEFT JOIN dependents d ON d.tenant_id = b.tenant_id AND d.id = b.dependent_id
         WHERE b.tenant_id = $1
           AND b.start_time >= $2
           AND b.start_time <  $3
@@ -636,6 +642,9 @@ const createAdminBookingSchema = z
       message: 'end_time must be ISO 8601',
     }),
     member_id: z.string().uuid().optional(),
+    // Front desk booking a member's kid (migration 034). Requires
+    // member_id; must be that member's active dependent.
+    dependent_id: z.string().uuid().optional(),
     customer: z
       .object({
         first_name: z.string().trim().min(1).max(200),
@@ -647,6 +656,9 @@ const createAdminBookingSchema = z
   })
   .refine((v) => Boolean(v.member_id) !== Boolean(v.customer), {
     message: 'provide exactly one of member_id or customer',
+  })
+  .refine((v) => !v.dependent_id || Boolean(v.member_id), {
+    message: 'dependent_id needs member_id',
   });
 
 export async function createAdminBooking(req, res, next) {
@@ -770,19 +782,21 @@ export async function createAdminBooking(req, res, next) {
         return res.status(404).json({ error: 'member not found' });
       }
     }
+    const who = await resolveDependent(db, tenant.id, member_id, parsed.data.dependent_id);
+    if (who.error) return res.status(who.error.status).json(who.error.body);
 
     let booking;
     try {
       const bookRes = await db.query(
         member_id
           ? `INSERT INTO bookings (
-               tenant_id, offering_id, resource_id, member_id,
+               tenant_id, offering_id, resource_id, member_id, dependent_id,
                start_time, end_time, status,
                amount_due_cents, credit_cost_charged, payment_status
              ) VALUES (
-               $1, $2, $3, $4, $5, $6, 'confirmed', 0, $7, 'not_required'
+               $1, $2, $3, $4, $8, $5, $6, 'confirmed', 0, $7, 'not_required'
              )
-             RETURNING id, offering_id, resource_id, member_id,
+             RETURNING id, offering_id, resource_id, member_id, dependent_id,
                        start_time, end_time, status,
                        credit_cost_charged, amount_due_cents,
                        payment_status, created_at`
@@ -811,6 +825,7 @@ export async function createAdminBooking(req, res, next) {
               start,
               end,
               offering.credit_cost,
+              who.dependent?.id ?? null,
             ]
           : [
               tenant.id,

@@ -69,11 +69,13 @@ export async function collectTenantReminders(db, tenant) {
             b.payment_status,
             COALESCE(m.email, b.customer_email) AS email,
             COALESCE(m.first_name, b.customer_first_name) AS first_name,
-            o.name AS offering_name, r.name AS resource_name
+            o.name AS offering_name, r.name AS resource_name,
+            d.first_name || ' ' || d.last_name AS participant_name
        FROM bookings b
        JOIN offerings o ON o.tenant_id = b.tenant_id AND o.id = b.offering_id
        JOIN resources r ON r.tenant_id = b.tenant_id AND r.id = b.resource_id
        LEFT JOIN members m ON m.tenant_id = b.tenant_id AND m.id = b.member_id
+       LEFT JOIN dependents d ON d.tenant_id = b.tenant_id AND d.id = b.dependent_id
       WHERE b.tenant_id = $1
         AND b.status = 'confirmed'
         AND b.reminder_sent_at IS NULL
@@ -89,12 +91,14 @@ export async function collectTenantReminders(db, tenant) {
     `SELECT cb.id, ci.start_time,
             COALESCE(m.email, cb.customer_email) AS email,
             COALESCE(m.first_name, cb.customer_first_name) AS first_name,
-            o.name AS offering_name, r.name AS resource_name
+            o.name AS offering_name, r.name AS resource_name,
+            d.first_name || ' ' || d.last_name AS participant_name
        FROM class_bookings cb
        JOIN class_instances ci ON ci.tenant_id = cb.tenant_id AND ci.id = cb.class_instance_id
        JOIN offerings o ON o.tenant_id = ci.tenant_id AND o.id = ci.offering_id
        JOIN resources r ON r.tenant_id = ci.tenant_id AND r.id = ci.resource_id
        LEFT JOIN members m ON m.tenant_id = cb.tenant_id AND m.id = cb.member_id
+       LEFT JOIN dependents d ON d.tenant_id = cb.tenant_id AND d.id = cb.dependent_id
       WHERE cb.tenant_id = $1
         AND cb.status = 'confirmed'
         AND cb.reminder_sent_at IS NULL
@@ -140,6 +144,7 @@ export async function collectTenantReminders(db, tenant) {
         address,
         manageUrl,
         canReschedule,
+        participantName: b.participant_name,
       });
     }
   }
@@ -157,6 +162,7 @@ export async function collectTenantReminders(db, tenant) {
         resourceName: c.resource_name,
         startTime: c.start_time,
         address,
+        participantName: c.participant_name,
       });
     }
   }

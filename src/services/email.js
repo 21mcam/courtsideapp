@@ -199,10 +199,13 @@ export function renderBookingConfirmationEmail({
   amountDueCents = null,
   manageUrl = null,
   customerNote = null,
+  participantName = null,
 }) {
   const when = formatInTenantTz(startTime, timezone);
   const payment = paymentLine({ creditCost, amountPaidCents, amountDueCents });
   const rows = [
+    // Booked for a family member (migration 034); omitted otherwise.
+    ['Who', participantName],
     ['What', offeringName],
     ['Where', resourceName],
     ['When', when],
@@ -312,9 +315,11 @@ export function renderBookingReminderEmail({
   address = null,
   manageUrl = null,
   canReschedule = false,
+  participantName = null,
 }) {
   const when = formatInTenantTz(startTime, timezone);
   const rows = [
+    ['Who', participantName],
     ['What', offeringName],
     ['Where', resourceName],
     ['When', when],
@@ -674,9 +679,11 @@ export function sendBookingConfirmation({
   amountDueCents = null,
   manageUrl = null,
   customerNote = null,
+  participantName = null,
 }) {
   const { tenantName, accent, replyTo } = tenantSendFields(tenant);
   const { subject, html, text } = renderBookingConfirmationEmail({
+    participantName,
     tenantName,
     accent,
     timezone: tenant.timezone,
@@ -774,9 +781,11 @@ export function sendBookingReminder({
   address = null,
   manageUrl = null,
   canReschedule = false,
+  participantName = null,
 }) {
   const { tenantName, accent, replyTo } = tenantSendFields(tenant);
   const { subject, html, text } = renderBookingReminderEmail({
+    participantName,
     tenantName,
     accent,
     timezone: tenant.timezone,

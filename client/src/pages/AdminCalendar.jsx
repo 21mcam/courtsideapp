@@ -54,6 +54,7 @@ import {
   formatSlotLocal,
   formatTimeLocal,
   formatTimezoneLabel,
+  memberBookingName,
 } from '../format.js';
 import {
   assignLanes,
@@ -808,7 +809,7 @@ function Card({ item, tz, top, height, lane, laneCount, onClick }) {
     subtitle = `${item.roster_count ?? 0}/${item.capacity}`;
   } else {
     title = item.member_id
-      ? `${item.member_first_name ?? ''} ${item.member_last_name ?? ''}`.trim() ||
+      ? memberBookingName(item) ||
         item.member_email ||
         'Member'
       : `${item.customer_first_name ?? ''} ${item.customer_last_name ?? ''}`.trim() ||
@@ -982,7 +983,7 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
               <dt className="text-slate-500">Who</dt>
               <dd className="col-span-2">
                 {item.member_id
-                  ? `${item.member_first_name ?? ''} ${item.member_last_name ?? ''}`.trim()
+                  ? memberBookingName(item)
                   : `${item.customer_first_name ?? ''} ${item.customer_last_name ?? ''}`.trim()}
                 {item.member_id ? (
                   <span className="ml-2">
@@ -1187,6 +1188,23 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
   }, [members, memberQuery]);
   const selectedMember = (members ?? []).find((m) => m.id === memberId) ?? null;
 
+  // Family (migration 034): once a member is picked, offer their kids.
+  const [memberFamily, setMemberFamily] = useState([]);
+  const [familyDependentId, setFamilyDependentId] = useState('');
+  useEffect(() => {
+    setFamilyDependentId('');
+    setMemberFamily([]);
+    if (!memberId) return;
+    let cancelled = false;
+    api(`/api/admin/members/${memberId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => !cancelled && setMemberFamily(b?.dependents ?? []))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [memberId]);
+
   const durationMin = endMin - startMin;
   const isCustomLength =
     selectedOffering && durationMin !== selectedOffering.duration_minutes;
@@ -1221,7 +1239,10 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
         start_time,
         end_time,
         ...(who === 'member'
-          ? { member_id: memberId }
+          ? {
+              member_id: memberId,
+              ...(familyDependentId ? { dependent_id: familyDependentId } : {}),
+            }
           : {
               customer: {
                 first_name: customer.first_name.trim(),
@@ -1407,6 +1428,24 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
                     ))
                   )}
                 </div>
+                {memberFamily.length > 0 && (
+                  <label className="mt-2 block text-sm">
+                    <span className="mb-1 block font-medium text-slate-700">For</span>
+                    <Select
+                      value={familyDependentId}
+                      onChange={(e) => setFamilyDependentId(e.target.value)}
+                    >
+                      <option value="">
+                        {selectedMember ? `${selectedMember.first_name} (member)` : 'The member'}
+                      </option>
+                      {memberFamily.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.first_name} {d.last_name}
+                        </option>
+                      ))}
+                    </Select>
+                  </label>
+                )}
               </div>
             ) : (
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
@@ -1508,7 +1547,7 @@ async function handle(res) {
 function cancelledItemLabel(item) {
   if (item.kind === 'class') return item.offering_name ?? 'Class';
   return item.member_id
-    ? `${item.member_first_name ?? ''} ${item.member_last_name ?? ''}`.trim() ||
+    ? memberBookingName(item) ||
         item.member_email ||
         'Member'
     : `${item.customer_first_name ?? ''} ${item.customer_last_name ?? ''}`.trim() ||

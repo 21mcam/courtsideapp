@@ -219,3 +219,16 @@ export function memberCreditLabel(entry, tz) {
   if (entry.reason === 'booking_refund') return `Refund · cancelled ${what}${when}`;
   return MEMBER_CREDIT_REASONS[entry.reason] ?? 'Credit change';
 }
+
+// Who a MEMBER booking is for, as staff should read it (migration 034):
+// "Leo Rivera (Dana's family)" when booked for a family member, else the
+// member's own name. Works on any row carrying member_first/last_name +
+// participant_first/last_name (admin bookings list, calendar, rosters).
+export function memberBookingName(b) {
+  const member = `${b.member_first_name ?? ''} ${b.member_last_name ?? ''}`.trim();
+  if (b.participant_first_name) {
+    const kid = `${b.participant_first_name} ${b.participant_last_name ?? ''}`.trim();
+    return b.member_first_name ? `${kid} (${b.member_first_name}'s family)` : kid;
+  }
+  return member;
+}
