@@ -7,6 +7,7 @@
 
 import express from 'express';
 import { buildBookingUrl } from '../lib/publicUrl.js';
+import { buildIconSvg, buildManifest } from '../lib/webManifest.js';
 
 const router = express.Router();
 
@@ -51,6 +52,19 @@ router.get('/', (req, res) => {
     // reactivation path instead of a blank 402.
     billing_blocked: req.tenant.is_billing_ok === false,
   });
+});
+
+// "Add to Home Screen" (lib/webManifest.js). Per-tenant because each
+// facility installs under its own name, color and initial. Short cache:
+// an admin's accent change should reach new installs within minutes.
+router.get('/manifest.webmanifest', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=300');
+  res.type('application/manifest+json').send(JSON.stringify(buildManifest(req.tenant)));
+});
+
+router.get('/icon.svg', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=300');
+  res.type('image/svg+xml').send(buildIconSvg(req.tenant));
 });
 
 export default router;
