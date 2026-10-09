@@ -242,7 +242,20 @@ const POLICY_DEFAULTS = {
   waiver_required: false,
   waiver_text: null,
   waiver_version: 1,
+  reminders_enabled: true,
+  reminder_hours_before: 24,
+  reminder_include_manage_link: true,
 };
+
+// Reminder settings (migration 033) use the waiver's "omitted = keep
+// stored value" rule, not "omitted = default": an older client that
+// PUTs the pre-reminder payload must not silently switch a tenant's
+// reminders back on.
+const REMINDER_FIELDS = [
+  'reminders_enabled',
+  'reminder_hours_before',
+  'reminder_include_manage_link',
+];
 
 const bookingPoliciesUpsertSchema = z
   .object({
@@ -263,6 +276,9 @@ const bookingPoliciesUpsertSchema = z
     // changes (see upsertBookingPolicies).
     waiver_required: z.boolean().optional(),
     waiver_text: z.string().max(50000).nullable().optional(),
+    reminders_enabled: z.boolean().optional(),
+    reminder_hours_before: z.number().int().min(1).max(168).optional(),
+    reminder_include_manage_link: z.boolean().optional(),
   });
 
 export async function getBookingPolicies(req, res, next) {
@@ -274,6 +290,7 @@ export async function getBookingPolicies(req, res, next) {
               allow_member_self_cancel, allow_customer_self_cancel,
               customer_reschedule_hours_before,
               waiver_required, waiver_text, waiver_version,
+              reminders_enabled, reminder_hours_before, reminder_include_manage_link,
               created_at, updated_at
          FROM booking_policies
         WHERE tenant_id = $1`,
@@ -314,7 +331,8 @@ export async function upsertBookingPolicies(req, res, next) {
     // FOR UPDATE so two concurrent PUTs can't both read version N
     // and write N+1 with different texts.
     const existingRes = await req.db.query(
-      `SELECT waiver_required, waiver_text, waiver_version
+      `SELECT waiver_required, waiver_text, waiver_version,
+              reminders_enabled, reminder_hours_before, reminder_include_manage_link
          FROM booking_policies
         WHERE tenant_id = $1
           FOR UPDATE`,
@@ -326,6 +344,9 @@ export async function upsertBookingPolicies(req, res, next) {
       parsed.data.waiver_required ??
       existing?.waiver_required ??
       POLICY_DEFAULTS.waiver_required;
+    const reminders = Object.fromEntries(
+      REMINDER_FIELDS.map((k) => [k, parsed.data[k] ?? existing?.[k] ?? POLICY_DEFAULTS[k]]),
+    );
     let waiverText = existing?.waiver_text ?? null;
     let waiverVersion = existing?.waiver_version ?? 1;
     if (Object.hasOwn(parsed.data, 'waiver_text')) {
@@ -344,9 +365,11 @@ export async function upsertBookingPolicies(req, res, next) {
            min_advance_booking_minutes, max_advance_booking_days,
            allow_member_self_cancel, allow_customer_self_cancel,
            customer_reschedule_hours_before,
-           waiver_required, waiver_text, waiver_version
+           waiver_required, waiver_text, waiver_version,
+           reminders_enabled, reminder_hours_before, reminder_include_manage_link
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                 $15, $16, $17)
          ON CONFLICT (tenant_id) DO UPDATE SET
            free_cancel_hours_before    = EXCLUDED.free_cancel_hours_before,
            partial_refund_hours_before = EXCLUDED.partial_refund_hours_before,
@@ -360,13 +383,17 @@ export async function upsertBookingPolicies(req, res, next) {
            customer_reschedule_hours_before = EXCLUDED.customer_reschedule_hours_before,
            waiver_required             = EXCLUDED.waiver_required,
            waiver_text                 = EXCLUDED.waiver_text,
-           waiver_version              = EXCLUDED.waiver_version
+           waiver_version              = EXCLUDED.waiver_version,
+           reminders_enabled           = EXCLUDED.reminders_enabled,
+           reminder_hours_before       = EXCLUDED.reminder_hours_before,
+           reminder_include_manage_link = EXCLUDED.reminder_include_manage_link
          RETURNING free_cancel_hours_before, partial_refund_hours_before,
                    partial_refund_percent, no_show_action, no_show_fee_cents,
                    min_advance_booking_minutes, max_advance_booking_days,
                    allow_member_self_cancel, allow_customer_self_cancel,
                    customer_reschedule_hours_before,
                    waiver_required, waiver_text, waiver_version,
+                   reminders_enabled, reminder_hours_before, reminder_include_manage_link,
                    created_at, updated_at`,
         [
           req.tenant.id,
@@ -383,6 +410,9 @@ export async function upsertBookingPolicies(req, res, next) {
           waiverRequired,
           waiverText,
           waiverVersion,
+          reminders.reminders_enabled,
+          reminders.reminder_hours_before,
+          reminders.reminder_include_manage_link,
         ],
       );
       res.json({ booking_policies: { ...result.rows[0], exists: true } });
