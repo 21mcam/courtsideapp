@@ -7,21 +7,18 @@ brought forward — update it every time you apply a migration.
 
 | Environment | Applied through | Date | Notes |
 |---|---|---|---|
-| Production (live Supabase) | **033** | 2026-10-08 | 001–019 during initial phases; 020–025 at PR #51 merge (025 = platform billing); 026–029 with walk-in checkout v2 (PR #53, live 2026-07-27); 030 theme; 031 booking import provenance applied by hand 2026-08-08; 032 platform console (PR #57) and 033 booking reminders applied by hand 2026-10-08. |
-
-**Pending:** 034 (family accounts — `dependents` table, `dependent_id`
-on bookings / class_bookings / waiver_signatures, class-roster unique
-index swap). Additive; apply BEFORE deploying the family PR (the Account
-page's Family card and admin member detail query `dependents`).
+| Production (live Supabase) | **034** | 2026-10-08 | 001–019 during initial phases; 020–025 at PR #51 merge (025 = platform billing); 026–029 with walk-in checkout v2 (PR #53, live 2026-07-27); 030 theme; 031 booking import provenance applied by hand 2026-08-08; 032 platform console (PR #57), 033 booking reminders (PR #63) and 034 family accounts (PR #64) applied by hand 2026-10-08. |
 
 To verify what's actually live, run this in the SQL editor and
 compare against `ls db/migrations/`:
 
 ```sql
 -- spot-check the newest migration's artifacts:
--- 033 → reminder settings on booking_policies (expect t | 24 | t)
-SELECT reminders_enabled, reminder_hours_before, reminder_include_manage_link
-  FROM booking_policies LIMIT 1;
+-- 034 → family accounts (expect: 0 rows, no error, and the
+--        participant index present)
+SELECT count(*) FROM dependents;
+SELECT indexname FROM pg_indexes
+ WHERE indexname = 'class_bookings_participant_per_instance_unique';
 ```
 
 pg_cron status: **not enabled**. The Node scheduler in
