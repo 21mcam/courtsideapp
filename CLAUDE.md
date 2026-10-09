@@ -246,6 +246,16 @@ exclusively by `apply_credit_change`:
   NOT fire on time-only UPDATEs). A future customer self-cancel
   should reuse this token and finally consume
   `allow_customer_self_cancel`.
+  Reminder emails (migration 033) carry a SECOND token
+  (`bookings.reminder_manage_token_hash`, minted by the reminder sweep)
+  when the tenant has `reminder_include_manage_link` on; the manage
+  endpoints accept either hash.
+- **booking reminders** — `src/controllers/reminders.js`, a 10-minute
+  Node-scheduler sweep. Per-tenant `booking_policies.reminders_enabled`
+  / `reminder_hours_before` / `reminder_include_manage_link` (omitted
+  in a policy PUT = keep stored value). `reminder_sent_at` on bookings
+  and class_bookings = once only; reschedule clears it. Bookings made
+  inside the window are skipped; billing-locked tenants send nothing.
 - **import provenance** — `bookings.external_source` /
   `external_id` (migration 031). Set only by the Momentum importer
   (`scripts/migration/`); the loader's idempotency key for rerun-safe
