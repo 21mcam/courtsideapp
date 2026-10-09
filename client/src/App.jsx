@@ -11,6 +11,7 @@
 //   /wizard  → admin-only setup wizard (Phase 2 slice 5)
 //   /book    → member booking flow (Phase 3 slice 5)
 //   /walk-in → PUBLIC walk-in booking, no login (Phase 5 slice 7 UI)
+//   /walk-in/classes → PUBLIC walk-in class/clinic spots, no login
 //   /classes → member class browser + booking (Phase 4 slice 4)
 //   /plans   → member subscription chooser (Phase 5 slice 4a)
 //   /account → own profile, password, credit history (members + staff)
@@ -71,6 +72,7 @@ const AdminPolicies = lazy(() => import('./pages/AdminPolicies.jsx'));
 const AdminWaivers = lazy(() => import('./pages/AdminWaivers.jsx'));
 const WalkInSuccessPage = lazy(() => import('./pages/WalkInSuccessPage.jsx'));
 const ManageBookingPage = lazy(() => import('./pages/walkin/ManageBookingPage.jsx'));
+const WalkInClassesPage = lazy(() => import('./pages/walkin/WalkInClassesPage.jsx'));
 const RegisterPage = lazy(() => import('./pages/RegisterPage.jsx'));
 const ForgotPasswordPage = lazy(() => import('./pages/ForgotPasswordPage.jsx'));
 const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage.jsx'));
@@ -156,6 +158,8 @@ function ShellRoutes() {
       <Route path="/walk-in/success" element={<WalkInSuccessPage />} />
       {/* No-login manage/reschedule via the emailed capability link */}
       <Route path="/walk-in/manage" element={<ManageBookingPage />} />
+      {/* Walk-in class/clinic spots (no login) */}
+      <Route path="/walk-in/classes" element={<WalkInClassesPage />} />
       {/* Platform console "View as owner" handoff (read-only) */}
       <Route path="/support-session" element={<SupportSessionPage />} />
 

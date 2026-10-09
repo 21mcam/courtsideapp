@@ -28,6 +28,7 @@ import {
 import { buildWalkInParams } from '../lib/walkinParams.js';
 import PublicHeader from './walkin/PublicHeader.jsx';
 import RatingBadge from './walkin/RatingBadge.jsx';
+import ClassesTeaser from './walkin/ClassesTeaser.jsx';
 
 const SERVICES_SHOWN = 6;
 
@@ -119,6 +120,8 @@ export default function PublicHomePage() {
         </section>
 
         <ServicesSection offerings={offerings} />
+        {/* Renders only when walk-in classes have open spots. */}
+        <ClassesTeaser />
         <HoursSection home={home} tz={tenant.timezone} />
         <PlansSection plans={home?.plans} />
 

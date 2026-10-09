@@ -3,8 +3,8 @@
 //
 // Three categories of "stuck" rows accumulate over time:
 //
-//   1. bookings with status='pending_payment' whose hold_expires_at
-//      has passed. The pending row holds the slot under the partial
+//   1. bookings AND class_bookings with status='pending_payment' whose
+//      hold_expires_at has passed. The pending row holds the slot under the partial
 //      GiST exclusion (status <> 'cancelled'), so left alone it would
 //      block any other booking on that resource for the original
 //      slot. Cancel them with cancelled_by_type='system'.
@@ -74,6 +74,23 @@ export async function cleanupTenantData(db, tenantId) {
   );
   const bookings_cancelled = bookingsRes.rows.length;
 
+  // 1b. Same for walk-in class spots (customer-side slice 4): an
+  //     abandoned class checkout holds a seat under the capacity
+  //     trigger until this releases it.
+  const classHoldsRes = await db.query(
+    `UPDATE class_bookings
+        SET status = 'cancelled',
+            cancelled_at = now(),
+            cancelled_by_type = 'system',
+            cancellation_reason = 'pending_payment hold expired'
+      WHERE tenant_id = $1
+        AND status = 'pending_payment'
+        AND hold_expires_at < now()
+      RETURNING id`,
+    [tenantId],
+  );
+  const class_bookings_cancelled = classHoldsRes.rows.length;
+
   // 2. Auto-complete confirmed bookings whose end_time passed more
   //    than AUTO_COMPLETE_AFTER_HOURS ago. Runs AFTER the expired-hold
   //    pass so the two never race on the same row (they can't anyway —
@@ -120,7 +137,12 @@ export async function cleanupTenantData(db, tenantId) {
     );
   }
 
-  return { bookings_cancelled, bookings_completed, subscriptions_cancelled };
+  return {
+    bookings_cancelled,
+    class_bookings_cancelled,
+    bookings_completed,
+    subscriptions_cancelled,
+  };
 }
 
 // POST /api/admin/cleanup — manual per-tenant run.

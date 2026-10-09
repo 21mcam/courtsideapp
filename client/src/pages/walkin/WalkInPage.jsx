@@ -45,6 +45,7 @@ import { Button, Card } from '../../components/ui/index.js';
 import PublicHeader from './PublicHeader.jsx';
 import RatingBadge from './RatingBadge.jsx';
 import ServiceList from './ServiceList.jsx';
+import ClassesTeaser from './ClassesTeaser.jsx';
 import TimeStep from './TimeStep.jsx';
 import DetailsStep, { DETAILS_FORM_ID } from './DetailsStep.jsx';
 import SummaryBar from './SummaryBar.jsx';
@@ -483,12 +484,15 @@ export default function WalkInPage() {
         )}
 
         {catalog && step === 'services' && (
-          <ServiceList
-            offerings={catalog.offerings}
-            categories={catalog.categories}
-            selectedOfferingId={null}
-            onSelect={selectService}
-          />
+          <>
+            <ServiceList
+              offerings={catalog.offerings}
+              categories={catalog.categories}
+              selectedOfferingId={null}
+              onSelect={selectService}
+            />
+            <ClassesTeaser />
+          </>
         )}
 
         {catalog && offering && step === 'time' && (

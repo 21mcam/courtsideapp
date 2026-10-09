@@ -14,6 +14,10 @@ import {
   getManageBooking,
   rescheduleManagedBooking,
 } from '../controllers/customerBookings.js';
+import {
+  createCustomerClassBooking,
+  listPublicClasses,
+} from '../controllers/customerClassBookings.js';
 import { getPublicHome } from '../controllers/publicHome.js';
 
 const router = express.Router();
@@ -24,6 +28,9 @@ router.get('/offerings', listPublicOfferings);
 // Public facility home page: merged opening hours + buyable plans.
 router.get('/home', getPublicHome);
 router.post('/bookings', createCustomerBooking);
+// Walk-in class spots (customerClassBookings.js).
+router.get('/classes', listPublicClasses);
+router.post('/class-bookings', createCustomerClassBooking);
 // Email-gated lookup for the walk-in success page ('/bookings' above
 // is an exact-path match, so it can't shadow this).
 router.post('/bookings/lookup', lookupCustomerBooking);

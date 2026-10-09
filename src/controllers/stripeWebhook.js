@@ -257,6 +257,10 @@ async function handleCheckoutSessionCompleted(event, accountId) {
       // Member bought a one-time credit pack (credit-packs slice).
       return handlePackPurchasePaid(session, accountId);
     }
+    if ((session.metadata ?? {}).courtside_type === 'class_booking') {
+      // Walk-in bought a class spot (customerClassBookings.js).
+      return handleCustomerClassBookingPaid(session, accountId);
+    }
     // Walk-in / one-off booking payment (slice 7).
     return handleCustomerBookingPaid(session, accountId);
   }
@@ -669,7 +673,7 @@ async function handleCustomerBookingPaid(session, accountId) {
   );
 
   if (!confirmed) {
-    await refundUnconfirmablePayment(session, tenantIdFromAcct, bookingId, accountId);
+    await refundUnconfirmablePayment(session, tenantIdFromAcct, bookingId, accountId, 'bookings');
     return;
   }
 
@@ -696,6 +700,91 @@ async function handleCustomerBookingPaid(session, accountId) {
   }
 }
 
+// Walk-in class spot paid (customer-side slice 4). Same shape as
+// handleCustomerBookingPaid: flip pending_payment → confirmed + paid
+// inside the tenant transaction, refund outside it if the hold already
+// lapsed (janitor or admin cancelled it), email after commit. No manage
+// token — class spots have no self-serve reschedule yet, so the
+// confirmation carries the reply-to footer instead.
+async function handleCustomerClassBookingPaid(session, accountId) {
+  const md = session.metadata ?? {};
+  const tenantIdFromMd = md.courtside_tenant_id;
+  const classBookingId = md.courtside_class_booking_id;
+  if (!tenantIdFromMd || !classBookingId) {
+    console.warn('checkout.session.completed (class): missing courtside metadata; skipping');
+    return;
+  }
+
+  const tenantIdFromAcct = await resolveTenantFromAccount(
+    accountId,
+    'checkout.session.completed (class)',
+  );
+  if (!tenantIdFromAcct) return;
+  if (tenantIdFromAcct !== tenantIdFromMd) {
+    console.error(
+      `checkout.session.completed (class): tenant mismatch ` +
+        `(account=${tenantIdFromAcct}, metadata=${tenantIdFromMd})`,
+    );
+    return;
+  }
+
+  const confirmed = await withTenantContextById(tenantIdFromAcct, async (client) => {
+    const r = await client.query(
+      `UPDATE class_bookings
+          SET status = 'confirmed',
+              payment_status = 'paid',
+              amount_paid_cents = $1,
+              stripe_payment_intent_id = $2
+        WHERE tenant_id = $3
+          AND id = $4
+          AND status = 'pending_payment'
+        RETURNING id, class_instance_id, customer_first_name, customer_email,
+                  amount_paid_cents`,
+      [session.amount_total ?? 0, session.payment_intent ?? null, tenantIdFromAcct, classBookingId],
+    );
+    if (r.rows.length === 0) return null;
+    const cb = r.rows[0];
+    const details = await client.query(
+      `SELECT ci.start_time, o.name AS offering_name, rs.name AS resource_name
+         FROM class_instances ci
+         JOIN offerings o ON o.tenant_id = ci.tenant_id AND o.id = ci.offering_id
+         JOIN resources rs ON rs.tenant_id = ci.tenant_id AND rs.id = ci.resource_id
+        WHERE ci.tenant_id = $1 AND ci.id = $2`,
+      [tenantIdFromAcct, cb.class_instance_id],
+    );
+    return { ...cb, ...(details.rows[0] ?? {}) };
+  });
+
+  if (!confirmed) {
+    await refundUnconfirmablePayment(
+      session,
+      tenantIdFromAcct,
+      classBookingId,
+      accountId,
+      'class_bookings',
+    );
+    return;
+  }
+
+  // TODO: outbox for reliability-critical delivery.
+  if (confirmed.customer_email) {
+    const tenantCtx = await loadTenantEmailContext(tenantIdFromAcct);
+    if (tenantCtx) {
+      sendBookingConfirmation({
+        tenant: tenantCtx,
+        to: confirmed.customer_email,
+        recipientName: confirmed.customer_first_name,
+        offeringName: confirmed.offering_name,
+        resourceName: confirmed.resource_name,
+        startTime: confirmed.start_time,
+        amountPaidCents: confirmed.amount_paid_cents,
+      }).catch((err) =>
+        console.error('[email] walk-in class confirmation send failed:', err),
+      );
+    }
+  }
+}
+
 // A walk-in paid for a booking that is no longer in pending_payment
 // (janitor-cancelled expired hold, or admin cancel while they sat on
 // the Stripe-hosted page). Refund the payment on the connected
@@ -706,7 +795,13 @@ async function handleCustomerBookingPaid(session, accountId) {
 // the dispatcher releases the dedup row → Stripe redelivers and the
 // refund is retried. An already-refunded charge (retry after a
 // partial failure) is treated as success.
-async function refundUnconfirmablePayment(session, tenantId, bookingId, accountId) {
+// `table` is 'bookings' (rentals) or 'class_bookings' (class spots) —
+// both share the payment columns + CHECKs this touches. Whitelisted:
+// it's interpolated into SQL.
+const REFUNDABLE_TABLES = new Set(['bookings', 'class_bookings']);
+
+async function refundUnconfirmablePayment(session, tenantId, bookingId, accountId, table) {
+  if (!REFUNDABLE_TABLES.has(table)) throw new Error(`refund: unknown table ${table}`);
   console.warn(
     `checkout.session.completed (payment): booking ${bookingId} not in pending_payment state; refunding payment ${session.payment_intent ?? '(none)'}`,
   );
@@ -736,7 +831,7 @@ async function refundUnconfirmablePayment(session, tenantId, bookingId, accountI
   if (amount > 0) {
     await withTenantContextById(tenantId, async (client) => {
       await client.query(
-        `UPDATE bookings
+        `UPDATE ${table}
             SET amount_paid_cents = $1,
                 amount_refunded_cents = $1,
                 payment_status = 'refunded',
