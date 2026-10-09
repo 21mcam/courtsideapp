@@ -312,6 +312,12 @@ test('reschedule happy path: row moves, audit stamped, payment untouched, email 
     '2027-08-09T15:00:00.000Z',
   );
   emailSvc.__clearSkippedEmails();
+  // Pretend the old time was already reminded (migration 033): the
+  // move must clear it so the new time gets its own reminder.
+  await privilegedPool.query(
+    `UPDATE bookings SET reminder_sent_at = now() WHERE id = $1`,
+    [booking_id],
+  );
 
   const res = await reschedulePost(token, {
     start_time: '2027-08-09T18:00:00.000Z',
@@ -326,7 +332,8 @@ test('reschedule happy path: row moves, audit stamped, payment untouched, email 
   const r = await privilegedPool.query(
     `SELECT start_time, end_time, resource_id, previous_start_time,
             rescheduled_at, reschedule_count, status, payment_status,
-            amount_due_cents, amount_paid_cents, manage_token_hash
+            amount_due_cents, amount_paid_cents, manage_token_hash,
+            reminder_sent_at
        FROM bookings WHERE id = $1`,
     [booking_id],
   );
@@ -337,6 +344,7 @@ test('reschedule happy path: row moves, audit stamped, payment untouched, email 
   assert.equal(row.previous_start_time.toISOString(), '2027-08-09T15:00:00.000Z');
   assert.ok(row.rescheduled_at);
   assert.equal(row.reschedule_count, 1);
+  assert.equal(row.reminder_sent_at, null, 'new time → reminder re-armed');
   // Same offering, same price — nothing money-side may move.
   assert.equal(row.status, 'confirmed');
   assert.equal(row.payment_status, 'paid');

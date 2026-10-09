@@ -32,7 +32,7 @@ export async function me(req, res, next) {
     );
 
     const memberResult = await req.db.query(
-      `SELECT id FROM members
+      `SELECT id, phone FROM members
         WHERE tenant_id = $1 AND user_id = $2`,
       [req.tenant.id, user_id],
     );

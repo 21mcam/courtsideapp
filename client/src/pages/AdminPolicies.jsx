@@ -78,6 +78,9 @@ export default function AdminPolicies() {
           waiver_required: p.waiver_required ?? false,
           waiver_text: p.waiver_text ?? '',
           waiver_version: p.waiver_version ?? 1,
+          reminders_enabled: p.reminders_enabled ?? true,
+          reminder_hours_before: String(p.reminder_hours_before ?? 24),
+          reminder_include_manage_link: p.reminder_include_manage_link ?? true,
         });
       } catch (err) {
         if (alive) setLoadError(err.message);
@@ -122,6 +125,9 @@ export default function AdminPolicies() {
         ),
         waiver_required: form.waiver_required,
         waiver_text: form.waiver_text.trim() === '' ? null : form.waiver_text,
+        reminders_enabled: form.reminders_enabled,
+        reminder_hours_before: Number(form.reminder_hours_before),
+        reminder_include_manage_link: form.reminder_include_manage_link,
       };
       const res = await api('/api/admin/booking-policies', {
         method: 'PUT',
@@ -328,6 +334,51 @@ export default function AdminPolicies() {
             </div>
           </Card>
 
+          <Card title="Reminder emails">
+            <div className="space-y-3">
+              <Checkbox
+                checked={form.reminders_enabled}
+                onChange={(v) => set({ reminders_enabled: v })}
+                label="Email everyone a reminder before their booking"
+              />
+              {form.reminders_enabled && (
+                <>
+                  <Field
+                    label="Send it"
+                    hint="People who book inside this window don't get one — their confirmation just arrived."
+                    className="max-w-xs"
+                  >
+                    <Select
+                      value={form.reminder_hours_before}
+                      onChange={(e) => set({ reminder_hours_before: e.target.value })}
+                    >
+                      {REMINDER_HOURS.map(([h, label]) => (
+                        <option key={h} value={h}>
+                          {label}
+                        </option>
+                      ))}
+                      {!REMINDER_HOURS.some(([h]) => h === form.reminder_hours_before) && (
+                        <option value={form.reminder_hours_before}>
+                          {form.reminder_hours_before} hours before
+                        </option>
+                      )}
+                    </Select>
+                  </Field>
+                  <Checkbox
+                    checked={form.reminder_include_manage_link}
+                    onChange={(v) => set({ reminder_include_manage_link: v })}
+                    label="Include the view/reschedule link for online walk-in bookings"
+                  />
+                  <p className="text-xs text-slate-500">
+                    Off: the reminder asks people to reply to the email instead.
+                    Rescheduling still closes {form.customer_reschedule_hours_before || 0} hours
+                    before the session either way.
+                  </p>
+                </>
+              )}
+            </div>
+          </Card>
+
           <Card title="Booking window">
             <div className="grid max-w-md gap-3 sm:grid-cols-2">
               <Field
@@ -374,6 +425,14 @@ export default function AdminPolicies() {
     </Page>
   );
 }
+
+const REMINDER_HOURS = [
+  ['2', '2 hours before'],
+  ['4', '4 hours before'],
+  ['12', '12 hours before'],
+  ['24', '1 day before'],
+  ['48', '2 days before'],
+];
 
 function Checkbox({ checked, onChange, label }) {
   return (

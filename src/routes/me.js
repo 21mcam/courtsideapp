@@ -18,6 +18,7 @@ import {
   listAvailablePlans,
   createPortalSession,
 } from '../controllers/memberSubscriptions.js';
+import { changePassword, listMyCredits, updateProfile } from '../controllers/account.js';
 
 const router = express.Router();
 
@@ -28,5 +29,9 @@ router.get('/plans', listAvailablePlans);
 router.get('/subscriptions', getMySubscription);
 router.post('/subscriptions/checkout', startSubscriptionCheckout);
 router.post('/subscriptions/portal', createPortalSession);
+// Account self-service (controllers/account.js).
+router.patch('/profile', updateProfile);
+router.post('/password', changePassword);
+router.get('/credits', listMyCredits);
 
 export default router;

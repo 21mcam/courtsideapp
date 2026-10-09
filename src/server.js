@@ -6,6 +6,7 @@ import 'dotenv/config';
 import { app } from './app.js';
 import { pool } from './db/pool.js';
 import { runCleanupSweep } from './controllers/cleanup.js';
+import { runReminderSweep } from './controllers/reminders.js';
 import { runHorizonSweep } from './controllers/classSchedules.js';
 
 const port = Number.parseInt(process.env.PORT, 10) || 3000;
@@ -77,6 +78,19 @@ if (process.env.SCHEDULER_ENABLED !== 'false') {
       .catch((err) => console.error('[scheduler] cleanup sweep failed:', err));
   cleanupSweep();
   setInterval(cleanupSweep, 10 * 60 * 1000).unref();
+
+  // Booking reminder emails — every 10 minutes (and once at boot).
+  // Per-tenant settings live on booking_policies (migration 033);
+  // reminder_sent_at keeps it to one email per booking.
+  const reminderSweep = () =>
+    runReminderSweep()
+      .then((results) => {
+        const sent = results.reduce((n, r) => n + r.reminders, 0);
+        if (sent > 0) console.log(`[scheduler] sent ${sent} booking reminder(s)`);
+      })
+      .catch((err) => console.error('[scheduler] reminder sweep failed:', err));
+  reminderSweep();
+  setInterval(reminderSweep, 10 * 60 * 1000).unref();
 
   // Class-schedule horizon extension — daily (and once at boot).
   // Keeps every active schedule's class_instances materialized ~90
