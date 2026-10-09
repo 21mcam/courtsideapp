@@ -10,6 +10,10 @@
 // case.
 
 import { useEffect, useMemo, useState } from 'react';
+import ParticipantPicker, {
+  participantBody,
+  useDependents,
+} from '../components/ParticipantPicker.jsx';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
@@ -32,6 +36,9 @@ export default function ClassesPage() {
   const [loadError, setLoadError] = useState(null);
   const [submitting, setSubmitting] = useState(null); // class_instance_id while booking
   const [submitError, setSubmitError] = useState(null);
+  // Who attends (migration 034); '' = the member.
+  const dependents = useDependents();
+  const [dependentId, setDependentId] = useState('');
   // Instance held aside while the waiver modal is open — the booking
   // is retried automatically after signing.
   const [waiverInstance, setWaiverInstance] = useState(null);
@@ -78,7 +85,7 @@ export default function ClassesPage() {
     try {
       const res = await api('/api/class-bookings', {
         method: 'POST',
-        body: JSON.stringify({ class_instance_id: ci.id }),
+        body: JSON.stringify({ class_instance_id: ci.id, ...participantBody(dependentId) }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -126,6 +133,12 @@ export default function ClassesPage() {
           </>
         }
       />
+
+      {dependents?.length > 0 && (
+        <Card>
+          <ParticipantPicker dependents={dependents} value={dependentId} onChange={setDependentId} />
+        </Card>
+      )}
 
       {loadError && (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">

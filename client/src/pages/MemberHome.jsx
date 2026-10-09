@@ -77,6 +77,7 @@ export default function MemberHome() {
             start_time: b.start_time,
             status: b.status,
             credit_cost_charged: b.credit_cost_charged,
+            participant_first_name: b.participant_first_name ?? null,
           })),
           ...(classes.class_bookings ?? []).map((cb) => ({
             kind: 'class',
@@ -86,6 +87,7 @@ export default function MemberHome() {
             start_time: cb.start_time,
             status: cb.status,
             credit_cost_charged: cb.credit_cost_charged,
+            participant_first_name: cb.participant_first_name ?? null,
           })),
         ];
         setItems(norm);
@@ -320,6 +322,12 @@ function BookingList({
                   {b.kind === 'class' && (
                     <Badge tone="brand" className="ml-2">
                       class
+                    </Badge>
+                  )}
+                  {/* Booked for a family member (migration 034). */}
+                  {b.participant_first_name && (
+                    <Badge tone="info" className="ml-2">
+                      for {b.participant_first_name}
                     </Badge>
                   )}
                 </div>

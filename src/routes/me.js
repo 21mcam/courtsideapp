@@ -19,6 +19,12 @@ import {
   createPortalSession,
 } from '../controllers/memberSubscriptions.js';
 import { changePassword, listMyCredits, updateProfile } from '../controllers/account.js';
+import {
+  createDependent,
+  listDependents,
+  removeDependent,
+  updateDependent,
+} from '../controllers/dependents.js';
 
 const router = express.Router();
 
@@ -33,5 +39,10 @@ router.post('/subscriptions/portal', createPortalSession);
 router.patch('/profile', updateProfile);
 router.post('/password', changePassword);
 router.get('/credits', listMyCredits);
+// Family (controllers/dependents.js, migration 034).
+router.get('/dependents', listDependents);
+router.post('/dependents', createDependent);
+router.patch('/dependents/:id', updateDependent);
+router.delete('/dependents/:id', removeDependent);
 
 export default router;

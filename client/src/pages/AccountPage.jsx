@@ -21,9 +21,192 @@ export default function AccountPage() {
     <Page width="narrow">
       <PageHeader title="Account" description={`Your login for ${me.tenant.name}.`} />
       <ProfileCard />
+      {isMember && <FamilyCard />}
       <PasswordCard />
       {isMember && <CreditsCard />}
     </Page>
+  );
+}
+
+// Family (migration 034, docs/design/FAMILY_ACCOUNTS.md): the kids
+// this member books for. Booking on their behalf arrives in the next
+// release; this card is where they're added first.
+function FamilyCard() {
+  const [list, setList] = useState(null);
+  const [max, setMax] = useState(10);
+  const [editing, setEditing] = useState(null); // dependent id | 'new' | null
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api('/api/me/dependents');
+      const body = await res.json();
+      if (!res.ok) throw new Error();
+      setList(body.dependents);
+      setMax(body.max);
+    } catch {
+      setError('Could not load your family.');
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function remove(d) {
+    setError('');
+    const res = await api(`/api/me/dependents/${d.id}`, { method: 'DELETE' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setError(
+        body.code === 'has_upcoming_bookings'
+          ? `${d.first_name} has upcoming bookings — cancel those first.`
+          : body.error || 'Could not remove.',
+      );
+      return;
+    }
+    load();
+  }
+
+  return (
+    <Card
+      title="Family"
+      actions={
+        list && list.length < max && editing !== 'new' && (
+          <Button size="sm" variant="secondary" onClick={() => setEditing('new')}>
+            Add a family member
+          </Button>
+        )
+      }
+    >
+      <p className="mb-3 text-sm text-slate-500">
+        Kids or family members you book for. They share your plan and credits — no
+        separate account needed.
+      </p>
+      {error && <p className="mb-2 text-sm text-rose-600">{error}</p>}
+      {list?.length === 0 && editing !== 'new' && (
+        <p className="text-sm text-slate-500">Nobody added yet.</p>
+      )}
+      {list?.length > 0 && (
+        <ul className="divide-y divide-slate-100">
+          {list.map((d) =>
+            editing === d.id ? (
+              <li key={d.id} className="py-3">
+                <DependentForm
+                  initial={d}
+                  onCancel={() => setEditing(null)}
+                  onSaved={() => {
+                    setEditing(null);
+                    load();
+                  }}
+                />
+              </li>
+            ) : (
+              <li key={d.id} className="flex items-center justify-between gap-3 py-2.5">
+                <div>
+                  <p className="text-sm font-medium text-slate-900">
+                    {d.first_name} {d.last_name}
+                  </p>
+                  {d.birth_year && (
+                    <p className="text-xs text-slate-500">Born {d.birth_year}</p>
+                  )}
+                </div>
+                <div className="flex gap-1">
+                  <Button size="sm" variant="ghost" onClick={() => setEditing(d.id)}>
+                    Edit
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => remove(d)}>
+                    Remove
+                  </Button>
+                </div>
+              </li>
+            ),
+          )}
+        </ul>
+      )}
+      {editing === 'new' && (
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <DependentForm
+            onCancel={() => setEditing(null)}
+            onSaved={() => {
+              setEditing(null);
+              load();
+            }}
+          />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function DependentForm({ initial = null, onCancel, onSaved }) {
+  const { me } = useAuth();
+  const [form, setForm] = useState({
+    first_name: initial?.first_name ?? '',
+    // New kids usually share the family name.
+    last_name: initial?.last_name ?? me.user.last_name ?? '',
+    birth_year: initial?.birth_year ? String(initial.birth_year) : '',
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  async function save(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    const body = {
+      first_name: form.first_name,
+      last_name: form.last_name,
+      birth_year: form.birth_year.trim() ? Number(form.birth_year) : null,
+    };
+    try {
+      const res = await api(initial ? `/api/me/dependents/${initial.id}` : '/api/me/dependents', {
+        method: initial ? 'PATCH' : 'POST',
+        body: JSON.stringify(body),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(errorText(out, 'Could not save.'));
+        return;
+      }
+      onSaved();
+    } catch {
+      setError('Could not reach the server.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="space-y-3">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Field label="First name">
+          <Input required autoFocus value={form.first_name} onChange={set('first_name')} />
+        </Field>
+        <Field label="Last name">
+          <Input required value={form.last_name} onChange={set('last_name')} />
+        </Field>
+        <Field label="Birth year" hint="Optional">
+          <Input
+            inputMode="numeric"
+            pattern="[0-9]{4}"
+            maxLength={4}
+            value={form.birth_year}
+            onChange={set('birth_year')}
+          />
+        </Field>
+      </div>
+      {error && <p className="text-sm text-rose-600">{error}</p>}
+      <div className="flex gap-2">
+        <Button type="submit" size="sm" disabled={busy}>
+          {busy ? 'Saving…' : 'Save'}
+        </Button>
+        <Button type="button" size="sm" variant="secondary" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
   );
 }
 

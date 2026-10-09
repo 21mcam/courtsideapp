@@ -95,6 +95,7 @@ export default function AdminMemberDetail() {
   }
 
   const { member, subscription, bookings, ledger } = detail;
+  const dependents = detail.dependents ?? [];
 
   return (
     <Page width="default">
@@ -138,6 +139,22 @@ export default function AdminMemberDetail() {
                     ? 'invite sent'
                     : 'no login'}
                 </Badge>
+              </dd>
+            </div>
+            {/* Family (migration 034): kids this member books for. */}
+            <div className="flex justify-between gap-3">
+              <dt className="text-slate-500">Family</dt>
+              <dd className="text-right text-slate-900">
+                {dependents.length === 0
+                  ? '—'
+                  : dependents.map((d) => (
+                      <div key={d.id}>
+                        {d.first_name} {d.last_name}
+                        {d.birth_year && (
+                          <span className="text-slate-500"> · b. {d.birth_year}</span>
+                        )}
+                      </div>
+                    ))}
               </dd>
             </div>
           </dl>

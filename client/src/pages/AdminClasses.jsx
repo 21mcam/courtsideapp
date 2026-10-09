@@ -34,6 +34,7 @@ import {
   dayOfWeekLabel,
   formatSlotLocal,
   timeShort,
+  memberBookingName,
 } from '../format.js';
 
 const DOW_OPTIONS = [0, 1, 2, 3, 4, 5, 6];
@@ -612,7 +613,7 @@ function RosterPanel({ instanceId, onChanged }) {
     <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
       {roster.map((b) => {
         const name = b.member_id
-          ? `${b.member_first_name ?? ''} ${b.member_last_name ?? ''}`.trim()
+          ? memberBookingName(b)
           : `${b.customer_first_name ?? ''} ${b.customer_last_name ?? ''}`.trim();
         const email = b.member_email ?? b.customer_email;
         const badge = bookingStatusBadge(b.status);

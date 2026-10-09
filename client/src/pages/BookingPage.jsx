@@ -25,6 +25,10 @@
 // Intl.DateTimeFormat and the tenant's IANA tz.
 
 import { useEffect, useMemo, useState } from 'react';
+import ParticipantPicker, {
+  participantBody,
+  useDependents,
+} from '../components/ParticipantPicker.jsx';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
@@ -105,6 +109,9 @@ export default function BookingPage() {
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
+  // Who attends (migration 034); '' = the member.
+  const dependents = useDependents();
+  const [dependentId, setDependentId] = useState('');
   // Slot held aside while the waiver modal is open — the booking is
   // retried automatically after signing.
   const [waiverSlot, setWaiverSlot] = useState(null);
@@ -225,6 +232,7 @@ export default function BookingPage() {
             offering_id: selectedOfferingId,
             resource_id: candidates[i],
             start_time: slot.start,
+            ...participantBody(dependentId),
           }),
         });
         const body = await res.json().catch(() => ({}));
@@ -297,6 +305,12 @@ export default function BookingPage() {
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           {loadError}
         </div>
+      )}
+
+      {dependents?.length > 0 && (
+        <Card>
+          <ParticipantPicker dependents={dependents} value={dependentId} onChange={setDependentId} />
+        </Card>
       )}
 
       {/* Offering picker */}

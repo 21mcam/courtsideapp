@@ -132,6 +132,14 @@ and TypeScript types use the canonical word.
   tenant's plans. Has a credit balance. Linked to a `user` for login,
   but `user_id` is nullable because manual/imported members may exist
   before they set up a login.
+- **`dependent`** — a family member (usually a kid) a member books
+  FOR (migration 034, docs/design/FAMILY_ACCOUNTS.md). Owns nothing:
+  no login, email, subscription or credits — one subscription per
+  household. Bookings keep `member_id` = who pays and add
+  `dependent_id` = who attends (NULL = the member). Composite FK
+  `(tenant_id, dependent_id, member_id)` means a booking can only name
+  the paying member's own dependent. Max 10 active per member; removal
+  = deactivate. UI copy says "family" / "kids".
 - **`customer`** — a walk-in. Captured at booking time via contact
   form (name, email, phone). May or may not have a user account; most
   won't. In v1, customers are stored inline on `bookings` rows

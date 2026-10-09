@@ -19,6 +19,7 @@ import {
   bookingStatusBadge,
   formatCents,
   formatTimeLocal,
+  memberBookingName,
 } from '../format.js';
 import { addDays, todayLocalString, zonedDayStartIso } from '../lib/tz.js';
 
@@ -202,7 +203,7 @@ export default function AdminHome() {
 
 function bookingName(b) {
   if (b.member_first_name) {
-    return `${b.member_first_name} ${b.member_last_name ?? ''}`.trim();
+    return memberBookingName(b);
   }
   if (b.customer_first_name) {
     return `${b.customer_first_name} ${b.customer_last_name ?? ''} (walk-in)`.trim();

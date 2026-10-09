@@ -18,7 +18,7 @@ import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { addDays, localDateString, todayLocalString, zonedDayStartIso } from '../lib/tz.js';
 import { stripeRefundNotice } from '../lib/cancelNotice.js';
-import { bookingStatusBadge, formatSlotLocal } from '../format.js';
+import { bookingStatusBadge, formatSlotLocal, memberBookingName } from '../format.js';
 import {
   Badge,
   Button,
@@ -281,7 +281,7 @@ function BookingTable({ bookings, tz, onCancel, onNoShow }) {
               const isPast = new Date(b.start_time).getTime() <= now;
               const badge = bookingStatusBadge(b.status);
               const who = b.member_id
-                ? `${b.member_first_name ?? ''} ${b.member_last_name ?? ''}`.trim()
+                ? memberBookingName(b)
                 : b.customer_first_name
                 ? `${b.customer_first_name} ${b.customer_last_name ?? ''}`.trim()
                 : '—';
