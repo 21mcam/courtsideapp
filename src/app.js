@@ -35,6 +35,7 @@ import platformRouter from './routes/platform.js';
 import stripeWebhookRouter from './routes/stripeWebhook.js';
 import platformStripeWebhookRouter from './routes/platformStripeWebhook.js';
 import { resolveTenant } from './middleware/resolveTenant.js';
+import { crawlerHeaders, robotsTxt } from './middleware/crawlerPolicy.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const clientDist = path.resolve(__dirname, '../client/dist');
@@ -85,7 +86,12 @@ app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'not found' });
 });
 
-// 7. Static frontend + SPA fallback.
+// 7. Search-engine policy for non-API responses (migration 035):
+//    per-host robots.txt + noindex header unless the facility is public.
+app.get('/robots.txt', robotsTxt);
+app.use(crawlerHeaders);
+
+// 8. Static frontend + SPA fallback.
 if (fs.existsSync(path.join(clientDist, 'index.html'))) {
   app.use(express.static(clientDist));
   app.get('*', (_req, res) => {

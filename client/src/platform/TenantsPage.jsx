@@ -121,6 +121,8 @@ export default function TenantsPage() {
                         {billing.label}
                       </Badge>
                       <Badge tone={stripe.tone}>{stripe.label}</Badge>
+                      {t.visibility === 'private' && <Badge tone="warning">Private</Badge>}
+                      {t.visibility === 'unlisted' && <Badge tone="neutral">Unlisted</Badge>}
                     </div>
                     <p className="mt-1.5 text-xs text-slate-500">
                       {t.member_count} members · {t.active_subscriptions} subscribed ·{' '}

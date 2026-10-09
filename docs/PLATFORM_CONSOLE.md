@@ -18,6 +18,10 @@ What it does (v1):
 - **View as owner** — opens the facility's admin as its owner,
   **read-only**, for one hour, with a banner. The API refuses every
   non-GET request and the DB transaction runs `READ ONLY`.
+- **Visibility** (migration 035) — per facility: **Private** (coming-soon
+  page for visitors, no online bookings or sign-ups, staff can preview,
+  hidden from search engines), **Unlisted** (works, hidden from search),
+  **Public**. Facilities created here start Private.
 - **Audit log** — sign-ins (and failures), facility views, view-as-owner
   sessions, tenant creation, billing changes.
 

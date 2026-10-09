@@ -38,6 +38,8 @@ import {
   useLocation,
 } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth.jsx';
+// Tiny, and wraps the storefront routes (migration 035) — static.
+import PrivateGate from './components/PrivateGate.jsx';
 
 // Lazy like the pages: the sidebar shell (and its icon set) is
 // authed-surface weight the public storefront must not download.
@@ -151,15 +153,15 @@ function ShellRoutes() {
     <Routes>
       {/* Outside the shell: login/signup/password + public walk-in */}
       <Route path="/login" element={<RouteLogin />} />
-      <Route path="/register" element={<RouteRegister />} />
+      <Route path="/register" element={<PrivateGate><RouteRegister /></PrivateGate>} />
       <Route path="/forgot" element={<ForgotPasswordPage />} />
       <Route path="/reset" element={<ResetPasswordPage />} />
-      <Route path="/walk-in" element={<WalkInPage />} />
+      <Route path="/walk-in" element={<PrivateGate><WalkInPage /></PrivateGate>} />
       <Route path="/walk-in/success" element={<WalkInSuccessPage />} />
       {/* No-login manage/reschedule via the emailed capability link */}
       <Route path="/walk-in/manage" element={<ManageBookingPage />} />
       {/* Walk-in class/clinic spots (no login) */}
-      <Route path="/walk-in/classes" element={<WalkInClassesPage />} />
+      <Route path="/walk-in/classes" element={<PrivateGate><WalkInClassesPage /></PrivateGate>} />
       {/* Platform console "View as owner" handoff (read-only) */}
       <Route path="/support-session" element={<SupportSessionPage />} />
 
@@ -231,7 +233,13 @@ function RouteAuthed({ children }) {
     // (it lives under this layout route because signed-in users get
     // their dashboard at the same path). Every other authed path still
     // bounces to login.
-    if (pathname === '/') return <PublicHomePage />;
+    if (pathname === '/') {
+      return (
+        <PrivateGate>
+          <PublicHomePage />
+        </PrivateGate>
+      );
+    }
     return <Navigate to="/login" replace />;
   }
   return children ?? <Outlet />;
