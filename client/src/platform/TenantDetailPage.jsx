@@ -70,6 +70,7 @@ export default function TenantDetailPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <SetupCard doc={doc} />
         <BillingCard doc={doc} onChanged={load} />
+        <VisibilityCard tenant={tenant} onChanged={load} />
         <ActivityCard doc={doc} />
         <StaffCard staff={doc.staff} />
         <ProfileCard tenant={tenant} />
@@ -299,6 +300,74 @@ function BillingCard({ doc, onChanged }) {
           onConfirm={() => patch({ status: billing.has_subscription ? 'active' : 'trial' })}
         />
       )}
+    </Card>
+  );
+}
+
+// Migration 035. Private while a facility is being set up (Momentum
+// before cutover); unlisted for demos; public once it's really open.
+const VISIBILITY_OPTIONS = [
+  ['private', 'Private', 'Coming-soon page for visitors; no online bookings or sign-ups. Staff can sign in and preview. Hidden from search engines.'],
+  ['unlisted', 'Unlisted', 'Fully working for anyone with the link, but hidden from search engines.'],
+  ['public', 'Public', 'Open to everyone and can appear in Google.'],
+];
+
+function VisibilityCard({ tenant, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function choose(v) {
+    if (v === tenant.visibility || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const res = await papi(`/api/platform/tenants/${tenant.id}/visibility`, {
+        method: 'PATCH',
+        body: JSON.stringify({ visibility: v }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b.error || 'Could not change visibility.');
+      }
+      onChanged();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Visibility">
+      <div className="space-y-2" role="radiogroup" aria-label="Visibility">
+        {VISIBILITY_OPTIONS.map(([v, label, help]) => {
+          const selected = tenant.visibility === v;
+          return (
+            <button
+              key={v}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={busy}
+              onClick={() => choose(v)}
+              className={`w-full rounded-lg border px-3 py-2.5 text-left ${
+                selected ? 'border-slate-900 bg-slate-50' : 'border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              <span className="flex items-center gap-2 text-sm font-medium text-slate-900">
+                <span
+                  className={`h-3 w-3 rounded-full border ${
+                    selected ? 'border-slate-900 bg-slate-900' : 'border-slate-300'
+                  }`}
+                />
+                {label}
+              </span>
+              <span className="mt-0.5 block pl-5 text-xs text-slate-500">{help}</span>
+            </button>
+          );
+        })}
+      </div>
+      {error && <p className="mt-2 text-sm text-rose-600">{error}</p>}
     </Card>
   );
 }

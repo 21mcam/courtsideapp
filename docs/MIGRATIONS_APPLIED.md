@@ -9,6 +9,12 @@ brought forward — update it every time you apply a migration.
 |---|---|---|---|
 | Production (live Supabase) | **034** | 2026-10-08 | 001–019 during initial phases; 020–025 at PR #51 merge (025 = platform billing); 026–029 with walk-in checkout v2 (PR #53, live 2026-07-27); 030 theme; 031 booking import provenance applied by hand 2026-08-08; 032 platform console (PR #57), 033 booking reminders (PR #63) and 034 family accounts (PR #64) applied by hand 2026-10-08. |
 
+**Pending:** 035 (tenant visibility — `tenants.visibility`, appended to
+`tenant_lookup`, `platform_set_visibility()`, `create_tenant_with_owner`
+now creates facilities as private). Apply BEFORE deploying: the API reads
+`tenant_lookup.visibility`. Existing facilities come out **unlisted**;
+set Momentum to Private in the console afterwards.
+
 To verify what's actually live, run this in the SQL editor and
 compare against `ls db/migrations/`:
 

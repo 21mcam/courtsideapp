@@ -51,6 +51,9 @@ router.get('/', (req, res) => {
     // bootstraps and can render the billing-hold screen + admin
     // reactivation path instead of a blank 402.
     billing_blocked: req.tenant.is_billing_ok === false,
+    // private | unlisted | public (migration 035). 'private' → the
+    // client shows visitors a coming-soon page; staff get a preview.
+    visibility: req.tenant.visibility ?? 'public',
   });
 });
 

@@ -64,6 +64,7 @@ const ACTION_LABELS = {
   'tenant.view': 'Viewed facility',
   'tenant.create': 'Created facility',
   'tenant.billing_update': 'Changed billing',
+  'tenant.visibility_update': 'Changed visibility',
   'support_session.issue': 'Requested view-as-owner link',
   'support_session.open': 'Opened view-as-owner session',
 };
@@ -103,6 +104,8 @@ export function auditDetail(entry) {
       else if (d.trial_ends_at) parts.push(`trial ends ${new Date(d.trial_ends_at).toLocaleDateString()}`);
       return parts.join(', ');
     }
+    case 'tenant.visibility_update':
+      return `${d.from ?? '?'} → ${d.to ?? '?'}`;
     default:
       return '';
   }

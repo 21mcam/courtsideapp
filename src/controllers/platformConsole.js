@@ -101,9 +101,13 @@ export async function listTenants(req, res, next) {
     const r = await pool.query('SELECT * FROM platform_list_tenants($1)', [
       req.platformAdmin.id,
     ]);
+    // visibility (migration 035) rides tenant_lookup, not the list fn.
+    const vis = await pool.query('SELECT id, visibility FROM tenant_lookup');
+    const visById = new Map(vis.rows.map((v) => [v.id, v.visibility]));
     res.json({
       tenants: r.rows.map((t) => ({
         ...t,
+        visibility: visById.get(t.id) ?? 'public',
         booking_url: tenantUrl(t.subdomain, '/walk-in'),
       })),
     });
@@ -130,6 +134,11 @@ export async function getTenant(req, res, next) {
       'SELECT * FROM platform_list_audit($1, $2, $3)',
       [req.platformAdmin.id, req.params.id, 20],
     );
+
+    const vis = await pool.query('SELECT visibility FROM tenant_lookup WHERE id = $1', [
+      req.params.id,
+    ]);
+    doc.tenant.visibility = vis.rows[0]?.visibility ?? 'public';
 
     res.json({
       ...doc,
@@ -191,6 +200,33 @@ export async function startSupportSession(req, res, next) {
     res.json({
       url: tenantUrl(tenant.subdomain, `/support-session#token=${encodeURIComponent(handoff)}`),
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// PATCH /api/platform/tenants/:id/visibility  { visibility }
+// private | unlisted | public (migration 035). Audited in the DB
+// function itself.
+const visibilitySchema = z.object({ visibility: z.enum(['private', 'unlisted', 'public']) });
+
+export async function setVisibility(req, res, next) {
+  try {
+    if (!UUID.test(req.params.id)) return res.status(404).json({ error: 'tenant not found' });
+    const parsed = visibilitySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'visibility must be private, unlisted or public' });
+    try {
+      await pool.query('SELECT platform_set_visibility($1, $2, $3, $4)', [
+        req.platformAdmin.id,
+        req.params.id,
+        parsed.data.visibility,
+        req.ip,
+      ]);
+    } catch (err) {
+      if (/tenant not found/.test(err.message)) return res.status(404).json({ error: 'tenant not found' });
+      throw err;
+    }
+    res.json({ visibility: parsed.data.visibility });
   } catch (err) {
     next(err);
   }

@@ -25,7 +25,7 @@ const APP_HOSTNAME = process.env.APP_HOSTNAME || 'localhost';
 // SELECT, an obviously-malformed subdomain skips the DB roundtrip.
 const SUBDOMAIN_SHAPE = /^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$/;
 
-function extractSubdomain(hostname, query) {
+export function extractSubdomain(hostname, query) {
   // Bare localhost / 127.0.0.1: use ?tenant= fallback.
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return typeof query.tenant === 'string' ? query.tenant : null;
@@ -90,6 +90,11 @@ export async function resolveTenant(req, res, next) {
     }
 
     req.tenant = tenant;
+    // Non-public facilities (migration 035) stay out of search engines;
+    // the HTML side is covered by middleware/crawlerPolicy.js.
+    if (tenant.visibility && tenant.visibility !== 'public') {
+      res.set('X-Robots-Tag', 'noindex, nofollow');
+    }
     next();
   } catch (err) {
     next(err);

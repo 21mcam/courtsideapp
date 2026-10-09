@@ -18,6 +18,7 @@ import {
   listTenants,
   platformLogin,
   platformMe,
+  setVisibility,
   startSupportSession,
 } from '../controllers/platformConsole.js';
 
@@ -29,6 +30,7 @@ router.get('/me', requirePlatformAdmin, platformMe);
 router.get('/tenants', requirePlatformAdmin, listTenants);
 router.get('/tenants/:id', requirePlatformAdmin, getTenant);
 router.post('/tenants/:id/support-session', requirePlatformAdmin, startSupportSession);
+router.patch('/tenants/:id/visibility', requirePlatformAdmin, setVisibility);
 router.get('/audit', requirePlatformAdmin, listAudit);
 
 router.post('/signup-tenant', requirePlatformAccess, signupTenant);

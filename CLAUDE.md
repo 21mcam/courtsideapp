@@ -399,6 +399,18 @@ walk-in v2 slice; don't regress these):
   `allow_public_booking` — anything else deep-links to a service the
   public page won't list.
 
+### Tenant visibility (migration 035)
+
+`tenants.visibility`: `private` (being set up — visitors get a
+coming-soon page; public walk-in/class bookings and member self-signup
+refused by `refuseWhenPrivate`; staff sign in and preview with a banner),
+`unlisted` (open, noindex), `public` (indexable). Search engines are told
+server-side: per-host `robots.txt` and `X-Robots-Tag: noindex` on every
+non-public response (`middleware/crawlerPolicy.js`, plus resolveTenant
+for /api). The apex and the platform console are never indexable.
+Platform-created facilities start private; raw INSERTs (seeds, test
+fixtures) default unlisted. Only the platform console changes it.
+
 ### Tenant resolution
 
 Subdomain-based. Middleware extracts tenant from request hostname,

@@ -8,10 +8,13 @@ import express from 'express';
 import { withTenantContext } from '../db/withTenantContext.js';
 import { registerMember, login, exchangeSupportSession } from '../controllers/auth.js';
 import { forgotPassword, resetPassword } from '../controllers/passwordReset.js';
+import { refuseWhenPrivate } from '../middleware/visibility.js';
 
 const router = express.Router();
 
-router.post('/register-member', withTenantContext, registerMember);
+// Self-signup closed while the facility is private (migration 035);
+// staff-created members (with set-password links) still work.
+router.post('/register-member', refuseWhenPrivate, withTenantContext, registerMember);
 router.post('/login', withTenantContext, login);
 router.post('/forgot-password', withTenantContext, forgotPassword);
 router.post('/reset-password', withTenantContext, resetPassword);
