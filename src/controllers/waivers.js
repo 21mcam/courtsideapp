@@ -27,6 +27,8 @@
 
 import { z } from 'zod';
 
+import { dependentIdSchema, resolveDependent } from '../lib/dependents.js';
+
 // Distinct machine-readable code the member UI keys off to open the
 // waiver modal (a plain 409 message would be ambiguous).
 export const WAIVER_REQUIRED_CODE = 'waiver_signature_required';
@@ -57,10 +59,15 @@ export async function getWaiverConfig(db, tenantId) {
 // booking may proceed (waiver off, or a current-version signature
 // exists for this member / customer email), or { waiver_version }
 // when a signature at the current version is missing.
+//
+// Member signatures are PER PARTICIPANT (migration 034): a member's
+// own booking needs a signature with dependent_id NULL; booking for a
+// family member needs one for THAT dependent. A kid's signature never
+// covers the parent, and vice versa.
 export async function findMissingWaiverSignature(
   db,
   tenantId,
-  { memberId = null, customerEmail = null },
+  { memberId = null, customerEmail = null, dependentId = null },
 ) {
   const config = await getWaiverConfig(db, tenantId);
   if (!config.waiver_required) return null;
@@ -69,11 +76,12 @@ export async function findMissingWaiverSignature(
       WHERE tenant_id = $1
         AND waiver_version = $2
         AND (
-          ($3::uuid IS NOT NULL AND member_id = $3)
+          ($3::uuid IS NOT NULL AND member_id = $3
+             AND dependent_id IS NOT DISTINCT FROM $5::uuid)
           OR ($4::text IS NOT NULL AND customer_email = $4)
         )
       LIMIT 1`,
-    [tenantId, config.waiver_version, memberId, customerEmail],
+    [tenantId, config.waiver_version, memberId, customerEmail, dependentId],
   );
   if (r.rows.length > 0) return null;
   return { waiver_version: config.waiver_version };
@@ -150,6 +158,23 @@ export async function signWaiver(req, res, next) {
     const { signer_name, guardian_name, is_minor, waiver_version } =
       parsed.data;
 
+    // Signing FOR a family member (migration 034): the account holder
+    // signs as guardian. The participant (signer_name) is taken from
+    // the dependent record — never trusted from the client — and the
+    // signature is a minor's unless a birth year says 18+.
+    const depParsed = dependentIdSchema.safeParse(req.body?.dependent_id);
+    if (!depParsed.success) {
+      return res.status(400).json({ error: 'invalid dependent_id' });
+    }
+    const who = await resolveDependent(db, tenant.id, user.member_id, depParsed.data ?? null);
+    if (who.error) return res.status(who.error.status).json(who.error.body);
+    const dep = who.dependent;
+    if (dep && !guardian_name) {
+      return res
+        .status(400)
+        .json({ error: 'sign with your own full name as the parent / guardian' });
+    }
+
     const config = await getWaiverConfig(db, tenant.id);
     if (!config.waiver_required) {
       return res
@@ -165,19 +190,22 @@ export async function signWaiver(req, res, next) {
       });
     }
 
+    const depIsMinor =
+      dep && (dep.birth_year == null || new Date().getUTCFullYear() - dep.birth_year < 18);
     const result = await db.query(
       `INSERT INTO waiver_signatures
-         (tenant_id, member_id, signer_name, guardian_name, is_minor,
-          waiver_version)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, member_id, signer_name, guardian_name, is_minor,
-                 waiver_version, signed_at`,
+         (tenant_id, member_id, dependent_id, signer_name, guardian_name,
+          is_minor, waiver_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, member_id, dependent_id, signer_name, guardian_name,
+                 is_minor, waiver_version, signed_at`,
       [
         tenant.id,
         user.member_id,
-        signer_name,
+        dep?.id ?? null,
+        dep ? `${dep.first_name} ${dep.last_name}` : signer_name,
         guardian_name ?? null,
-        is_minor ?? false,
+        dep ? Boolean(depIsMinor) : (is_minor ?? false),
         config.waiver_version,
       ],
     );
@@ -216,10 +244,15 @@ export async function listWaiverSignatures(req, res, next) {
               ws.signed_at,
               m.first_name AS member_first_name,
               m.last_name  AS member_last_name,
-              m.email      AS member_email
+              m.email      AS member_email,
+              ws.dependent_id,
+              d.first_name AS participant_first_name,
+              d.last_name  AS participant_last_name
          FROM waiver_signatures ws
          LEFT JOIN members m
            ON m.tenant_id = ws.tenant_id AND m.id = ws.member_id
+         LEFT JOIN dependents d
+           ON d.tenant_id = ws.tenant_id AND d.id = ws.dependent_id
         WHERE ws.tenant_id = $1
           ${versionClause}
         ORDER BY ws.signed_at DESC

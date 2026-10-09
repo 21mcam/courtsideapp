@@ -1,6 +1,6 @@
 # Family accounts — design (draft for review)
 
-*Status: APPROVED 2026-10-08 (open questions answered below). Customer-side slice 5.*
+*Status: APPROVED 2026-10-08; parts 1–3 built (PR #64 = parts 1+2, part 3 = per-kid waivers). Customer-side slice 5.*
 
 ## The problem
 

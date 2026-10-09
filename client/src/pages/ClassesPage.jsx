@@ -215,6 +215,8 @@ export default function ClassesPage() {
 
       {waiverInstance && (
         <WaiverModal
+          // Booking for a family member → sign for THEM (migration 034).
+          participant={dependents?.find((d) => d.id === dependentId) ?? null}
           onClose={() => setWaiverInstance(null)}
           onSigned={() => {
             const ci = waiverInstance;

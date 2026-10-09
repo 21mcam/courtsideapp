@@ -11,7 +11,10 @@ import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { Button, Field, Input } from './ui/index.js';
 
-export default function WaiverModal({ onClose, onSigned }) {
+// participant: a family member (migration 034) when the booking is for
+// a kid — the parent signs once, as guardian, and the server records
+// the kid as the participant. null = the member signing for themself.
+export default function WaiverModal({ onClose, onSigned, participant = null }) {
   const [waiver, setWaiver] = useState(null);
   const [loadError, setLoadError] = useState(null);
 
@@ -51,16 +54,27 @@ export default function WaiverModal({ onClose, onSigned }) {
     try {
       const res = await api('/api/waivers/sign', {
         method: 'POST',
-        body: JSON.stringify({
-          signer_name: signerName.trim(),
-          // Echo the version whose text we displayed — the server
-          // 409s (waiver_version_mismatch) if an admin changed the
-          // waiver while this modal was open.
-          waiver_version: waiver?.waiver_version,
-          ...(isMinor
-            ? { is_minor: true, guardian_name: guardianName.trim() }
-            : {}),
-        }),
+        body: JSON.stringify(
+          participant
+            ? {
+                // The server takes the participant's name from the
+                // family record; signer_name just satisfies the shape.
+                signer_name: `${participant.first_name} ${participant.last_name}`,
+                guardian_name: guardianName.trim(),
+                dependent_id: participant.id,
+                waiver_version: waiver?.waiver_version,
+              }
+            : {
+                signer_name: signerName.trim(),
+                // Echo the version whose text we displayed — the server
+                // 409s (waiver_version_mismatch) if an admin changed the
+                // waiver while this modal was open.
+                waiver_version: waiver?.waiver_version,
+                ...(isMinor
+                  ? { is_minor: true, guardian_name: guardianName.trim() }
+                  : {}),
+              },
+        ),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -103,8 +117,9 @@ export default function WaiverModal({ onClose, onSigned }) {
           </button>
         </div>
         <p className="text-sm text-slate-500 mb-4">
-          This facility requires a signed waiver before booking. Read
-          it, then sign with your full legal name.
+          {participant
+            ? `This facility requires a signed waiver for ${participant.first_name}. Read it, then sign with your own full legal name as their parent or guardian.`
+            : 'This facility requires a signed waiver before booking. Read it, then sign with your full legal name.'}
         </p>
 
         {loadError && (
@@ -123,26 +138,46 @@ export default function WaiverModal({ onClose, onSigned }) {
               {waiver.waiver_text || 'No waiver text has been provided.'}
             </div>
 
-            <Field label="Full legal name (this is your signature)">
-              <Input
-                required
-                value={signerName}
-                onChange={(e) => setSignerName(e.target.value)}
-                placeholder="e.g. Jordan Alvarez"
-              />
-            </Field>
+            {participant ? (
+              <>
+                <p className="text-sm text-slate-700">
+                  Participant:{' '}
+                  <span className="font-medium text-slate-900">
+                    {participant.first_name} {participant.last_name}
+                  </span>
+                </p>
+                <Field label="Your full legal name, as parent / guardian (this is your signature)">
+                  <Input
+                    required
+                    value={guardianName}
+                    onChange={(e) => setGuardianName(e.target.value)}
+                  />
+                </Field>
+              </>
+            ) : (
+              <>
+                <Field label="Full legal name (this is your signature)">
+                  <Input
+                    required
+                    value={signerName}
+                    onChange={(e) => setSignerName(e.target.value)}
+                    placeholder="e.g. Jordan Alvarez"
+                  />
+                </Field>
 
-            <label className="flex items-center gap-2 text-sm text-slate-700">
-              <input
-                type="checkbox"
-                checked={isMinor}
-                onChange={(e) => setIsMinor(e.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-              />
-              I am signing on behalf of a minor
-            </label>
+                <label className="flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={isMinor}
+                    onChange={(e) => setIsMinor(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                  />
+                  I am signing on behalf of a minor
+                </label>
+              </>
+            )}
 
-            {isMinor && (
+            {!participant && isMinor && (
               <Field
                 label="Parent / guardian full name"
                 hint="The participant's name goes above; the signing adult's name goes here."
@@ -177,7 +212,9 @@ export default function WaiverModal({ onClose, onSigned }) {
               </Button>
               <Button
                 type="submit"
-                disabled={busy || !agreed || !signerName.trim()}
+                disabled={
+                  busy || !agreed || !(participant ? guardianName.trim() : signerName.trim())
+                }
               >
                 {busy ? 'Signing…' : 'Sign and continue'}
               </Button>
