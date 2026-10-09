@@ -322,8 +322,18 @@ export async function getMemberDetail(req, res, next) {
       [tenant.id, member_id],
     );
 
+    // Family (migration 034): the household's active dependents.
+    const dependentsRes = await db.query(
+      `SELECT id, first_name, last_name, birth_year, created_at
+         FROM dependents
+        WHERE tenant_id = $1 AND member_id = $2 AND active
+        ORDER BY created_at`,
+      [tenant.id, member_id],
+    );
+
     res.json({
       member: memberRes.rows[0],
+      dependents: dependentsRes.rows,
       subscription: subRes.rows[0] ?? null,
       bookings: bookingsRes.rows,
       ledger: {

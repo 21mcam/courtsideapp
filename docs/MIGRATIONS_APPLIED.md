@@ -9,6 +9,11 @@ brought forward — update it every time you apply a migration.
 |---|---|---|---|
 | Production (live Supabase) | **033** | 2026-10-08 | 001–019 during initial phases; 020–025 at PR #51 merge (025 = platform billing); 026–029 with walk-in checkout v2 (PR #53, live 2026-07-27); 030 theme; 031 booking import provenance applied by hand 2026-08-08; 032 platform console (PR #57) and 033 booking reminders applied by hand 2026-10-08. |
 
+**Pending:** 034 (family accounts — `dependents` table, `dependent_id`
+on bookings / class_bookings / waiver_signatures, class-roster unique
+index swap). Additive; apply BEFORE deploying the family PR (the Account
+page's Family card and admin member detail query `dependents`).
+
 To verify what's actually live, run this in the SQL editor and
 compare against `ls db/migrations/`:
 
