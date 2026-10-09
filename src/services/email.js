@@ -296,6 +296,61 @@ ${manageHtml}                <p style="margin:0;color:#64748b;font-size:13px;">Q
   return { subject, html, text };
 }
 
+// Reminder N hours before a booking (reminders sweep, migration 033).
+// manageUrl: walk-in rentals when the tenant includes the link;
+// canReschedule picks the button label — with the default 24h cutoff a
+// 24h reminder usually lands after rescheduling has closed, and the
+// button must not promise what the manage page will refuse.
+export function renderBookingReminderEmail({
+  tenantName,
+  accent,
+  timezone,
+  recipientName,
+  offeringName,
+  resourceName,
+  startTime,
+  address = null,
+  manageUrl = null,
+  canReschedule = false,
+}) {
+  const when = formatInTenantTz(startTime, timezone);
+  const rows = [
+    ['What', offeringName],
+    ['Where', resourceName],
+    ['When', when],
+    ['Address', address],
+  ];
+  const greeting = recipientName ? `Hi ${recipientName},` : 'Hi,';
+  const subject = `Reminder: ${offeringName} · ${when}`;
+  const hex = accentHex(accent);
+  const linkLabel = canReschedule ? 'View or reschedule' : 'View your booking';
+  const manageHtml = manageUrl
+    ? `                <p style="margin:0 0 16px;">
+                  <a href="${escapeHtml(manageUrl)}" style="display:inline-block;background-color:${hex};color:#ffffff;text-decoration:none;font-weight:600;padding:10px 20px;border-radius:8px;">${linkLabel}</a>
+                </p>
+`
+    : '';
+  const html = renderLayout({
+    tenantName,
+    accent,
+    bodyHtml: `                <p style="margin:0 0 8px;font-size:17px;font-weight:700;">See you soon</p>
+                <p style="margin:0;">${escapeHtml(greeting)} this is a reminder of your booking at ${escapeHtml(tenantName)}.</p>
+${detailRowsHtml(rows)}
+${manageHtml}                <p style="margin:0;color:#64748b;font-size:13px;">Can't make it? Reply to this email or contact the facility.</p>`,
+  });
+  const text = [
+    'See you soon',
+    '',
+    `${greeting} this is a reminder of your booking at ${tenantName}.`,
+    '',
+    detailRowsText(rows),
+    '',
+    ...(manageUrl ? [`${linkLabel}:`, manageUrl, ''] : []),
+    "Can't make it? Reply to this email or contact the facility.",
+  ].join('\n');
+  return { subject, html, text };
+}
+
 export function renderBookingCancellationEmail({
   tenantName,
   accent,
@@ -705,6 +760,33 @@ export function sendAdminInvite({ tenant, to, firstName, actionUrl, isNewUser, i
     actionUrl,
     isNewUser,
     isOwner,
+  });
+  return sendEmail({ to, subject, html, text, replyTo });
+}
+
+export function sendBookingReminder({
+  tenant,
+  to,
+  recipientName,
+  offeringName,
+  resourceName,
+  startTime,
+  address = null,
+  manageUrl = null,
+  canReschedule = false,
+}) {
+  const { tenantName, accent, replyTo } = tenantSendFields(tenant);
+  const { subject, html, text } = renderBookingReminderEmail({
+    tenantName,
+    accent,
+    timezone: tenant.timezone,
+    recipientName,
+    offeringName,
+    resourceName,
+    startTime,
+    address,
+    manageUrl,
+    canReschedule,
   });
   return sendEmail({ to, subject, html, text, replyTo });
 }

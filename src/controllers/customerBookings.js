@@ -704,7 +704,9 @@ export async function lookupCustomerBooking(req, res, next) {
 // (/walk-in/manage?token=...) whose token was minted by the Stripe
 // webhook when payment confirmed. Possession of the link IS the auth:
 // same trust anchor as the email-gated lookup above, but one tap.
-// Only the sha256 of the token is stored (bookings.manage_token_hash)
+// Only the sha256 of the token is stored (bookings.manage_token_hash,
+// plus bookings.reminder_manage_token_hash for the reminder email's own
+// link — migration 033; either one opens the booking)
 // — a DB read yields nothing usable, and there's no expiry column
 // because validity is bounded by booking state + the policy cutoff.
 //
@@ -796,7 +798,8 @@ export async function getManageBooking(req, res, next) {
          FROM bookings b
          JOIN offerings o ON o.tenant_id = b.tenant_id AND o.id = b.offering_id
          JOIN resources r ON r.tenant_id = b.tenant_id AND r.id = b.resource_id
-        WHERE b.tenant_id = $1 AND b.manage_token_hash = $2`,
+        WHERE b.tenant_id = $1
+          AND (b.manage_token_hash = $2 OR b.reminder_manage_token_hash = $2)`,
       [tenant.id, tokenHash],
     );
     if (result.rows.length === 0) {
@@ -862,7 +865,8 @@ export async function rescheduleManagedBooking(req, res, next) {
               customer_first_name, customer_email,
               amount_paid_cents, reschedule_count
          FROM bookings
-        WHERE tenant_id = $1 AND manage_token_hash = $2
+        WHERE tenant_id = $1
+          AND (manage_token_hash = $2 OR reminder_manage_token_hash = $2)
         FOR UPDATE`,
       [tenant.id, tokenHash],
     );
@@ -944,7 +948,9 @@ export async function rescheduleManagedBooking(req, res, next) {
                 resource_id = $3,
                 previous_start_time = start_time,
                 rescheduled_at = now(),
-                reschedule_count = reschedule_count + 1
+                reschedule_count = reschedule_count + 1,
+                -- new time, new reminder (migration 033)
+                reminder_sent_at = NULL
           WHERE tenant_id = $4 AND id = $5
           RETURNING id, status, start_time, end_time, offering_id,
                     resource_id, customer_note, amount_paid_cents,
