@@ -12,11 +12,11 @@ import { z } from 'zod';
 // Optional on every create body; null/absent = the member themself.
 export const dependentIdSchema = z.string().uuid().nullable().optional();
 
-// → { dependent: {id, first_name, last_name} | null } or { error }.
+// → { dependent: {id, first_name, last_name, birth_year} | null } or { error }.
 export async function resolveDependent(db, tenantId, memberId, dependentId) {
   if (!dependentId) return { dependent: null };
   const r = await db.query(
-    `SELECT id, first_name, last_name FROM dependents
+    `SELECT id, first_name, last_name, birth_year FROM dependents
       WHERE tenant_id = $1 AND member_id = $2 AND id = $3 AND active`,
     [tenantId, memberId, dependentId],
   );

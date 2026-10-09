@@ -135,7 +135,17 @@ export default function AdminWaivers() {
                       )}
                     </td>
                     <td className="py-2.5 pr-4">
-                      {s.member_id ? (
+                      {s.member_id && s.dependent_id ? (
+                        // A kid's signature (migration 034), signed by
+                        // the member as guardian.
+                        <>
+                          <Badge tone="info">family</Badge>
+                          <div className="mt-0.5 text-xs text-slate-500">
+                            {s.member_first_name} {s.member_last_name}&apos;s family
+                            {s.member_email ? ` · ${s.member_email}` : ''}
+                          </div>
+                        </>
+                      ) : s.member_id ? (
                         <>
                           <Badge tone="brand">member</Badge>
                           <div className="mt-0.5 text-xs text-slate-500">

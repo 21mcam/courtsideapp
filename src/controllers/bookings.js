@@ -174,14 +174,21 @@ export async function createMemberBooking(req, res, next) {
     //     must have signed the CURRENT waiver_version. The distinct
     //     `code` lets the booking UI open the waiver modal, sign via
     //     POST /api/waivers/sign, and retry automatically.
+    //     Per participant (migration 034): booking for a family member
+    //     needs THEIR signature; dependent_id in the 409 tells the UI
+    //     whom the waiver modal is for.
     const missingWaiver = await findMissingWaiverSignature(db, tenant.id, {
       memberId: member_id,
+      dependentId: who.dependent?.id ?? null,
     });
     if (missingWaiver) {
       return res.status(409).json({
-        error: 'a signed liability waiver is required before booking',
+        error: who.dependent
+          ? `${who.dependent.first_name} needs a signed liability waiver before booking`
+          : 'a signed liability waiver is required before booking',
         code: WAIVER_REQUIRED_CODE,
         waiver_version: missingWaiver.waiver_version,
+        dependent_id: who.dependent?.id ?? null,
       });
     }
 

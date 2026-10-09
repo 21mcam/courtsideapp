@@ -478,6 +478,8 @@ export default function BookingPage() {
 
       {waiverSlot && (
         <WaiverModal
+          // Booking for a family member → sign for THEM (migration 034).
+          participant={dependents?.find((d) => d.id === dependentId) ?? null}
           onClose={() => setWaiverSlot(null)}
           onSigned={() => {
             const slot = waiverSlot;

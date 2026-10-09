@@ -199,12 +199,16 @@ export async function createMemberClassBooking(req, res, next) {
     // the UI.
     const missingWaiver = await findMissingWaiverSignature(db, tenant.id, {
       memberId: member_id,
+      dependentId: who.dependent?.id ?? null,
     });
     if (missingWaiver) {
       return res.status(409).json({
-        error: 'a signed liability waiver is required before booking',
+        error: who.dependent
+          ? `${who.dependent.first_name} needs a signed liability waiver before booking`
+          : 'a signed liability waiver is required before booking',
         code: WAIVER_REQUIRED_CODE,
         waiver_version: missingWaiver.waiver_version,
+        dependent_id: who.dependent?.id ?? null,
       });
     }
 
