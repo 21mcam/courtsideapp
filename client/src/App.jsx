@@ -1,7 +1,8 @@
 // Top-level router + auth provider.
 //
 // Routes:
-//   /        → role-based home (Admin or Member)
+//   /        → role-based home (Admin or Member); PUBLIC facility
+//              home page for logged-out visitors
 //   /login   → login form (single, role-detected)
 //   /register → PUBLIC member self-signup
 //   /forgot  → PUBLIC forgot-password (email entry)
@@ -26,7 +27,15 @@
 // Wrapping AuthProvider so any page can read tenant + me state.
 
 import { Suspense, lazy } from 'react';
-import { BrowserRouter, Link, Navigate, Outlet, Route, Routes } from 'react-router-dom';
+import {
+  BrowserRouter,
+  Link,
+  Navigate,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+} from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth.jsx';
 
 // Lazy like the pages: the sidebar shell (and its icon set) is
@@ -74,6 +83,7 @@ const AdminReports = lazy(() => import('./pages/AdminReports.jsx'));
 const AdminBilling = lazy(() => import('./pages/AdminBilling.jsx'));
 const AdminCatalog = lazy(() => import('./pages/AdminCatalog.jsx'));
 const SupportSessionPage = lazy(() => import('./pages/SupportSessionPage.jsx'));
+const PublicHomePage = lazy(() => import('./pages/PublicHomePage.jsx'));
 // Lazy: only a platform operator's read-only session ever renders it.
 const SupportBanner = lazy(() => import('./components/SupportBanner.jsx'));
 
@@ -212,7 +222,15 @@ function RouteAdminOnly({ children }) {
 
 function RouteAuthed({ children }) {
   const { me } = useAuth();
-  if (!me) return <Navigate to="/login" replace />;
+  const { pathname } = useLocation();
+  if (!me) {
+    // "/" is the facility's public front door for logged-out visitors
+    // (it lives under this layout route because signed-in users get
+    // their dashboard at the same path). Every other authed path still
+    // bounces to login.
+    if (pathname === '/') return <PublicHomePage />;
+    return <Navigate to="/login" replace />;
+  }
   return children ?? <Outlet />;
 }
 

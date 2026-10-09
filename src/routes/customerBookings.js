@@ -18,12 +18,15 @@ import {
   createCustomerClassBooking,
   listPublicClasses,
 } from '../controllers/customerClassBookings.js';
+import { getPublicHome } from '../controllers/publicHome.js';
 
 const router = express.Router();
 
 router.use(withTenantContext);
 
 router.get('/offerings', listPublicOfferings);
+// Public facility home page: merged opening hours + buyable plans.
+router.get('/home', getPublicHome);
 router.post('/bookings', createCustomerBooking);
 // Walk-in class spots (customerClassBookings.js).
 router.get('/classes', listPublicClasses);
