@@ -144,7 +144,9 @@ and TypeScript types use the canonical word.
   form (name, email, phone). May or may not have a user account; most
   won't. In v1, customers are stored inline on `bookings` rows
   (`customer_first_name`, `customer_email`, etc.) — no dedicated
-  customers table.
+  customers table. Since migration 037 a booking needs email OR
+  phone (the public checkout still requires both; staff can book
+  phone-only — such customers get no emails).
 
 ### The catalog
 
@@ -264,6 +266,21 @@ exclusively by `apply_credit_change`:
   in a policy PUT = keep stored value). `reminder_sent_at` on bookings
   and class_bookings = once only; reschedule clears it. Bookings made
   inside the window are skipped; billing-locked tenants send nothing.
+- **front desk** (migration 037, `src/controllers/frontDesk.js`) —
+  most Momentum bookings are staff-entered, so staff can:
+  `POST /api/admin/bookings/:id/mark-paid` (cash/card/other on a
+  cash-on-arrival walk-in → `payment_method`, `paid_at`,
+  `paid_marked_by`; revenue counts it by `paid_at`), `/mark-unpaid`
+  (undo, in-person only), and `/reschedule` (new time and/or
+  resource, same offering, keeps length unless `end_time` given;
+  records the reschedule audit columns, clears `reminder_sent_at`,
+  emails the new time when there's an address). Staff routes call
+  `markStaffBookingSource(db)` → GUC `app.booking_source = 'staff'`,
+  which lets `enforce_booking_validity` skip the self-serve
+  `allow_public_booking` / `allow_member_booking` flags (staff-only
+  offerings). `staffSlotConflict()` is the shared blackout /
+  overlap / class check for create + reschedule. Cancel responses
+  split `stripe_refund_due_cents` from `in_person_refund_due_cents`.
 - **import provenance** — `bookings.external_source` /
   `external_id` (migration 031). Set only by the Momentum importer
   (`scripts/migration/`); the loader's idempotency key for rerun-safe

@@ -8,6 +8,16 @@
 // `body` is the POST /api/bookings/:id/cancel response;
 // stripe_refund_due_cents is 0 for member/cash bookings.
 export function stripeRefundNotice(body) {
+  // In-person payments recorded by staff (migration 037) are refunded
+  // at the desk, not in Stripe.
+  const inPerson = body?.in_person_refund_due_cents ?? 0;
+  if (inPerson > 0) {
+    const how = body?.payment_method === 'card' ? 'by card at the desk' : 'in person';
+    return (
+      ` Heads up: they paid $${(inPerson / 100).toFixed(2)} ${how} — ` +
+      'refund it at the desk if one is owed.'
+    );
+  }
   const cents = body?.stripe_refund_due_cents ?? 0;
   if (cents <= 0) return '';
   return (

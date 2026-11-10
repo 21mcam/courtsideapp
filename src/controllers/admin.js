@@ -23,6 +23,8 @@ import {
   issuePasswordSetupToken,
 } from './passwordReset.js';
 import { isUuid } from './catalog.js';
+import { splitFullName } from './customerBookings.js';
+import { markStaffBookingSource, staffSlotConflict } from './frontDesk.js';
 
 const createMemberSchema = z.object({
   email: z.string().email().toLowerCase().trim(),
@@ -420,6 +422,9 @@ export async function listAllBookings(req, res, next) {
               b.offering_id, b.resource_id, b.member_id,
               b.credit_cost_charged, b.payment_status,
               b.amount_due_cents, b.amount_paid_cents,
+              b.payment_method, b.paid_at,
+              b.stripe_payment_intent_id IS NOT NULL AS paid_online,
+              b.reschedule_count,
               b.cancelled_at, b.cancelled_by_type,
               b.no_show_marked_at, b.created_at,
               o.name AS offering_name,
@@ -645,12 +650,33 @@ const createAdminBookingSchema = z
     // Front desk booking a member's kid (migration 034). Requires
     // member_id; must be that member's active dependent.
     dependent_id: z.string().uuid().optional(),
+    // Walk-in (migration 037): a name plus email OR phone — phone
+    // bookings often have no email. Name is either full_name (split
+    // like the public checkout) or first_name [+ last_name].
     customer: z
       .object({
-        first_name: z.string().trim().min(1).max(200),
-        last_name: z.string().trim().min(1).max(200),
-        email: z.string().email().transform((s) => s.toLowerCase().trim()),
-        phone: z.string().trim().max(50).optional(),
+        full_name: z.string().trim().min(1).max(400).optional(),
+        first_name: z.string().trim().min(1).max(200).optional(),
+        last_name: z.string().trim().min(1).max(200).optional(),
+        email: z
+          .string()
+          .trim()
+          .transform((s) => s.toLowerCase())
+          .pipe(z.string().email())
+          .optional()
+          .or(z.literal('').transform(() => undefined)),
+        phone: z
+          .string()
+          .trim()
+          .max(50)
+          .optional()
+          .transform((s) => (s ? s : undefined)),
+      })
+      .refine((c) => c.full_name || c.first_name, {
+        message: 'customer needs a name',
+      })
+      .refine((c) => c.email || c.phone, {
+        message: 'customer needs an email or a phone number',
       })
       .optional(),
   })
@@ -669,8 +695,16 @@ export async function createAdminBooking(req, res, next) {
         .status(400)
         .json({ error: 'invalid input', details: parsed.error.flatten() });
     }
-    const { offering_id, resource_id, member_id, customer } = parsed.data;
+    const { offering_id, resource_id, member_id } = parsed.data;
     const { tenant, db, user } = req;
+    let customer = null;
+    if (parsed.data.customer) {
+      const c = parsed.data.customer;
+      const name = c.full_name
+        ? splitFullName(c.full_name)
+        : { first_name: c.first_name, last_name: c.last_name ?? c.first_name };
+      customer = { ...name, email: c.email ?? null, phone: c.phone ?? null };
+    }
 
     const start = new Date(parsed.data.start_time);
     const end = new Date(parsed.data.end_time);
@@ -731,47 +765,15 @@ export async function createAdminBooking(req, res, next) {
     }
     const resource_name = lockRes.rows[0].name;
 
-    // Blackouts still apply (see header comment).
-    const blackoutCheck = await db.query(
-      `SELECT 1 FROM blackouts
-        WHERE tenant_id = $1
-          AND tstzrange(starts_at, ends_at, '[)') && tstzrange($2, $3, '[)')
-          AND (
-            (resource_id IS NULL AND offering_id IS NULL)
-            OR resource_id = $4
-            OR offering_id = $5
-          )
-        LIMIT 1`,
-      [tenant.id, start, end, resource_id, offering_id],
-    );
-    if (blackoutCheck.rows.length > 0) {
-      return res.status(409).json({ error: 'requested slot is blacked out' });
-    }
-
-    const overlapBookings = await db.query(
-      `SELECT 1 FROM bookings
-        WHERE tenant_id = $1 AND resource_id = $2
-          AND status <> 'cancelled'
-          AND time_range && tstzrange($3, $4, '[)')
-        LIMIT 1`,
-      [tenant.id, resource_id, start, end],
-    );
-    if (overlapBookings.rows.length > 0) {
-      return res.status(409).json({ error: 'slot already booked' });
-    }
-    const overlapClasses = await db.query(
-      `SELECT 1 FROM class_instances
-        WHERE tenant_id = $1 AND resource_id = $2
-          AND cancelled_at IS NULL
-          AND time_range && tstzrange($3, $4, '[)')
-        LIMIT 1`,
-      [tenant.id, resource_id, start, end],
-    );
-    if (overlapClasses.rows.length > 0) {
-      return res
-        .status(409)
-        .json({ error: 'slot conflicts with an existing class instance' });
-    }
+    // Blackouts, overlapping bookings and classes still apply (see
+    // header comment) — shared with the staff reschedule path.
+    const conflict = await staffSlotConflict(db, tenant.id, {
+      offering_id,
+      resource_id,
+      start,
+      end,
+    });
+    if (conflict) return res.status(conflict.status).json({ error: conflict.error });
 
     if (member_id) {
       const memberRes = await db.query(
@@ -784,6 +786,10 @@ export async function createAdminBooking(req, res, next) {
     }
     const who = await resolveDependent(db, tenant.id, member_id, parsed.data.dependent_id);
     if (who.error) return res.status(who.error.status).json(who.error.body);
+
+    // Staff-only offerings (allow_public_booking / allow_member_booking
+    // off) are bookable from the front desk — tell the validity trigger.
+    await markStaffBookingSource(db);
 
     let booking;
     try {
@@ -834,7 +840,7 @@ export async function createAdminBooking(req, res, next) {
               customer.first_name,
               customer.last_name,
               customer.email,
-              customer.phone ?? null,
+              customer.phone,
               start,
               end,
               offering.dollar_price,
@@ -872,8 +878,8 @@ export async function createAdminBooking(req, res, next) {
       }
     }
 
-    // Walk-in confirmation email — front-desk bookings for a customer
-    // captured an email at creation; confirm to it. Member bookings
+    // Walk-in confirmation email — when the front desk captured an
+    // email (phone-only bookings get none). Member bookings
     // created by the front desk skip email (the member was standing
     // there). Sent AFTER the transaction commits (res 'finish' fires
     // after withTenantContext's COMMIT flushes), fire-and-forget.
