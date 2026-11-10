@@ -7,15 +7,17 @@ brought forward — update it every time you apply a migration.
 
 | Environment | Applied through | Date | Notes |
 |---|---|---|---|
-| Production (live Supabase) | **036** | 2026-11-10 | 001–019 during initial phases; 020–025 at PR #51 merge (025 = platform billing); 026–029 with walk-in checkout v2 (PR #53, live 2026-07-27); 030 theme; 031 booking import provenance applied by hand 2026-08-08; 032 platform console (PR #57), 033 booking reminders (PR #63), 034 family accounts (PR #64) and 035 tenant visibility applied by hand 2026-10-08; 036 slot interval (PR #67) applied by hand 2026-11-10. |
+| Production (live Supabase) | **037** | 2026-11-10 | 001–019 during initial phases; 020–025 at PR #51 merge (025 = platform billing); 026–029 with walk-in checkout v2 (PR #53, live 2026-07-27); 030 theme; 031 booking import provenance applied by hand 2026-08-08; 032 platform console (PR #57), 033 booking reminders (PR #63), 034 family accounts (PR #64) and 035 tenant visibility applied by hand 2026-10-08; 036 slot interval (PR #67) and 037 front desk (PR #68) applied by hand 2026-11-10. |
 
 To verify what's actually live, run this in the SQL editor and
 compare against `ls db/migrations/`:
 
 ```sql
 -- spot-check the newest migration's artifacts:
--- 036 → slot interval (existing facilities: 30)
-SELECT slot_interval_minutes FROM booking_policies LIMIT 1;
+-- 037 → front desk (expect 2 rows)
+SELECT conname FROM pg_constraint
+ WHERE conrelid = 'bookings'::regclass
+   AND conname IN ('bookings_member_xor_customer', 'bookings_in_person_payment_consistent');
 ```
 
 pg_cron status: **not enabled**. The Node scheduler in
