@@ -1427,6 +1427,13 @@ CREATE TABLE booking_policies (
                                   CHECK (min_advance_booking_minutes >= 0),
   max_advance_booking_days        integer NOT NULL DEFAULT 30
                                   CHECK (max_advance_booking_days > 0),
+  -- start-time grid for rental availability (migration 036): slot
+  -- starts every N minutes from the resource's opening time. NULL =
+  -- match each offering's duration (back-to-back blocks).
+  slot_interval_minutes           integer DEFAULT 30
+                                  CONSTRAINT booking_policies_slot_interval_allowed
+                                  CHECK (slot_interval_minutes IS NULL
+                                         OR slot_interval_minutes IN (5, 10, 15, 20, 30, 60)),
   -- self-service modification
   allow_member_self_cancel        boolean NOT NULL DEFAULT true,
   allow_customer_self_cancel      boolean NOT NULL DEFAULT true,

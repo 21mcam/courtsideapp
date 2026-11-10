@@ -84,3 +84,36 @@ export function sliceIntoSlots(intervals, durationMs, stepMs = null) {
   }
   return slots;
 }
+
+// Like sliceIntoSlots, but slot starts sit on a fixed grid — every
+// `stepMs` from the start of the `open` window (operating-hours shift)
+// that contains each free interval — instead of restarting at each
+// free interval's edge. So with a 30-min grid and a cage opening at
+// 10:00, a booking that ends at 10:45 frees up 11:00, 11:30, … rather
+// than 10:45, 11:15, …, and a 1-hour service is offered at 10:00,
+// 10:30, 11:00 on an empty cage (the Setmore-style "slot size").
+//
+// `open` must be the merged operating windows the free intervals were
+// carved from (subtractIntervals output never crosses a window edge).
+// A free interval outside every window (shouldn't happen) anchors to
+// its own start.
+export function sliceOnGrid(free, open, durationMs, stepMs) {
+  if (durationMs <= 0 || stepMs <= 0) {
+    throw new Error('durationMs and stepMs must be positive');
+  }
+  const slots = [];
+  for (const iv of free) {
+    const ivStart = iv.start.getTime();
+    const end = iv.end.getTime();
+    const win = open.find(
+      (w) => w.start.getTime() <= ivStart && ivStart < w.end.getTime(),
+    );
+    const anchor = win ? win.start.getTime() : ivStart;
+    let s = anchor + Math.ceil((ivStart - anchor) / stepMs) * stepMs;
+    while (s + durationMs <= end) {
+      slots.push({ start: new Date(s), end: new Date(s + durationMs) });
+      s += stepMs;
+    }
+  }
+  return slots;
+}

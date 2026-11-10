@@ -492,6 +492,38 @@ test('customer_reschedule_hours_before: default 24, roundtrips, negative rejecte
   assert.equal(badRes.status, 400);
 });
 
+test('slot_interval_minutes: default 30, null = back-to-back, omitted keeps, off-list rejected', { skip }, async () => {
+  const put = (body) =>
+    adminFetch('/api/admin/booking-policies', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
+  const read = async () =>
+    (await (await adminFetch('/api/admin/booking-policies')).json())
+      .booking_policies.slot_interval_minutes;
+
+  assert.equal(await read(), 30);
+
+  let res = await put({ slot_interval_minutes: 15 });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).booking_policies.slot_interval_minutes, 15);
+
+  // An older client's payload (no slot field) must not reset it.
+  assert.equal((await put({ free_cancel_hours_before: 24 })).status, 200);
+  assert.equal(await read(), 15);
+
+  // Explicit null is a real setting: match each service's length.
+  res = await put({ slot_interval_minutes: null });
+  assert.equal((await res.json()).booking_policies.slot_interval_minutes, null);
+  assert.equal((await put({ free_cancel_hours_before: 24 })).status, 200);
+  assert.equal(await read(), null);
+
+  assert.equal((await put({ slot_interval_minutes: 45 })).status, 400);
+  assert.equal((await put({ slot_interval_minutes: 0 })).status, 400);
+
+  await put({ slot_interval_minutes: 30 });
+});
+
 test('PUT booking_policies with half-set partial_refund → 400', { skip }, async () => {
   // Schema CHECK: partial_refund_hours_before and partial_refund_percent
   // must both be set or both null.

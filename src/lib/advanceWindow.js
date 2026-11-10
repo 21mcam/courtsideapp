@@ -14,11 +14,16 @@
 export const ADVANCE_POLICY_DEFAULTS = {
   min_advance_booking_minutes: 0,
   max_advance_booking_days: 30,
+  // Start-time grid for availability (migration 036). Rides along
+  // here because availability already reads this row; the create
+  // gates ignore it.
+  slot_interval_minutes: 30,
 };
 
 export async function getAdvancePolicy(db, tenantId) {
   const r = await db.query(
-    `SELECT min_advance_booking_minutes, max_advance_booking_days
+    `SELECT min_advance_booking_minutes, max_advance_booking_days,
+            slot_interval_minutes
        FROM booking_policies WHERE tenant_id = $1`,
     [tenantId],
   );

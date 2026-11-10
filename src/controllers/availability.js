@@ -13,7 +13,10 @@
 //   5. Pull non-cancelled class_instances on the resource for that
 //      day (rentals share resources with classes; classes block).
 //   6. Subtract (3+4+5) from (2). Slice the remaining free intervals
-//      into chunks of the offering's duration.
+//      into offering-length slots whose starts sit on the tenant's
+//      slot grid (booking_policies.slot_interval_minutes, every N min
+//      from opening time; NULL = back-to-back at the offering's
+//      length).
 //   7. Return UTC ISO timestamps; the client formats locally.
 //
 // No auth required — both members and walk-ins need this.
@@ -27,7 +30,12 @@
 // by Postgres) and slicing produces correctly fewer slots.
 
 import { z } from 'zod';
-import { mergeIntervals, sliceIntoSlots, subtractIntervals } from '../lib/intervals.js';
+import {
+  mergeIntervals,
+  sliceIntoSlots,
+  sliceOnGrid,
+  subtractIntervals,
+} from '../lib/intervals.js';
 import { getAdvancePolicy } from '../lib/advanceWindow.js';
 
 const querySchema = z.object({
@@ -158,7 +166,16 @@ export async function getAvailability(req, res, next) {
 
     const free = subtractIntervals(open, occupied);
     const durationMs = offering.duration_minutes * 60 * 1000;
-    const sliced = sliceIntoSlots(free, durationMs);
+
+    // Start-time grid (migration 036): slot_interval_minutes from the
+    // resource's opening time; NULL = back-to-back blocks of the
+    // offering's own length (the pre-036 behavior).
+    const advancePolicy = await getAdvancePolicy(req.db, req.tenant.id);
+    const intervalMinutes = advancePolicy.slot_interval_minutes;
+    const sliced =
+      intervalMinutes == null
+        ? sliceIntoSlots(free, durationMs)
+        : sliceOnGrid(free, open, durationMs, intervalMinutes * 60 * 1000);
 
     // Don't advertise slots the booking endpoints will reject: the
     // advance-window floor also trims already-started slots for
@@ -166,7 +183,6 @@ export async function getAvailability(req, res, next) {
     // gate's start > now). The max-advance ceiling is a date-picker
     // concern; both numbers ride the response so the client can
     // constrain its calendar and explain empty days.
-    const advancePolicy = await getAdvancePolicy(req.db, req.tenant.id);
     const earliestStart =
       Date.now() + advancePolicy.min_advance_booking_minutes * 60 * 1000;
     const slots = sliced.filter((s) => s.start.getTime() > earliestStart);
@@ -179,6 +195,7 @@ export async function getAvailability(req, res, next) {
       day_start: new Date(day_start).toISOString(),
       day_end: new Date(day_end).toISOString(),
       duration_minutes: offering.duration_minutes,
+      slot_interval_minutes: intervalMinutes,
       min_advance_booking_minutes: advancePolicy.min_advance_booking_minutes,
       max_advance_booking_days: advancePolicy.max_advance_booking_days,
     });

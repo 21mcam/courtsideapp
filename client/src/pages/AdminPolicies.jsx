@@ -1,6 +1,7 @@
 // Admin Settings → Booking policies. Form over the singleton
 // booking_policies row: cancellation window (+ optional partial
-// refund tier), no-show rule, and the advance booking window.
+// refund tier), no-show rule, the advance booking window and the
+// start-time grid (slot_interval_minutes).
 //
 // GET returns schema defaults with exists:false for tenants that
 // predate the wizard-created row; PUT UPSERTs. The PUT endpoint
@@ -70,6 +71,13 @@ export default function AdminPolicies() {
               : '',
           min_advance_booking_minutes: String(p.min_advance_booking_minutes),
           max_advance_booking_days: String(p.max_advance_booking_days),
+          // '' = match each service's length (stored NULL).
+          slot_interval_minutes:
+            p.slot_interval_minutes === undefined
+              ? '30'
+              : p.slot_interval_minutes === null
+                ? ''
+                : String(p.slot_interval_minutes),
           allow_member_self_cancel: p.allow_member_self_cancel,
           allow_customer_self_cancel: p.allow_customer_self_cancel,
           customer_reschedule_hours_before: String(
@@ -118,6 +126,10 @@ export default function AdminPolicies() {
             : null,
         min_advance_booking_minutes: Number(form.min_advance_booking_minutes),
         max_advance_booking_days: Number(form.max_advance_booking_days),
+        slot_interval_minutes:
+          form.slot_interval_minutes === ''
+            ? null
+            : Number(form.slot_interval_minutes),
         allow_member_self_cancel: form.allow_member_self_cancel,
         allow_customer_self_cancel: form.allow_customer_self_cancel,
         customer_reschedule_hours_before: Number(
@@ -409,6 +421,24 @@ export default function AdminPolicies() {
                   }
                 />
               </Field>
+              <Field
+                label="Start times every"
+                hint="How often bookable times appear, counted from opening time — for every service length."
+                className="sm:col-span-2"
+              >
+                <Select
+                  value={form.slot_interval_minutes}
+                  onChange={(e) =>
+                    set({ slot_interval_minutes: e.target.value })
+                  }
+                >
+                  {SLOT_INTERVALS.map(([v, label]) => (
+                    <option key={v} value={v}>
+                      {label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
             </div>
           </Card>
 
@@ -425,6 +455,16 @@ export default function AdminPolicies() {
     </Page>
   );
 }
+
+const SLOT_INTERVALS = [
+  ['5', '5 minutes'],
+  ['10', '10 minutes'],
+  ['15', '15 minutes'],
+  ['20', '20 minutes'],
+  ['30', '30 minutes'],
+  ['60', 'Hour'],
+  ['', 'Back to back (match each service’s length)'],
+];
 
 const REMINDER_HOURS = [
   ['2', '2 hours before'],
