@@ -1622,6 +1622,14 @@ CREATE TABLE bookings (
                               CHECK (payment_status IN ('not_required', 'pending', 'paid',
                                                          'refunded', 'partial_refund')),
   stripe_payment_intent_id    text,
+  -- in-person payment recorded by staff (migration 037): cash/card/
+  -- other on a cash-on-arrival walk-in. NULL for Stripe/member/unpaid.
+  payment_method              text
+                              CONSTRAINT bookings_payment_method_allowed
+                              CHECK (payment_method IS NULL
+                                     OR payment_method IN ('cash', 'card', 'other')),
+  paid_at                     timestamptz,
+  paid_marked_by              uuid,
 
   -- lifecycle audit
   cancelled_at                timestamptz,
@@ -1686,8 +1694,9 @@ CREATE TABLE bookings (
   -- identity FK
   FOREIGN KEY (tenant_id, member_id) REFERENCES members(tenant_id, id) ON DELETE RESTRICT,
 
-  -- mutual exclusion: member XOR customer
-  CHECK (
+  -- mutual exclusion: member XOR customer. A customer needs a name
+  -- and email OR phone (migration 037: staff take phone-only bookings).
+  CONSTRAINT bookings_member_xor_customer CHECK (
     (member_id IS NOT NULL
      AND customer_first_name IS NULL AND customer_last_name IS NULL
      AND customer_email IS NULL AND customer_phone IS NULL)
@@ -1695,7 +1704,18 @@ CREATE TABLE bookings (
     (member_id IS NULL
      AND customer_first_name IS NOT NULL
      AND customer_last_name IS NOT NULL
-     AND customer_email IS NOT NULL)
+     AND (customer_email IS NOT NULL
+          OR NULLIF(btrim(customer_phone), '') IS NOT NULL))
+  ),
+
+  -- an in-person payment is a fully-paid walk-in, not Stripe (037)
+  CONSTRAINT bookings_in_person_payment_consistent CHECK (
+    payment_method IS NULL
+    OR (member_id IS NULL
+        AND stripe_payment_intent_id IS NULL
+        AND payment_status = 'paid'
+        AND paid_at IS NOT NULL
+        AND paid_marked_by IS NOT NULL)
   ),
 
   -- payment shape: members spend credits (no money), customers owe
@@ -1882,6 +1902,7 @@ DECLARE
   v_resource_active     boolean;
   v_link_active         boolean;
   v_is_member_booking   boolean;
+  v_staff               boolean;
 BEGIN
   IF TG_OP = 'UPDATE'
      AND NEW.offering_id IS NOT DISTINCT FROM OLD.offering_id
@@ -1895,6 +1916,9 @@ BEGIN
   END IF;
 
   v_is_member_booking := (NEW.member_id IS NOT NULL);
+  -- Front-desk routes set this per transaction (migration 037): the
+  -- audience flags gate self-serve surfaces, not staff.
+  v_staff := coalesce(current_setting('app.booking_source', true), '') = 'staff';
 
   -- Offering: exists, active, capacity = 1, audience allowed
   SELECT active, capacity, allow_member_booking, allow_public_booking
@@ -1920,12 +1944,12 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
 
-  IF v_is_member_booking AND NOT v_offering_member_ok THEN
+  IF NOT v_staff AND v_is_member_booking AND NOT v_offering_member_ok THEN
     RAISE EXCEPTION 'Offering % does not allow member bookings', NEW.offering_id
       USING ERRCODE = 'check_violation';
   END IF;
 
-  IF NOT v_is_member_booking AND NOT v_offering_public_ok THEN
+  IF NOT v_staff AND NOT v_is_member_booking AND NOT v_offering_public_ok THEN
     RAISE EXCEPTION 'Offering % does not allow public bookings', NEW.offering_id
       USING ERRCODE = 'check_violation';
   END IF;

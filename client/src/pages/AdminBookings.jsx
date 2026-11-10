@@ -18,7 +18,12 @@ import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { addDays, localDateString, todayLocalString, zonedDayStartIso } from '../lib/tz.js';
 import { stripeRefundNotice } from '../lib/cancelNotice.js';
-import { bookingStatusBadge, formatSlotLocal, memberBookingName } from '../format.js';
+import {
+  bookingStatusBadge,
+  formatCents,
+  formatSlotLocal,
+  memberBookingName,
+} from '../format.js';
 import {
   Badge,
   Button,
@@ -112,6 +117,23 @@ export default function AdminBookings() {
     }
   }
 
+  // Front desk (migration 037): a cash-on-arrival walk-in paid.
+  async function markPaid(b) {
+    setActionMessage(null);
+    try {
+      const res = await api(`/api/admin/bookings/${b.id}/mark-paid`, {
+        method: 'POST',
+        body: JSON.stringify({ method: 'cash' }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setActionMessage(`Marked paid — ${formatCents(b.amount_due_cents)} cash.`);
+      load();
+    } catch (err) {
+      setActionMessage(`Mark paid failed: ${err.message}`);
+    }
+  }
+
   // Runs after the admin confirms in the no-show ConfirmDialog.
   async function markNoShow(b) {
     setActionMessage(null);
@@ -199,6 +221,7 @@ export default function AdminBookings() {
         tz={tz}
         onCancel={setCancelTarget}
         onNoShow={setNoShowTarget}
+        onMarkPaid={markPaid}
       />
 
       {cancelTarget && (
@@ -250,7 +273,18 @@ function DateField({ label, valueIso, tz, onChange }) {
   );
 }
 
-function BookingTable({ bookings, tz, onCancel, onNoShow }) {
+// A cash-on-arrival walk-in still owing at the desk (not an online
+// checkout in progress, not cancelled).
+function owes(b) {
+  return (
+    !b.member_id &&
+    b.payment_status === 'pending' &&
+    !b.paid_online &&
+    !['cancelled', 'pending_payment'].includes(b.status)
+  );
+}
+
+function BookingTable({ bookings, tz, onCancel, onNoShow, onMarkPaid }) {
   if (bookings === null) {
     return <p className="text-sm text-slate-400">loading…</p>;
   }
@@ -294,18 +328,36 @@ function BookingTable({ bookings, tz, onCancel, onNoShow }) {
                   <td className="px-4 py-3 text-sm">{b.resource_name}</td>
                   <td className="px-4 py-3 text-sm">
                     <div>{who || '—'}</div>
-                    {b.member_email && (
+                    {(b.member_email ?? b.customer_email) && (
                       <div className="font-mono text-xs text-slate-500">
-                        {b.member_email}
+                        {b.member_email ?? b.customer_email}
                       </div>
+                    )}
+                    {!b.member_id && b.customer_phone && (
+                      <div className="text-xs text-slate-500">{b.customer_phone}</div>
                     )}
                   </td>
                   <td className="px-4 py-3 text-sm">
                     <Badge tone={badge.tone}>{badge.label}</Badge>
+                    {owes(b) && (
+                      <span className="ml-1">
+                        <Badge tone="warning">owes {formatCents(b.amount_due_cents)}</Badge>
+                      </span>
+                    )}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm">
+                    {owes(b) && b.status !== 'confirmed' && (
+                      <Button size="sm" onClick={() => onMarkPaid(b)}>
+                        Paid cash
+                      </Button>
+                    )}
                     {b.status === 'confirmed' && (
                       <div className="flex gap-2">
+                        {owes(b) && (
+                          <Button size="sm" onClick={() => onMarkPaid(b)}>
+                            Paid cash
+                          </Button>
+                        )}
                         <Button size="sm" variant="secondary" onClick={() => onCancel(b)}>
                           Cancel
                         </Button>

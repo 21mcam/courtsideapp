@@ -474,6 +474,7 @@ export async function cancelMemberBooking(req, res, next) {
               b.start_time, b.end_time, b.status,
               b.credit_cost_charged, b.payment_status,
               b.amount_paid_cents, b.amount_refunded_cents,
+              b.payment_method,
               b.cancelled_at,
               b.customer_first_name, b.customer_email,
               o.name AS offering_name,
@@ -630,11 +631,13 @@ export async function cancelMemberBooking(req, res, next) {
     // still held so the admin UI can say so instead of implying the
     // customer was made whole. Always 0 for member bookings
     // (payment_status 'not_required').
-    const stripeRefundDueCents = ['paid', 'partial_refund'].includes(
-      booking.payment_status,
-    )
+    // In-person payments (migration 037: cash/card recorded by staff)
+    // are refunded at the desk, not in Stripe — reported separately.
+    const paidCents = ['paid', 'partial_refund'].includes(booking.payment_status)
       ? booking.amount_paid_cents - booking.amount_refunded_cents
       : 0;
+    const stripeRefundDueCents = booking.payment_method ? 0 : paidCents;
+    const inPersonRefundDueCents = booking.payment_method ? paidCents : 0;
 
     res.json({
       booking_id: id,
@@ -645,6 +648,8 @@ export async function cancelMemberBooking(req, res, next) {
       refund_entry_id,
       payment_status: booking.payment_status,
       stripe_refund_due_cents: stripeRefundDueCents,
+      in_person_refund_due_cents: inPersonRefundDueCents,
+      payment_method: booking.payment_method,
     });
   } catch (err) {
     next(err);

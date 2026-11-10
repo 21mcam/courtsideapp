@@ -25,12 +25,11 @@
 //
 //   walkIns — SUM(amount_paid_cents - amount_refunded_cents) over
 //     bookings + class_bookings rows with amount_paid_cents > 0,
-//     attributed by the row's created_at (we do not store a separate
-//     "paid at" timestamp; the Stripe webhook stamps amount_paid on
-//     the row created moments earlier at checkout, so creation month
-//     ≈ payment month). Cash-on-arrival front-desk bookings are NOT
-//     included: nothing ever marks them paid (payment_status stays
-//     'pending'), so counting their amount_due would be inventing
+//     attributed by COALESCE(paid_at, created_at). Stripe rows have no
+//     paid_at — the webhook stamps amount_paid on the row created
+//     moments earlier at checkout, so creation month ≈ payment month.
+//     Cash-on-arrival front-desk bookings count once staff mark them
+//     paid (migration 037 sets paid_at); until then they're owed, not
 //     revenue.
 //
 //   packs — NULL (not tracked). Pack purchases move money on Stripe
@@ -153,7 +152,7 @@ export async function getReportsSummary(req, res, next) {
                      FROM bookings
                     WHERE tenant_id = $1
                       AND amount_paid_cents > 0
-                      AND created_at >= $2), 0)::int
+                      AND COALESCE(paid_at, created_at) >= $2), 0)::int
        + COALESCE((SELECT sum(amount_paid_cents - amount_refunded_cents)
                      FROM class_bookings
                     WHERE tenant_id = $1
@@ -342,7 +341,8 @@ export async function exportBookingsCsv(req, res, next) {
       `SELECT b.id, b.status, b.start_time, b.end_time, b.created_at,
               b.credit_cost_charged, b.amount_due_cents,
               b.amount_paid_cents, b.amount_refunded_cents,
-              b.payment_status,
+              b.payment_status, b.payment_method, b.paid_at,
+              b.customer_phone,
               o.name AS offering_name,
               r.name AS resource_name,
               m.first_name AS member_first_name,
@@ -389,6 +389,10 @@ export async function exportBookingsCsv(req, res, next) {
       'payment_status',
       'start_time_utc',
       'created_at_utc',
+      // appended (migration 037) so existing column positions hold
+      'phone',
+      'payment_method',
+      'paid_at_utc',
     ];
     const rows = result.rows.map((b) => {
       const isMember = b.member_id != null;
@@ -410,6 +414,9 @@ export async function exportBookingsCsv(req, res, next) {
         b.payment_status,
         new Date(b.start_time).toISOString(),
         new Date(b.created_at).toISOString(),
+        isMember ? '' : (b.customer_phone ?? ''),
+        b.payment_method ?? '',
+        b.paid_at ? new Date(b.paid_at).toISOString() : '',
       ];
     });
 

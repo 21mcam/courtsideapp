@@ -424,6 +424,7 @@ export default function AdminCalendar() {
         <DetailPanel
           item={selectedItem}
           tz={tz}
+          resources={activeResources}
           onClose={() => setSelectedItem(null)}
           onActionSuccess={(msg) => {
             setActionMessage(msg);
@@ -830,7 +831,20 @@ function Card({ item, tz, top, height, lane, laneCount, onClick }) {
       style={{ top, height, left, width }}
       title={`${title} · ${formatTimeLocal(item.start_time, tz)}`}
     >
-      <div className="font-medium truncate">{title}</div>
+      <div className="flex items-center gap-1">
+        <span className="font-medium truncate">{title}</span>
+        {!isClass && !item.member_id && item.amount_due_cents > 0 && item.status !== 'pending_payment' && (
+          <span
+            className={`ml-auto shrink-0 rounded px-1 text-[10px] font-semibold uppercase ${
+              item.payment_status === 'pending'
+                ? 'bg-amber-200 text-amber-900'
+                : 'bg-white/70 text-emerald-800'
+            }`}
+          >
+            {item.payment_status === 'pending' ? 'owes' : 'paid'}
+          </span>
+        )}
+      </div>
       {subtitle && (
         <div className="truncate text-[11px] opacity-80">{subtitle}</div>
       )}
@@ -842,8 +856,9 @@ function Card({ item, tz, top, height, lane, laneCount, onClick }) {
 // Detail panel (modal-ish — slide-over from the right)
 // ============================================================
 
-function DetailPanel({ item, tz, onClose, onActionSuccess }) {
+function DetailPanel({ item, tz, resources, onClose, onActionSuccess }) {
   const [busy, setBusy] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [confirmingNoShow, setConfirmingNoShow] = useState(false);
   const isClass = item.kind === 'class';
@@ -910,6 +925,37 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
       setBusy(false);
     }
   }
+
+  // Front desk (migration 037): record / undo an in-person payment.
+  async function post(path, payload, okMessage, failLabel) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await api(path, {
+        method: 'POST',
+        body: JSON.stringify(payload ?? {}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      onActionSuccess(okMessage);
+    } catch (err) {
+      onActionSuccess(`${failLabel} failed: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const amount = `$${((item.amount_due_cents ?? 0) / 100).toFixed(2)}`;
+  const who = item.member_id
+    ? memberBookingName(item)
+    : `${item.customer_first_name ?? ''} ${item.customer_last_name ?? ''}`.trim();
+  const canMarkPaid =
+    !isClass &&
+    !item.member_id &&
+    item.payment_status === 'pending' &&
+    !item.paid_online &&
+    !['cancelled', 'pending_payment'].includes(item.status);
+  const canUndoPaid =
+    !isClass && item.payment_method && item.payment_status === 'paid';
 
   const startStr = new Date(item.start_time).toLocaleString('en-US', {
     timeZone: tz,
@@ -999,6 +1045,16 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
               <dd className="col-span-2 font-mono text-xs">
                 {item.member_email ?? item.customer_email ?? '—'}
               </dd>
+              {!item.member_id && item.customer_phone && (
+                <>
+                  <dt className="text-slate-500">Phone</dt>
+                  <dd className="col-span-2">
+                    <a className="text-brand-700 underline" href={`tel:${item.customer_phone}`}>
+                      {item.customer_phone}
+                    </a>
+                  </dd>
+                </>
+              )}
               <dt className="text-slate-500">Offering</dt>
               <dd className="col-span-2">{item.offering_name}</dd>
               <dt className="text-slate-500">Resource</dt>
@@ -1021,10 +1077,9 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
               )}
               {item.amount_due_cents > 0 && (
                 <>
-                  <dt className="text-slate-500">Amount</dt>
+                  <dt className="text-slate-500">Payment</dt>
                   <dd className="col-span-2 tabular-nums">
-                    ${(item.amount_due_cents / 100).toFixed(2)} ·{' '}
-                    {item.payment_status}
+                    {amount} · <PaymentLabel item={item} />
                   </dd>
                 </>
               )}
@@ -1033,6 +1088,53 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
         </dl>
 
         <div className="mt-5 flex flex-col gap-2">
+          {canMarkPaid && (
+            <div className="flex gap-2">
+              <Button
+                className="flex-1"
+                onClick={() =>
+                  post(
+                    `/api/admin/bookings/${item.id}/mark-paid`,
+                    { method: 'cash' },
+                    `${who} paid ${amount} cash`,
+                    'Mark paid',
+                  )
+                }
+                disabled={busy}
+              >
+                Paid cash
+              </Button>
+              <Button
+                className="flex-1"
+                variant="secondary"
+                onClick={() =>
+                  post(
+                    `/api/admin/bookings/${item.id}/mark-paid`,
+                    { method: 'card' },
+                    `${who} paid ${amount} by card`,
+                    'Mark paid',
+                  )
+                }
+                disabled={busy}
+              >
+                Paid card
+              </Button>
+            </div>
+          )}
+          {!isClass && item.status === 'confirmed' && !moving && (
+            <Button variant="secondary" onClick={() => setMoving(true)} disabled={busy}>
+              Move booking
+            </Button>
+          )}
+          {moving && (
+            <MoveForm
+              item={item}
+              tz={tz}
+              resources={resources}
+              onCancel={() => setMoving(false)}
+              onMoved={onActionSuccess}
+            />
+          )}
           {!isClass && item.status === 'confirmed' && (
             <>
               <Button
@@ -1061,6 +1163,23 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
             >
               {busy ? 'cancelling…' : 'Cancel class (refund roster)'}
             </Button>
+          )}
+          {canUndoPaid && (
+            <button
+              type="button"
+              className="self-start text-xs text-slate-500 underline hover:text-slate-700"
+              onClick={() =>
+                post(
+                  `/api/admin/bookings/${item.id}/mark-unpaid`,
+                  {},
+                  `Payment undone — ${who} owes ${amount} again`,
+                  'Undo payment',
+                )
+              }
+              disabled={busy}
+            >
+              Undo payment
+            </button>
           )}
         </div>
       </aside>
@@ -1101,6 +1220,114 @@ function DetailPanel({ item, tz, onClose, onActionSuccess }) {
   );
 }
 
+// "Owes" / "Paid cash" / "Paid online" — the front desk's question is
+// whether money is still due at the counter.
+function PaymentLabel({ item }) {
+  if (item.payment_status === 'pending') {
+    return item.status === 'pending_payment' ? (
+      <span className="text-amber-700">awaiting online payment</span>
+    ) : (
+      <span className="font-medium text-amber-700">owes</span>
+    );
+  }
+  if (item.payment_status === 'paid') {
+    if (item.payment_method === 'cash') return <span className="text-emerald-700">paid cash</span>;
+    if (item.payment_method === 'card') return <span className="text-emerald-700">paid card</span>;
+    if (item.payment_method) return <span className="text-emerald-700">paid</span>;
+    return <span className="text-emerald-700">paid online</span>;
+  }
+  return <span>{item.payment_status.replace('_', ' ')}</span>;
+}
+
+// Inline "move to" form in the detail panel: new day, start time and
+// resource; the booking keeps its length. Staff overrides apply
+// server-side (no hours/advance-window checks; conflicts still 409).
+function MoveForm({ item, tz, resources, onCancel, onMoved }) {
+  const lengthMin = Math.round(
+    (new Date(item.end_time) - new Date(item.start_time)) / 60000,
+  );
+  const [date, setDate] = useState(localDateString(item.start_time, tz));
+  const [startMin, setStartMin] = useState(
+    Math.round(localMinutesOfDay(item.start_time, tz) / SNAP_MIN) * SNAP_MIN,
+  );
+  const [resourceId, setResourceId] = useState(item.resource_id);
+  const [notify, setNotify] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const hasEmail = Boolean(item.member_email ?? item.customer_email);
+
+  const startOptions = [];
+  for (let m = 0; m + lengthMin <= 1440; m += SNAP_MIN) startOptions.push(m);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const start_time = zonedTimeToUtc(date, minToHHMM(startMin), tz).toISOString();
+      const res = await api(`/api/admin/bookings/${item.id}/reschedule`, {
+        method: 'POST',
+        body: JSON.stringify({ start_time, resource_id: resourceId, notify }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      const rName = resources.find((r) => r.id === resourceId)?.name ?? '';
+      onMoved(
+        `Moved to ${calendarDayLabel(date)} ${minuteLabel(startMin)}${rName ? ` on ${rName}` : ''}` +
+          (body.notified ? ' — emailed them the new time' : ''),
+      );
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-2 rounded-lg border border-slate-200 p-3">
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Day">
+          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+        </Field>
+        <Field label="Start">
+          <Select value={startMin} onChange={(e) => setStartMin(Number(e.target.value))}>
+            {startOptions.map((m) => (
+              <option key={m} value={m}>
+                {minuteLabel(m)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
+      <Field label="Resource">
+        <Select value={resourceId} onChange={(e) => setResourceId(e.target.value)}>
+          {resources.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <p className="text-xs text-slate-500">Keeps its {lengthMin}-minute length.</p>
+      {hasEmail && (
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} />
+          Email them the new time
+        </label>
+      )}
+      {error && <p className="text-sm text-rose-700">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="secondary" onClick={onCancel} disabled={busy}>
+          Back
+        </Button>
+        <Button type="submit" disabled={busy}>
+          {busy ? 'Moving…' : 'Move'}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 function StatusBadge({ status }) {
   const { label, tone } = bookingStatusBadge(status);
   return <Badge tone={tone}>{label}</Badge>;
@@ -1122,12 +1349,28 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
   // not overwrite it. A clicked start keeps following the offering's
   // duration until the admin touches the end time herself.
   const [endTouched, setEndTouched] = useState(draft.dragged);
-  const [who, setWho] = useState('member');
+  // Remember Member vs Walk-in between bookings — at a cage facility
+  // most desk bookings are walk-ins, at a membership gym most aren't.
+  const [who, setWhoState] = useState(() => {
+    try {
+      return localStorage.getItem('courtside.deskWho') === 'walkin' ? 'walkin' : 'member';
+    } catch {
+      return 'member';
+    }
+  });
+  function setWho(v) {
+    setWhoState(v);
+    try {
+      localStorage.setItem('courtside.deskWho', v);
+    } catch {
+      /* private mode — fine */
+    }
+  }
   const [memberQuery, setMemberQuery] = useState('');
   const [memberId, setMemberId] = useState('');
+  // Walk-in (migration 037): one name field + phone; email optional.
   const [customer, setCustomer] = useState({
-    first_name: '',
-    last_name: '',
+    full_name: '',
     email: '',
     phone: '',
   });
@@ -1212,9 +1455,8 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
     offeringId &&
     (who === 'member'
       ? memberId
-      : customer.first_name.trim() &&
-        customer.last_name.trim() &&
-        customer.email.trim());
+      : customer.full_name.trim() &&
+        (customer.phone.trim() || customer.email.trim()));
 
   function shiftStart(newStart) {
     const len = endMin - startMin;
@@ -1245,9 +1487,8 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
             }
           : {
               customer: {
-                first_name: customer.first_name.trim(),
-                last_name: customer.last_name.trim(),
-                email: customer.email.trim(),
+                full_name: customer.full_name.trim(),
+                ...(customer.email.trim() ? { email: customer.email.trim() } : {}),
                 ...(customer.phone.trim() ? { phone: customer.phone.trim() } : {}),
               },
             }),
@@ -1261,7 +1502,7 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
       const whoLabel =
         who === 'member'
           ? `${selectedMember.first_name} ${selectedMember.last_name} (${resBody.balance_after ?? '—'} credits left)`
-          : `${customer.first_name.trim()} ${customer.last_name.trim()} — ${formatCents(selectedOffering.dollar_price)} due on arrival`;
+          : `${customer.full_name.trim()} — ${formatCents(selectedOffering.dollar_price)} due on arrival`;
       onCreated(
         `Booked ${selectedOffering.name} on ${draft.resourceName}, ${minuteLabel(startMin)}–${minuteLabel(endMin)} for ${whoLabel}`,
       );
@@ -1450,35 +1691,34 @@ function CreateBookingModal({ draft, dateStr, tz, onClose, onCreated }) {
             ) : (
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
                 <Input
-                  placeholder="First name"
-                  value={customer.first_name}
+                  className="sm:col-span-2"
+                  placeholder="Name"
+                  autoComplete="off"
+                  value={customer.full_name}
                   onChange={(e) =>
-                    setCustomer({ ...customer, first_name: e.target.value })
-                  }
-                />
-                <Input
-                  placeholder="Last name"
-                  value={customer.last_name}
-                  onChange={(e) =>
-                    setCustomer({ ...customer, last_name: e.target.value })
-                  }
-                />
-                <Input
-                  type="email"
-                  placeholder="Email"
-                  value={customer.email}
-                  onChange={(e) =>
-                    setCustomer({ ...customer, email: e.target.value })
+                    setCustomer({ ...customer, full_name: e.target.value })
                   }
                 />
                 <Input
                   type="tel"
-                  placeholder="Phone (optional)"
+                  placeholder="Phone"
                   value={customer.phone}
                   onChange={(e) =>
                     setCustomer({ ...customer, phone: e.target.value })
                   }
                 />
+                <Input
+                  type="email"
+                  placeholder="Email (optional)"
+                  value={customer.email}
+                  onChange={(e) =>
+                    setCustomer({ ...customer, email: e.target.value })
+                  }
+                />
+                <p className="text-xs text-slate-500 sm:col-span-2">
+                  Phone or email is enough. With an email they get a confirmation
+                  and reminder.
+                </p>
               </div>
             )}
           </div>

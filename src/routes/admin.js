@@ -67,6 +67,11 @@ import {
   updatePlan,
 } from '../controllers/stripeConnect.js';
 import { runTenantCleanup } from '../controllers/cleanup.js';
+import {
+  markBookingPaid,
+  markBookingUnpaid,
+  rescheduleAdminBooking,
+} from '../controllers/frontDesk.js';
 import { listWaiverSignatures } from '../controllers/waivers.js';
 import {
   listPacksAdmin,
@@ -188,6 +193,11 @@ router.delete('/blackouts/:id', deleteBlackout);
 // (mutations live on /api/bookings/:id/cancel and /:id/mark-no-show).
 router.get('/bookings', listAllBookings);
 router.post('/bookings', createAdminBooking);
+// Front desk (migration 037): record in-person payment, undo it, and
+// move a booking to a new time/resource.
+router.post('/bookings/:id/mark-paid', markBookingPaid);
+router.post('/bookings/:id/mark-unpaid', markBookingUnpaid);
+router.post('/bookings/:id/reschedule', rescheduleAdminBooking);
 
 // Class instances (Phase 4 slice 1) — one-off creation, list, and
 // cancel-with-cascade.
