@@ -245,6 +245,7 @@ const POLICY_DEFAULTS = {
   reminders_enabled: true,
   reminder_hours_before: 24,
   reminder_include_manage_link: true,
+  slot_interval_minutes: 30,
 };
 
 // Reminder settings (migration 033) use the waiver's "omitted = keep
@@ -279,6 +280,13 @@ const bookingPoliciesUpsertSchema = z
     reminders_enabled: z.boolean().optional(),
     reminder_hours_before: z.number().int().min(1).max(168).optional(),
     reminder_include_manage_link: z.boolean().optional(),
+    // Start-time grid (migration 036). null = match each offering's
+    // length. Omitted = keep stored value (same rule as reminders).
+    slot_interval_minutes: z
+      .union([z.literal(5), z.literal(10), z.literal(15), z.literal(20),
+              z.literal(30), z.literal(60)])
+      .nullable()
+      .optional(),
   });
 
 export async function getBookingPolicies(req, res, next) {
@@ -291,6 +299,7 @@ export async function getBookingPolicies(req, res, next) {
               customer_reschedule_hours_before,
               waiver_required, waiver_text, waiver_version,
               reminders_enabled, reminder_hours_before, reminder_include_manage_link,
+              slot_interval_minutes,
               created_at, updated_at
          FROM booking_policies
         WHERE tenant_id = $1`,
@@ -332,7 +341,8 @@ export async function upsertBookingPolicies(req, res, next) {
     // and write N+1 with different texts.
     const existingRes = await req.db.query(
       `SELECT waiver_required, waiver_text, waiver_version,
-              reminders_enabled, reminder_hours_before, reminder_include_manage_link
+              reminders_enabled, reminder_hours_before, reminder_include_manage_link,
+              slot_interval_minutes
          FROM booking_policies
         WHERE tenant_id = $1
           FOR UPDATE`,
@@ -347,6 +357,13 @@ export async function upsertBookingPolicies(req, res, next) {
     const reminders = Object.fromEntries(
       REMINDER_FIELDS.map((k) => [k, parsed.data[k] ?? existing?.[k] ?? POLICY_DEFAULTS[k]]),
     );
+    // null is a real value here ("match service length"), so test
+    // presence, not ??.
+    const slotInterval = Object.hasOwn(parsed.data, 'slot_interval_minutes')
+      ? parsed.data.slot_interval_minutes
+      : existing
+        ? existing.slot_interval_minutes
+        : POLICY_DEFAULTS.slot_interval_minutes;
     let waiverText = existing?.waiver_text ?? null;
     let waiverVersion = existing?.waiver_version ?? 1;
     if (Object.hasOwn(parsed.data, 'waiver_text')) {
@@ -366,10 +383,11 @@ export async function upsertBookingPolicies(req, res, next) {
            allow_member_self_cancel, allow_customer_self_cancel,
            customer_reschedule_hours_before,
            waiver_required, waiver_text, waiver_version,
-           reminders_enabled, reminder_hours_before, reminder_include_manage_link
+           reminders_enabled, reminder_hours_before, reminder_include_manage_link,
+           slot_interval_minutes
          )
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                 $15, $16, $17)
+                 $15, $16, $17, $18)
          ON CONFLICT (tenant_id) DO UPDATE SET
            free_cancel_hours_before    = EXCLUDED.free_cancel_hours_before,
            partial_refund_hours_before = EXCLUDED.partial_refund_hours_before,
@@ -386,7 +404,8 @@ export async function upsertBookingPolicies(req, res, next) {
            waiver_version              = EXCLUDED.waiver_version,
            reminders_enabled           = EXCLUDED.reminders_enabled,
            reminder_hours_before       = EXCLUDED.reminder_hours_before,
-           reminder_include_manage_link = EXCLUDED.reminder_include_manage_link
+           reminder_include_manage_link = EXCLUDED.reminder_include_manage_link,
+           slot_interval_minutes       = EXCLUDED.slot_interval_minutes
          RETURNING free_cancel_hours_before, partial_refund_hours_before,
                    partial_refund_percent, no_show_action, no_show_fee_cents,
                    min_advance_booking_minutes, max_advance_booking_days,
@@ -394,6 +413,7 @@ export async function upsertBookingPolicies(req, res, next) {
                    customer_reschedule_hours_before,
                    waiver_required, waiver_text, waiver_version,
                    reminders_enabled, reminder_hours_before, reminder_include_manage_link,
+                   slot_interval_minutes,
                    created_at, updated_at`,
         [
           req.tenant.id,
@@ -413,6 +433,7 @@ export async function upsertBookingPolicies(req, res, next) {
           reminders.reminders_enabled,
           reminders.reminder_hours_before,
           reminders.reminder_include_manage_link,
+          slotInterval,
         ],
       );
       res.json({ booking_policies: { ...result.rows[0], exists: true } });

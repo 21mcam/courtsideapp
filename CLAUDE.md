@@ -278,7 +278,14 @@ exclusively by `apply_credit_change`:
 
 - **`booking_policies`** — singleton row per tenant. Cancellation
   rules, no-show rules, advance booking window. No per-offering
-  overrides in v1.
+  overrides in v1. `slot_interval_minutes` (migration 036) is the
+  start-time grid for rental availability: starts every N min
+  (5/10/15/20/30/60, default 30) counted from each operating-hours
+  shift's open time, for every service length — Setmore's "slot
+  size". NULL = back-to-back at each offering's own length (the
+  pre-036 behavior). Availability-only: create endpoints don't
+  enforce the grid (admin bookings snap to 15 min). Omitted in a
+  policy PUT = keep stored value.
 - **`operating_hours`** — when a resource is bookable. Per resource,
   per day-of-week. Multiple rows per (resource, day) allowed for
   split shifts. No tenant-default layer; the wizard duplicates hours

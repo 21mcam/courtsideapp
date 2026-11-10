@@ -47,6 +47,17 @@ before(async () => {
   );
   tenant_id = t.rows[0].id;
 
+  // The tests below were written for back-to-back slicing (slot starts
+  // every <duration>). Since migration 036 that's the explicit NULL
+  // "match each service's length" setting; the start-time grid tests
+  // at the bottom switch it on per test via withSlotInterval().
+  await privilegedPool.query(
+    `INSERT INTO booking_policies (tenant_id, slot_interval_minutes)
+     VALUES ($1, NULL)
+     ON CONFLICT (tenant_id) DO UPDATE SET slot_interval_minutes = NULL`,
+    [tenant_id],
+  );
+
   await new Promise((resolve) => {
     server = app.listen(0, '127.0.0.1', () => {
       const { port } = server.address();
@@ -382,8 +393,11 @@ test('min_advance_booking_minutes trims near-term slots and rides the response',
     assert.equal(body.min_advance_booking_minutes, 300000);
     assert.equal(body.max_advance_booking_days, 400);
   } finally {
+    // Back to defaults, keeping the file-wide back-to-back setting.
     await privilegedPool.query(
-      `DELETE FROM booking_policies WHERE tenant_id = $1`,
+      `UPDATE booking_policies
+          SET min_advance_booking_minutes = 0, max_advance_booking_days = 30
+        WHERE tenant_id = $1`,
       [tenant_id],
     );
   }
@@ -398,4 +412,97 @@ test('class offering → returns empty + reason (slot model is rentals only)', {
   const body = await res.json();
   assert.deepEqual(body.slots, []);
   assert.match(body.reason, /class/i);
+});
+
+// ============================================================
+// Start-time grid (migration 036: booking_policies.slot_interval_minutes)
+// ============================================================
+
+async function withSlotInterval(minutes, fn) {
+  await privilegedPool.query(
+    `UPDATE booking_policies SET slot_interval_minutes = $2 WHERE tenant_id = $1`,
+    [tenant_id, minutes],
+  );
+  try {
+    return await fn();
+  } finally {
+    await privilegedPool.query(
+      `UPDATE booking_policies SET slot_interval_minutes = NULL WHERE tenant_id = $1`,
+      [tenant_id],
+    );
+  }
+}
+
+const starts = (body) => body.slots.map((s) => s.start);
+
+test('30-min grid: 60-min service on an empty 9-17 cage starts every half hour', { skip }, async () => {
+  const resource_id = await makeResource();
+  const offering_id = await makeOffering({ duration_minutes: 60 });
+  await linkOfferingResource(offering_id, resource_id);
+  await makeOperatingHours(resource_id, DOW_MONDAY, '09:00', '17:00');
+
+  await withSlotInterval(30, async () => {
+    const body = await (await fetchAvailability({ resource_id, offering_id, date: MONDAY_EST })).json();
+    // 9:00, 9:30, … 16:00 = 15 starts; each slot is still 60 min.
+    assert.equal(body.slots.length, 15);
+    assert.equal(body.slot_interval_minutes, 30);
+    assert.equal(body.slots[1].start, '2027-01-04T14:30:00.000Z'); // 9:30 EST
+    assert.equal(body.slots[1].end, '2027-01-04T15:30:00.000Z');
+    assert.equal(body.slots[14].start, '2027-01-04T21:00:00.000Z'); // 16:00 EST
+    assert.equal(body.slots[14].end, '2027-01-04T22:00:00.000Z');
+  });
+});
+
+test('30-min grid: 90-min service is offered at 10:30, not just 9:00/10:30/12:00', { skip }, async () => {
+  // The Momentum case: Setmore offers 1.5-hour sessions on the
+  // half-hour grid; back-to-back slicing only gave 9:00, 10:30, 12:00…
+  const resource_id = await makeResource();
+  const offering_id = await makeOffering({ duration_minutes: 90 });
+  await linkOfferingResource(offering_id, resource_id);
+  await makeOperatingHours(resource_id, DOW_MONDAY, '09:00', '17:00');
+
+  await withSlotInterval(30, async () => {
+    const body = await (await fetchAvailability({ resource_id, offering_id, date: MONDAY_EST })).json();
+    const s = starts(body);
+    assert.ok(s.includes('2027-01-04T15:00:00.000Z'), '10:00 EST start offered');
+    assert.ok(s.includes('2027-01-04T19:30:00.000Z'), '14:30 EST start offered');
+    // Last start 15:30 EST (ends at 17:00 close).
+    assert.equal(s[s.length - 1], '2027-01-04T20:30:00.000Z');
+    assert.equal(s.length, 14); // 9:00 … 15:30
+  });
+});
+
+test('30-min grid: an off-grid booking end snaps the next start to the grid', { skip }, async () => {
+  const resource_id = await makeResource();
+  const offering_id = await makeOffering({ duration_minutes: 60 });
+  await linkOfferingResource(offering_id, resource_id);
+  await makeOperatingHours(resource_id, DOW_MONDAY, '09:00', '17:00');
+  // Existing booking 9:00–10:45 EST (e.g. imported, or front desk
+  // snapped to 15 min).
+  await makeBooking(offering_id, resource_id, '2027-01-04T14:00:00Z', '2027-01-04T15:45:00Z');
+
+  await withSlotInterval(30, async () => {
+    const body = await (await fetchAvailability({ resource_id, offering_id, date: MONDAY_EST })).json();
+    const s = starts(body);
+    assert.equal(s[0], '2027-01-04T16:00:00.000Z', 'first start is 11:00 EST, not 10:45');
+    assert.ok(s.every((iso) => [0, 30].includes(new Date(iso).getUTCMinutes())));
+  });
+});
+
+test('30-min grid anchors to opening time, per shift', { skip }, async () => {
+  const resource_id = await makeResource();
+  const offering_id = await makeOffering({ duration_minutes: 60 });
+  await linkOfferingResource(offering_id, resource_id);
+  await makeOperatingHours(resource_id, DOW_MONDAY, '09:15', '11:15');
+  await makeOperatingHours(resource_id, DOW_MONDAY, '13:00', '14:00');
+
+  await withSlotInterval(30, async () => {
+    const body = await (await fetchAvailability({ resource_id, offering_id, date: MONDAY_EST })).json();
+    assert.deepEqual(starts(body), [
+      '2027-01-04T14:15:00.000Z', // 9:15
+      '2027-01-04T14:45:00.000Z', // 9:45
+      '2027-01-04T15:15:00.000Z', // 10:15
+      '2027-01-04T18:00:00.000Z', // 13:00
+    ]);
+  });
 });
